@@ -6,6 +6,7 @@
 # repo root
 npm install            # once
 npm run tauri dev      # run the app (vite on :1420 + cargo build + window)
+npm test               # pure frontend logic tests (node:test)
 npm run check          # svelte-check — must be 0 errors
 npm run build          # static build incl. prerender — must pass
 npm run promote:local  # verify, build, and manually promote the launcher-visible daily build
@@ -82,6 +83,9 @@ Inspect sync progress without the UI:
   and account/folder views, and resize or maximize the window. Both panes must remain usable and
   the reader must receive surplus wide-screen space. Restart the app to verify persistence. With
   the separator focused, test Left/Right (Shift for larger steps), Home/End, and double-click reset.
+- **Compose/send**: automated tests validate construction only and never send external mail. For a
+  live check, send through one Gmail and one password account, verify receipt and provider-side Sent
+  behavior, then test `c`, `r`, Reply all, Escape, and Ctrl+Enter from the compose dialog.
 - **Discovery**: `cargo test --lib -- --ignored` covers ISPDB (gmx.de), provider
   autoconfig (fastmail.com), and the MX→provider path (pluscosmic.dev/Purelymail).
 - **Gmail e2e**: verified working 2026-07-09 (OAuth → XOAUTH2 → folder LIST → envelope

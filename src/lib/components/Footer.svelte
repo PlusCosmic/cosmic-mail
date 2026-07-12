@@ -27,6 +27,8 @@
 	<span class="fh"><kbd>j</kbd><kbd>k</kbd><span class="lbl">navigate</span></span>
 	<span class="fh"><kbd>enter</kbd><span class="lbl">open</span></span>
 	<span class="fh"><kbd>u</kbd><span class="lbl">toggle unread</span></span>
+	<span class="fh"><kbd>c</kbd><span class="lbl">compose</span></span>
+	<span class="fh"><kbd>r</kbd><span class="lbl">reply</span></span>
 	<span class="fh"><kbd>/</kbd><span class="lbl">filter</span></span>
 	<span class="fh"><kbd>g</kbd><kbd>g</kbd><span class="lbl">top</span></span>
 	<span class="fh"><kbd>G</kbd><span class="lbl">bottom</span></span>

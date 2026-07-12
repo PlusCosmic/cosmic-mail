@@ -8,14 +8,11 @@ mod desktop;
 mod error;
 mod notifications;
 mod omarchy;
+mod send;
 mod state;
 mod store;
 mod sync;
 mod wire;
-
-// TODO(send): SMTP sending (via `lettre`) is out of scope for this pass. A
-// future `send.rs` module will build/submit messages over the account's SMTP
-// transport; `lettre` remains a dependency in anticipation of that work.
 
 use tauri::Manager;
 
@@ -108,6 +105,7 @@ pub fn run() {
             commands::list_unified_messages,
             commands::get_message_body,
             commands::mark_read,
+            commands::send_message,
             commands::sync_folder,
             commands::sync_account,
             commands::test_notification,

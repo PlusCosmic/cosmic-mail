@@ -4,7 +4,11 @@
 	import { fullDate, initials, avatarColor } from "$lib/format";
 
 	// The reader focuses this element when a message is opened (Enter).
-	let { paneEl = $bindable() }: { paneEl?: HTMLElement } = $props();
+	let {
+		paneEl = $bindable(),
+		onReply,
+		onReplyAll,
+	}: { paneEl?: HTMLElement; onReply: () => void; onReplyAll: () => void } = $props();
 
 	const msg = $derived(mail.selectedMessage);
 	const body = $derived(mail.body);
@@ -68,10 +72,10 @@
 			</div>
 
 			<div class="r-actions">
-				<button class="r-act pri" disabled title="Coming soon">
+				<button class="r-act pri" onclick={onReply} disabled={body?.id !== msg.id} title="Reply (r)">
 					<span class="ic">↩</span> Reply
 				</button>
-				<button class="r-act" disabled title="Coming soon">
+				<button class="r-act" onclick={onReplyAll} disabled={body?.id !== msg.id} title="Reply all">
 					<span class="ic">↩↩</span> Reply all
 				</button>
 				<button class="r-act" disabled title="Coming soon">

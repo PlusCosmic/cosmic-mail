@@ -9,6 +9,8 @@
 	import Footer from "$lib/components/Footer.svelte";
 	import Toasts from "$lib/components/Toasts.svelte";
 	import AddAccountModal from "$lib/components/AddAccountModal.svelte";
+	import ComposeModal from "$lib/components/ComposeModal.svelte";
+	import { replySeed, type ComposeSeed } from "$lib/compose";
 	import {
 		DEFAULT_LIST_PANE_RATIO,
 		PANE_DIVIDER_WIDTH,
@@ -20,6 +22,7 @@
 	} from "$lib/pane-layout";
 
 	let showAddAccount = $state(false);
+	let composeSeed = $state<ComposeSeed | null>(null);
 	let listEl = $state<HTMLElement>();
 	let readerEl = $state<HTMLElement>();
 	let searchEl = $state<HTMLInputElement>();
@@ -210,12 +213,50 @@
 		);
 	}
 
+	function defaultComposeAccountId(): string | null {
+		return (
+			mail.selectedAccountId ??
+			mail.selectedMessage?.accountId ??
+			mail.accounts[0]?.id ??
+			null
+		);
+	}
+
+	function openCompose() {
+		const accountId = defaultComposeAccountId();
+		if (!accountId) return;
+		composeSeed = {
+			accountId,
+			toAddrs: [],
+			ccAddrs: [],
+			subject: "",
+			bodyText: "",
+			replyToMessageId: null,
+		};
+	}
+
+	function openReply(replyAll = false) {
+		const message = mail.selectedMessage;
+		if (!message) return;
+		const account = mail.accounts.find((candidate) => candidate.id === message.accountId);
+		if (!account) return;
+		const body = mail.body?.id === message.id ? mail.body : null;
+		if (!body) return;
+		composeSeed = replySeed(message, body, account, replyAll);
+	}
+
+	function closeCompose() {
+		const wasReply = composeSeed?.replyToMessageId !== null;
+		composeSeed = null;
+		queueMicrotask(() => (wasReply ? readerEl : listEl)?.focus());
+	}
+
 	// Currently selected index for footer display.
 	const selectedIndex = $derived(currentIndex());
 
 	function onKeydown(e: KeyboardEvent) {
 		// Ignore when a modal is open.
-		if (showAddAccount) return;
+		if (showAddAccount || composeSeed) return;
 		// Let modifier combos through to the browser.
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
 
@@ -266,6 +307,14 @@
 				e.preventDefault();
 				if (mail.selectedMessage) void mail.toggleRead(mail.selectedMessage);
 				break;
+			case "c":
+				e.preventDefault();
+				openCompose();
+				break;
+			case "r":
+				e.preventDefault();
+				openReply();
+				break;
 			case "1":
 				e.preventDefault();
 				void mail.selectUnified();
@@ -299,7 +348,9 @@
 			</div>
 		</div>
 	{:else}
-		<Rail onAddAccount={() => (showAddAccount = true)} />
+		<div class="rail-col">
+			<Rail onAddAccount={() => (showAddAccount = true)} onCompose={openCompose} />
+		</div>
 
 		<div class="main">
 			<Header bind:searchEl />
@@ -333,7 +384,7 @@
 					></div>
 
 					<div class="reader-col">
-						<Reader bind:paneEl={readerEl} />
+						<Reader bind:paneEl={readerEl} onReply={() => openReply()} onReplyAll={() => openReply(true)} />
 					</div>
 				</div>
 			</div>
@@ -349,12 +400,24 @@
 	<AddAccountModal onClose={() => (showAddAccount = false)} />
 {/if}
 
+{#if composeSeed}
+	<ComposeModal seed={composeSeed} onClose={closeCompose} />
+{/if}
+
 <style>
 	.app {
 		display: grid;
 		grid-template-columns: 52px 1fr;
+		grid-template-rows: minmax(0, 1fr);
 		height: 100vh;
 		width: 100vw;
+		overflow: hidden;
+	}
+
+	.rail-col {
+		grid-column: 1;
+		grid-row: 1;
+		min-height: 0;
 		overflow: hidden;
 	}
 
@@ -367,6 +430,8 @@
 	}
 
 	.main {
+		grid-column: 2;
+		grid-row: 1;
 		display: grid;
 		grid-template-rows: auto 1fr auto;
 		min-width: 0;

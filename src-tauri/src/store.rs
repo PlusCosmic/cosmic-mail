@@ -152,6 +152,13 @@ pub struct MessageUpsert {
     pub has_attachments: bool,
 }
 
+/// Trusted metadata used to thread a reply without accepting raw headers from the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplyMetadata {
+    pub account_id: String,
+    pub message_id: Option<String>,
+}
+
 // --- Folder queries ----------------------------------------------------------
 
 /// Insert or update a folder for `(account_id, name)`, reconciling UIDVALIDITY.
@@ -434,6 +441,26 @@ pub fn locate_message(
     .context("locating message")
 }
 
+/// Resolve the account and RFC Message-ID for a local message row.
+pub fn get_reply_metadata(
+    conn: &Connection,
+    local_message_id: i64,
+) -> Result<Option<ReplyMetadata>> {
+    conn.query_row(
+        "SELECT f.account_id, m.message_id \
+         FROM messages m JOIN folders f ON f.id = m.folder_id WHERE m.id = ?1",
+        params![local_message_id],
+        |r| {
+            Ok(ReplyMetadata {
+                account_id: r.get(0)?,
+                message_id: r.get(1)?,
+            })
+        },
+    )
+    .optional()
+    .context("reading reply metadata")
+}
+
 /// Cached body parts plus recipient lists for a message.
 #[derive(Debug, Clone)]
 pub struct CachedBody {
@@ -567,5 +594,40 @@ mod tests {
             .expect("folder exists");
         assert_eq!(folder.total_count, 1_497);
         assert_eq!(folder.unread_count, 12);
+    }
+
+    #[test]
+    fn reply_metadata_keeps_account_and_rfc_message_id() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_schema(&conn).expect("initialize schema");
+        let (folder_id, _) =
+            upsert_folder(&conn, "account", "INBOX", FolderRole::Inbox, 1).expect("insert folder");
+        let local_id = upsert_message(
+            &conn,
+            &MessageUpsert {
+                folder_id,
+                uid: 42,
+                message_id: Some("<parent@example.com>".into()),
+                subject: String::new(),
+                from_name: String::new(),
+                from_addr: "sender@example.com".into(),
+                to_addrs: Vec::new(),
+                cc_addrs: Vec::new(),
+                date: "2026-07-12T00:00:00Z".into(),
+                snippet: String::new(),
+                seen: true,
+                flagged: false,
+                has_attachments: false,
+            },
+        )
+        .expect("insert message");
+
+        assert_eq!(
+            get_reply_metadata(&conn, local_id).expect("read metadata"),
+            Some(ReplyMetadata {
+                account_id: "account".into(),
+                message_id: Some("<parent@example.com>".into()),
+            })
+        );
     }
 }

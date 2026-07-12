@@ -2,7 +2,7 @@
 	import { mail } from "$lib/stores/mail.svelte";
 	import { initials, avatarColor } from "$lib/format";
 
-	let { onAddAccount }: { onAddAccount: () => void } = $props();
+	let { onAddAccount, onCompose }: { onAddAccount: () => void; onCompose: () => void } = $props();
 
 	function capBadge(n: number): string {
 		return n > 99 ? "99+" : n > 0 ? String(n) : "";
@@ -58,10 +58,18 @@
 
 	<div class="spacer"></div>
 
-	<!-- Compose (disabled) -->
-	<div class="rail-btn" role="button" tabindex="0" title="Compose — coming soon" aria-disabled="true">
+	<!-- Compose -->
+	<div
+		class="rail-btn"
+		role="button"
+		tabindex="0"
+		title="Compose (c)"
+		onclick={onCompose}
+		onkeydown={(e) => e.key === "Enter" && onCompose()}
+		aria-label="Compose message"
+	>
 		<span class="av compose">✎</span>
-		<span class="tip">Compose — coming soon</span>
+		<span class="tip">Compose (c)</span>
 	</div>
 
 	<!-- Add account -->
@@ -90,6 +98,7 @@
 		padding: 10px 0;
 		width: 52px;
 		min-width: 52px;
+		height: 100%;
 		overflow: hidden;
 	}
 

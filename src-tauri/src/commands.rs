@@ -12,7 +12,7 @@ use crate::omarchy::{self, OmarchyTheme};
 use crate::state::AppState;
 use crate::store;
 use crate::sync::imap as sync_imap;
-use crate::wire::{Folder, ImapAccountInput, MessageBody, MessageSummary};
+use crate::wire::{Folder, ImapAccountInput, MessageBody, MessageSummary, SendMessageInput};
 
 /// Read the active omarchy theme.
 #[tauri::command]
@@ -304,6 +304,34 @@ pub async fn mark_read(app: AppHandle, message_id: i64, seen: bool) -> AppResult
         serde_json::json!({ "folderId": folder_id }),
     );
     Ok(())
+}
+
+/// Submit a plain-text message through the selected account's SMTP server.
+#[tauri::command]
+pub async fn send_message(app: AppHandle, input: SendMessageInput) -> AppResult<()> {
+    let account = load_account(&input.account_id)?;
+    let reply_message_id = if let Some(local_message_id) = input.reply_to_message_id {
+        let state = app.state::<AppState>();
+        let metadata = {
+            let conn = state
+                .db
+                .lock()
+                .map_err(|_| AppError::msg("db lock poisoned"))?;
+            store::get_reply_metadata(&conn, local_message_id)
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::msg("reply message not found"))?
+        };
+        if metadata.account_id != account.id {
+            return Err(AppError::msg("reply message belongs to another account"));
+        }
+        metadata.message_id
+    } else {
+        None
+    };
+
+    crate::send::send(&account, &input, reply_message_id.as_deref())
+        .await
+        .map_err(AppError::from)
 }
 
 /// Trigger a background re-sync for the account that owns a folder.

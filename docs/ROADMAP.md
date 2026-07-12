@@ -45,6 +45,12 @@ Last updated: 2026-07-12.
   dragging and keyboard resizing, enforces usable pane bounds, persists a responsive proportional
   preference, and caps list growth so maximized/full-screen reader space is used effectively.
   Double-click resets to the default split; focused sizing logic has unit coverage.
+- **Compose / send (2026-07-12)**: plain-text compose UI with account selection, To/Cc/Bcc,
+  keyboard send, new/reply/reply-all entry points, quoted replies, and direct-parent
+  In-Reply-To/References threading. SMTP uses required STARTTLS or implicit TLS, password
+  PLAIN/LOGIN authentication, and Gmail XOAUTH2 through the existing token refresh path. Recipient,
+  Bcc, threading-header safety, and reply metadata have unit coverage. Live delivery was verified
+  through both Gmail XOAUTH2 and password-authenticated IMAP/SMTP accounts.
 - Shakedown fixes landed: WebKit DMA-BUF/Wayland crash, rustls dual-backend panic,
   XOAUTH2 double-encoding, theme-watcher feedback loop (see GOTCHAS.md).
 
@@ -55,20 +61,17 @@ Last updated: 2026-07-12.
 
 ## Next up (rough priority)
 
-1. **Compose / send** — `send.rs` over lettre (deps already wired, `// TODO(send)` in
-   lib.rs). Needs: SMTP XOAUTH2 for Gmail + password auth, reply headers
-   (In-Reply-To/References), compose UI. Extend ARCHITECTURE.md first.
-2. **Safe message-body prefetch** — opportunistically cache bodies for a bounded set of recent or
+1. **Safe message-body prefetch** — opportunistically cache bodies for a bounded set of recent or
    unread messages so keyboard skimming is immediate. Fetch with IMAP `BODY.PEEK[...]` so caching
    never sets `\Seen`; keep the explicit `mark_read` path separate. Prefetch must not render HTML
    or load remote resources, and the reader needs a remote-image policy so tracking pixels/read
    receipts remain separately controlled when a cached message is opened.
-3. **Command palette (Ctrl+K)** — walker/telescope-style fuzzy palette from prototype 02
+2. **Command palette (Ctrl+K)** — walker/telescope-style fuzzy palette from prototype 02
    (the remaining piece of the shell convergence).
-4. **Search** — local SQLite FTS5 over envelopes/bodies first; server-side IMAP SEARCH later
+3. **Search** — local SQLite FTS5 over envelopes/bodies first; server-side IMAP SEARCH later
    (header input currently only filters loaded messages client-side).
-5. **Attachments** — BODYSTRUCTURE part listing, download/save, inline images policy.
-6. **Message actions** — archive/delete/move/flag (reader buttons exist but are disabled;
+4. **Attachments** — BODYSTRUCTURE part listing, download/save, inline images policy.
+5. **Message actions** — archive/delete/move/flag (reader buttons exist but are disabled;
    UI keys `a`/`d` reserved).
 
 ## Known limitations / smaller backlog
@@ -84,6 +87,8 @@ Last updated: 2026-07-12.
 - Attachment detection is a BODYSTRUCTURE heuristic.
 - Reader iframe: no remote-content blocking toggle yet (sanitized, scripts stripped, but
   remote images load).
+- Compose is plain text only. It does not save drafts, attach files, preserve a source message's
+  full References chain, honor Reply-To, or locally append to Sent; provider SMTP behavior applies.
 - No account-removal control in the UI (backend command + store method exist).
 - `G` doesn't auto-trigger "load more"; registrable-domain uses a tiny suffix list, not PSL.
 - No app icon yet (scaffold placeholder); no tray icon (would need libappindicator).

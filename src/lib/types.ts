@@ -88,6 +88,16 @@ export interface ImapAccountInput {
 	password: string; // goes straight to keyring, never to db/json
 }
 
+export interface SendMessageInput {
+	accountId: string;
+	toAddrs: string[];
+	ccAddrs: string[];
+	bccAddrs: string[];
+	subject: string;
+	bodyText: string;
+	replyToMessageId: number | null; // local db rowid; backend resolves RFC headers
+}
+
 // ---- Event payloads (backend -> frontend) ----
 
 export interface NewMessagesEvent {

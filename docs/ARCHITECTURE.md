@@ -110,6 +110,14 @@ interface ImapAccountInput {
   username: string;                     // often == email
   password: string;                     // goes straight to keyring, never to db/json
 }
+
+interface SendMessageInput {
+  accountId: string;                    // sending identity; SMTP details stay backend-only
+  toAddrs: string[]; ccAddrs: string[]; bccAddrs: string[];
+  subject: string;
+  bodyText: string;                     // initial compose implementation is plain text
+  replyToMessageId: number | null;      // local message rowid, never an arbitrary RFC header
+}
 ```
 
 ## Tauri commands (exact names)
@@ -126,6 +134,7 @@ interface ImapAccountInput {
 | `list_unified_messages` | `offset: number, limit: number` | `MessageSummary[]` (date DESC across all folders with role 'inbox', all accounts) |
 | `get_message_body` | `messageId: number` | `MessageBody` (fetches from server if not cached) |
 | `mark_read` | `messageId: number, seen: boolean` | `void` (updates server flag + db) |
+| `send_message` | `input: SendMessageInput` | `void` (submits through the selected account's SMTP server) |
 | `sync_folder` | `folderId: number` | `void` (triggers refresh; progress via events) |
 | `sync_account` | `accountId: string` | `void` |
 | `test_notification` | — | `void` (sends a sample mako notification) |
@@ -276,6 +285,25 @@ Account configs (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/accounts.json
   NOTE: async-imap base64-encodes the authenticator's response itself —
   do NOT pre-encode (double encoding ⇒ Gmail "Invalid SASL argument").
   Hosts: `imap.gmail.com:993`, `smtp.gmail.com:587`.
+
+## Compose and SMTP sending (send.rs)
+
+- The first compose implementation sends plain-text messages. `send_message` requires at least one
+  valid To/Cc/Bcc mailbox and builds all address and message headers with lettre; the frontend never
+  supplies raw headers or SMTP credentials.
+- The selected account supplies the From mailbox and SMTP configuration. Password accounts reuse
+  their keyring-held IMAP password with SMTP `PLAIN`/`LOGIN`; Gmail obtains an access token through
+  `auth/oauth.rs` and uses lettre's `XOAUTH2` mechanism with the raw token (lettre constructs and
+  base64-encodes the SASL response).
+- SMTP is always encrypted: port 465 uses implicit TLS; every other configured submission port uses
+  required STARTTLS. There is no plaintext or opportunistic-TLS fallback.
+- For replies, `replyToMessageId` is a local SQLite rowid. The backend verifies that the cached
+  message belongs to the sending account, resolves its RFC 5322 `message_id`, and, when present,
+  writes it as both `In-Reply-To` and the initial `References` value. The command omits both headers
+  if the source message has no cached Message-ID. A full pre-existing References chain is not cached
+  yet, so this initial implementation threads against the direct parent.
+- SMTP acceptance completes the command. Providers such as Gmail normally copy SMTP submissions to
+  Sent themselves; Cosmic Mail does not locally insert or IMAP-APPEND the outgoing message.
 
 ## Settings discovery (autoconfig.rs)
 

@@ -3,7 +3,7 @@
 //! All types serialize with `camelCase` field names to match the TS contract in
 //! `docs/ARCHITECTURE.md`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::store::{FolderRow, MessageRow};
 
@@ -93,4 +93,17 @@ pub struct ImapAccountInput {
     pub smtp_port: u16,
     pub username: String,
     pub password: String,
+}
+
+/// A plain-text message submitted through an account's SMTP server.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendMessageInput {
+    pub account_id: String,
+    pub to_addrs: Vec<String>,
+    pub cc_addrs: Vec<String>,
+    pub bcc_addrs: Vec<String>,
+    pub subject: String,
+    pub body_text: String,
+    pub reply_to_message_id: Option<i64>,
 }

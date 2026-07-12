@@ -68,6 +68,9 @@ keyring.
 | `Enter` | open the selected message |
 | `Esc` | return to the message list |
 | `u` | toggle read state |
+| `c` | compose a new message |
+| `r` | reply to the selected message |
+| `Ctrl+Enter` | send from the compose dialog |
 | `1`, `2`, … | switch inbox or account view |
 
 The separator between the message list and reader can be dragged. When focused, use
@@ -81,4 +84,3 @@ double-click to restore the default split.
 | account settings, without secrets | `~/.config/cosmic-mail/accounts.json` |
 | message cache | `~/.local/share/cosmic-mail/mail.db` |
 | IMAP passwords and OAuth refresh tokens | Secret Service keyring, service `dev.pluscosmic.mail` |
-

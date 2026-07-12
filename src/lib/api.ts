@@ -17,6 +17,7 @@ import type {
 	MessagesUpdatedEvent,
 	NewMessagesEvent,
 	OmarchyTheme,
+	SendMessageInput,
 	SyncStateEvent,
 } from "./types";
 
@@ -67,6 +68,10 @@ export function getMessageBody(messageId: number): Promise<MessageBody> {
 
 export function markRead(messageId: number, seen: boolean): Promise<void> {
 	return invoke("mark_read", { messageId, seen });
+}
+
+export function sendMessage(input: SendMessageInput): Promise<void> {
+	return invoke("send_message", { input });
 }
 
 export function syncFolder(folderId: number): Promise<void> {

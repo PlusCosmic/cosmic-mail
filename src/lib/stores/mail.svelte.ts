@@ -9,6 +9,7 @@ import type {
 	Folder,
 	MessageBody,
 	MessageSummary,
+	SendMessageInput,
 	SyncState,
 } from "$lib/types";
 import type { UnlistenFn } from "$lib/api";
@@ -356,14 +357,20 @@ export class MailStore {
 		this.body = null;
 		this.loadingBody = true;
 		try {
-			this.body = await api.getMessageBody(msg.id);
+			const body = await api.getMessageBody(msg.id);
+			if (this.selectedMessageId === msg.id) this.body = body;
 		} catch (e) {
-			this.#error("Failed to load message", e);
+			if (this.selectedMessageId === msg.id) this.#error("Failed to load message", e);
 		} finally {
-			this.loadingBody = false;
+			if (this.selectedMessageId === msg.id) this.loadingBody = false;
 		}
 		// Opening a message marks it read.
 		if (!msg.seen) await this.setSeen(msg, true);
+	}
+
+	async sendMessage(input: SendMessageInput): Promise<void> {
+		await api.sendMessage(input);
+		this.toast("Message sent");
 	}
 
 	selectByIndex(index: number): void {
