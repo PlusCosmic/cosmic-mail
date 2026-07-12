@@ -369,6 +369,7 @@
 	.main {
 		display: grid;
 		grid-template-rows: auto 1fr auto;
+		min-width: 0;
 		min-height: 0;
 		overflow: hidden;
 	}
@@ -377,11 +378,14 @@
 	.split {
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr);
+		min-width: 0;
 		min-height: 0;
 		overflow: hidden;
 	}
 
 	.panes {
+		/* Keep the panes in the flexible track when the optional folder column is absent. */
+		grid-column: 2;
 		display: grid;
 		grid-template-columns: var(--list-pane-width) 9px minmax(0, 1fr);
 		min-width: 0;
