@@ -7,6 +7,7 @@ Documentation for agents and humans picking up this project without prior contex
 |---|---|
 | this file | 2-minute project overview |
 | [SETUP.md](SETUP.md) | Requirements, account setup, Gmail OAuth, keyboard shortcuts, and local data locations |
+| [TERMINOLOGY.md](TERMINOLOGY.md) | Shared names and concise definitions for UI surfaces, mail concepts, sync behavior, and application architecture |
 | [OMARCHY.md](OMARCHY.md) | Live theming, Mako notifications, and the background application lifecycle |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **The binding contract** between Rust backend and Svelte frontend: commands, events, wire types, DB schema, module layout, sync/notification/oauth/discovery specs. Conform to it exactly; update it in the same change that alters the API surface. |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build/run/test commands, verification workflow, local state paths, how to test each subsystem |
