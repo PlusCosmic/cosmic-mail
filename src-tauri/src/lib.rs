@@ -1,0 +1,118 @@
+//! Cosmic Mail backend core: Tauri wiring, state setup, and background tasks.
+
+mod accounts;
+mod auth;
+mod autoconfig;
+mod commands;
+mod desktop;
+mod error;
+mod notifications;
+mod omarchy;
+mod state;
+mod store;
+mod sync;
+mod wire;
+
+// TODO(send): SMTP sending (via `lettre`) is out of scope for this pass. A
+// future `send.rs` module will build/submit messages over the account's SMTP
+// transport; `lettre` remains a dependency in anticipation of that work.
+
+use tauri::Manager;
+
+use crate::state::AppState;
+
+/// Application entry point invoked from `main.rs`.
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    // Both rustls crypto backends end up enabled in our dependency tree
+    // (lettre -> ring, reqwest/oauth2 -> aws-lc-rs), so rustls cannot pick a
+    // process-level default itself and would panic on the first TLS
+    // connection. Install one explicitly before any TLS use.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("install rustls ring CryptoProvider before any TLS use");
+
+    // Initialize tracing; honor RUST_LOG, default to info for our crate.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "cosmic_mail_lib=info,warn".into()),
+        )
+        .try_init();
+
+    let builder = tauri::Builder::default();
+
+    // Register single-instance ownership before every other plugin. On Linux
+    // it owns a session D-Bus name; later launcher invocations ask this process
+    // to activate its existing window and exit before setup can spawn sync.
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        if !desktop::is_background_launch(args) {
+            desktop::activate_main_window(app);
+        }
+    }));
+
+    builder
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // Open the database and build shared state.
+            let conn = store::open()?;
+            let app_state = AppState::new(conn);
+            let db = app_state.db.clone();
+
+            app.manage(app_state);
+
+            // The window is configured hidden to avoid a login flash. Only an
+            // interactive first launch should reveal it; --background is used
+            // by the graphical-session service.
+            if !desktop::is_background_launch(std::env::args_os()) {
+                desktop::activate_main_window(app.handle());
+            }
+
+            // Spawn the omarchy theme watcher.
+            omarchy::spawn_watcher(app.handle().clone());
+
+            // Spawn sync tasks for existing accounts.
+            match accounts::load_accounts() {
+                Ok(accounts) => {
+                    let state = app.state::<AppState>();
+                    for account in accounts {
+                        state.sync.start(app.handle().clone(), db.clone(), account);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "failed to load accounts at startup");
+                }
+            }
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == desktop::MAIN_WINDOW {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    if let Err(err) = window.hide() {
+                        tracing::warn!(error = %err, "could not hide main window");
+                    }
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::get_theme,
+            commands::list_accounts,
+            commands::add_imap_account,
+            commands::start_gmail_oauth,
+            commands::remove_account,
+            commands::list_folders,
+            commands::list_messages,
+            commands::list_unified_messages,
+            commands::get_message_body,
+            commands::mark_read,
+            commands::sync_folder,
+            commands::sync_account,
+            commands::test_notification,
+            commands::discover_account_config,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

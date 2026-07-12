@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+  Cosmic Mail — Prototype 03: Hybrid Two-Pane
+  ===========================================
+  CONCEPT
+    A pragmatic middle ground between the classic three-pane and the keyboard-minimal view.
+    A collapsed icon-rail on the far left switches accounts / the unified view (hover reveals
+    the label — no wide sidebar). The main area is a two-pane split: a UNIFIED inbox message
+    list on the left, a persistent reader on the right. A slim header carries a single search
+    input and the sync indicator; a keyboard-hint footer keeps the vim bindings discoverable.
+
+  TRADE-OFFS
+    + Reclaims the horizontal space the classic layout spends on a folder tree, while keeping
+      list+preview visible at once — the best density/discoverability balance.
+    + Unified inbox matches how people actually triage across two accounts.
+    + Still fully keyboard-drivable, but a mouse works everywhere too.
+    - The folder tree is one click away (rail → account) rather than always-on; power users
+      with many nested folders may miss the persistent tree from prototype 01.
+
+  All colors derive from the OmarchyTheme CSS custom properties via color-mix(); the top-right
+  switcher swaps between three omarchy themes to confirm the layout is theme-adaptive.
+-->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cosmic Mail — Hybrid Two-Pane</title>
+<style>
+  :root {
+    --bg:#1f1f28; --fg:#dcd7ba; --accent:#7e9cd8; --cursor:#c8c093;
+    --sel-bg:#2d4f67; --sel-fg:#c8c093;
+    --c0:#090618; --c1:#c34043; --c2:#76946a; --c3:#c0a36e;
+    --c4:#7e9cd8; --c5:#957fb8; --c6:#6a9589; --c7:#c8c093;
+    --c8:#727169; --c9:#e82424; --c10:#98bb6c; --c11:#e6c384;
+    --c12:#7fb4ca; --c13:#938aa9; --c14:#7aa89f; --c15:#dcd7ba;
+
+    --panel:       color-mix(in srgb, var(--bg) 88%, var(--fg) 12%);
+    --panel-2:     color-mix(in srgb, var(--bg) 80%, var(--fg) 20%);
+    --rail:        color-mix(in srgb, var(--bg) 82%, var(--c0) 18%);
+    --border:      color-mix(in srgb, var(--c8) 52%, transparent);
+    --border-soft: color-mix(in srgb, var(--c8) 28%, transparent);
+    --muted:       color-mix(in srgb, var(--fg) 53%, var(--bg) 47%);
+    --muted-2:     color-mix(in srgb, var(--fg) 36%, var(--bg) 64%);
+    --hover:       color-mix(in srgb, var(--bg) 84%, var(--accent) 16%);
+    --accent-soft: color-mix(in srgb, var(--accent) 17%, transparent);
+    --warn:        var(--c3);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font-family: 'CaskaydiaMono Nerd Font', 'JetBrainsMono Nerd Font', 'JetBrains Mono', monospace;
+    font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  }
+
+  .app { display: grid; grid-template-columns: 52px 1fr; height: 100vh; }
+
+  /* ---------- icon rail ---------- */
+  .rail {
+    background: var(--rail);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; align-items: center;
+    gap: 6px; padding: 10px 0;
+  }
+  .rail .logo {
+    width: 30px; height: 30px; border-radius: 6px;
+    display: grid; place-items: center; margin-bottom: 8px;
+    background: var(--accent); color: var(--bg); font-weight: 700; font-size: 15px;
+  }
+  .rail-btn {
+    position: relative;
+    width: 34px; height: 34px; border-radius: 6px;
+    display: grid; place-items: center;
+    color: var(--muted); font-size: 15px; cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .rail-btn .av {
+    width: 26px; height: 26px; border-radius: 5px;
+    display: grid; place-items: center; color: var(--bg); font-weight: 700; font-size: 12px;
+  }
+  .rail-btn:hover { background: var(--hover); color: var(--fg); }
+  .rail-btn.active { background: var(--sel-bg); }
+  .rail-btn.active::before {
+    content: ""; position: absolute; left: -10px; top: 7px; bottom: 7px;
+    width: 3px; border-radius: 2px; background: var(--accent);
+  }
+  .rail-btn .count {
+    position: absolute; top: -2px; right: -2px;
+    min-width: 15px; height: 15px; padding: 0 3px;
+    background: var(--c1); color: var(--bg);
+    font-size: 9px; font-weight: 700; border-radius: 8px;
+    display: grid; place-items: center;
+    border: 2px solid var(--rail);
+  }
+  .rail-btn .tip {
+    position: absolute; left: 44px; top: 50%; transform: translateY(-50%);
+    white-space: nowrap; background: var(--panel-2); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 3px 9px; font-size: 11px; opacity: 0; pointer-events: none;
+    transition: opacity .12s; z-index: 20;
+  }
+  .rail-btn:hover .tip { opacity: 1; }
+  .rail .spacer { flex: 1; }
+
+  /* ---------- main ---------- */
+  .main { display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+
+  .header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 9px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .header .h-title { font-weight: 700; letter-spacing: .3px; }
+  .header .h-title .u { color: var(--accent); }
+  .header .h-sub { color: var(--muted); font-size: 11px; }
+  .search {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 8px;
+    min-width: 300px; max-width: 420px; flex: 1;
+    padding: 6px 11px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--muted);
+  }
+  .search input { flex: 1; background: transparent; border: 0; outline: 0; color: var(--fg); font: inherit; }
+  .search input::placeholder { color: var(--muted-2); }
+  .search .kbd { font-size: 10px; color: var(--muted-2); border: 1px solid var(--border); border-radius: 3px; padding: 0 5px; }
+  .h-sync { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+  .h-sync .d { width: 7px; height: 7px; border-radius: 50%; background: var(--c2); box-shadow: 0 0 5px var(--c2); }
+
+  .split { display: grid; grid-template-columns: minmax(340px, 42%) 1fr; min-height: 0; }
+  .col { min-height: 0; overflow-y: auto; }
+  .col + .col { border-left: 1px solid var(--border); }
+
+  /* ---------- list ---------- */
+  .list-head {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--border);
+    font-size: 11px; color: var(--muted);
+  }
+  .list-head .filters { display: flex; gap: 4px; }
+  .chip {
+    padding: 2px 9px; border-radius: 10px; border: 1px solid var(--border);
+    color: var(--muted); font-size: 11px; cursor: pointer;
+  }
+  .chip.on { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+  .list-head .count { margin-left: auto; }
+
+  .msg {
+    display: grid;
+    grid-template-columns: 9px 26px 1fr auto;
+    gap: 3px 10px;
+    padding: 9px 14px 9px 12px;
+    border-bottom: 1px solid var(--border-soft);
+    cursor: pointer;
+    align-items: start;
+  }
+  .msg:hover { background: var(--hover); }
+  .msg.selected { background: var(--sel-bg); }
+  .msg .dot { grid-row: 1 / span 2; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: transparent; }
+  .msg.unread .dot { background: var(--accent); }
+  .msg .av {
+    grid-row: 1 / span 2; align-self: center;
+    width: 24px; height: 24px; border-radius: 4px;
+    display: grid; place-items: center; color: var(--bg); font-weight: 700; font-size: 11px;
+  }
+  .msg .from { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg.unread .from { font-weight: 700; }
+  .msg .when { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .msg .subject { grid-column: 3 / span 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg.unread .subject { font-weight: 600; }
+  .msg .snippet { grid-column: 3 / span 2; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg.selected .snippet, .msg.selected .when { color: color-mix(in srgb, var(--sel-fg) 78%, transparent); }
+  .msg .acctdot {
+    grid-column: 3 / span 2; margin-top: 2px;
+    display: flex; align-items: center; gap: 7px; font-size: 10px; color: var(--muted);
+  }
+  .acctdot .src { display: inline-flex; align-items: center; gap: 4px; }
+  .acctdot .src i { width: 6px; height: 6px; border-radius: 50%; font-style: normal; }
+  .acctdot .flag { color: var(--warn); }
+
+  /* ---------- reader ---------- */
+  .reader { }
+  .r-head { padding: 20px 26px 14px; border-bottom: 1px solid var(--border); }
+  .r-subj { font-size: 17px; font-weight: 700; margin: 0 0 14px; line-height: 1.4; }
+  .r-row { display: flex; align-items: center; gap: 12px; }
+  .r-av { width: 38px; height: 38px; border-radius: 5px; display: grid; place-items: center; color: var(--bg); font-weight: 700; }
+  .r-who .n { font-weight: 700; }
+  .r-who .a { color: var(--muted); font-size: 11.5px; }
+  .r-when { margin-left: auto; color: var(--muted); font-size: 11.5px; text-align: right; }
+  .r-actions { display: flex; gap: 6px; margin-top: 14px; }
+  .r-act {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 11px; border: 1px solid var(--border); border-radius: 4px;
+    color: var(--fg); background: transparent; font: inherit; cursor: pointer;
+  }
+  .r-act:hover { background: var(--hover); }
+  .r-act .ic { color: var(--muted); }
+  .r-act.pri { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
+  .r-act.pri .ic { color: var(--accent); }
+  .r-body { padding: 20px 26px; max-width: 700px; line-height: 1.7; }
+  .r-body p { margin: 0 0 14px; }
+  .r-body a { color: var(--accent); }
+  .r-body code { color: var(--c11); }
+  .r-body ul { margin: 0 0 14px; padding-left: 18px; }
+  .r-body li { margin: 4px 0; }
+  .r-sig { color: var(--muted); font-size: 12px; }
+  .r-attach { display: flex; gap: 10px; padding: 0 26px 24px; flex-wrap: wrap; }
+  .chipf { display: inline-flex; align-items: center; gap: 8px; padding: 7px 11px; border: 1px solid var(--border); border-radius: 4px; background: var(--panel); }
+  .chipf .i { color: var(--accent); }
+  .chipf .s { color: var(--muted); font-size: 10.5px; }
+
+  /* ---------- footer hints ---------- */
+  .footer {
+    display: flex; align-items: center; gap: 2px; flex-wrap: wrap;
+    padding: 6px 16px; background: var(--panel); border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 11px;
+  }
+  .fh { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; }
+  .fh .lbl { color: var(--muted); }
+  kbd {
+    font-family: inherit; font-size: 10.5px;
+    background: var(--panel-2); border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 3px; padding: 0 5px; color: var(--fg); min-width: 12px; text-align: center;
+  }
+  .footer .fspacer { flex: 1; }
+  .footer .fmeta { color: var(--muted-2); }
+
+  .theme-switch {
+    position: fixed; top: 8px; right: 10px; z-index: 999;
+    display: flex; align-items: center; gap: 6px; padding: 4px 6px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 4px; font-size: 10.5px; color: var(--muted);
+  }
+  .theme-switch select {
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 3px;
+    font: inherit; font-size: 11px; padding: 2px 4px;
+  }
+  ::-webkit-scrollbar { width: 9px; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+  <div class="theme-switch">
+    <span> theme</span>
+    <select id="themeSelect" aria-label="omarchy theme">
+      <option value="kanagawa">kanagawa</option>
+      <option value="tokyo-night">tokyo-night</option>
+      <option value="everforest">everforest</option>
+    </select>
+  </div>
+
+  <div class="app">
+    <!-- ============ ICON RAIL ============ -->
+    <nav class="rail">
+      <div class="logo"></div>
+      <div class="rail-btn active" title="Unified">
+        <span class="av" style="background:var(--c5)"></span>
+        <span class="count">11</span>
+        <span class="tip">Unified inbox</span>
+      </div>
+      <div class="rail-btn">
+        <span class="av" style="background:var(--c4)">H</span>
+        <span class="count">7</span>
+        <span class="tip">harry@pluscosmic.dev — IMAP</span>
+      </div>
+      <div class="rail-btn">
+        <span class="av" style="background:var(--c1)">G</span>
+        <span class="count">4</span>
+        <span class="tip">harry.leach@gmail.com — Gmail</span>
+      </div>
+      <div class="spacer"></div>
+      <div class="rail-btn"><span></span><span class="tip">Compose (c)</span></div>
+      <div class="rail-btn"><span></span><span class="tip">Settings</span></div>
+    </nav>
+
+    <!-- ============ MAIN ============ -->
+    <div class="main">
+      <!-- header -->
+      <div class="header">
+        <span class="h-title"><span class="u"></span> Unified Inbox</span>
+        <span class="h-sub">2 accounts · 11 unread</span>
+        <div class="search">
+          <span></span>
+          <input type="text" placeholder="Search mail  (from:  subject:  is:unread  has:attachment)">
+          <span class="kbd">/</span>
+        </div>
+        <span class="h-sync"><span class="d"></span> synced 2m ago</span>
+      </div>
+
+      <!-- split -->
+      <div class="split">
+        <!-- message list -->
+        <div class="col list">
+          <div class="list-head">
+            <div class="filters">
+              <span class="chip on">All</span>
+              <span class="chip">Unread</span>
+              <span class="chip">Flagged</span>
+            </div>
+            <span class="count">128 conversations</span>
+          </div>
+
+          <div class="msg unread selected">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c6)">GH</span>
+            <span class="from">GitHub</span>
+            <span class="when">09:42</span>
+            <span class="subject">IDLE loop drops connection after 25m timeout (#142)</span>
+            <span class="snippet">@harry — the sync task should re-issue IDLE after the server closes the…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c4)"></i>pluscosmic</span></span>
+          </div>
+
+          <div class="msg unread">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c3)">SW</span>
+            <span class="from">Sarah Whitfield</span>
+            <span class="when">09:15</span>
+            <span class="subject">Re: Q3 roadmap review — a couple of blockers</span>
+            <span class="snippet">Thanks for sending this over ahead of Thursday. Two things stood out…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c1)"></i>gmail</span><span class=""> 2</span></span>
+          </div>
+
+          <div class="msg unread">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c5)">FM</span>
+            <span class="from">Fastmail</span>
+            <span class="when">08:50</span>
+            <span class="subject">Your invoice for June 2026 is ready</span>
+            <span class="snippet">Invoice #FM-2026-0642 for 1–30 June is now available in your account…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c4)"></i>pluscosmic</span><span class="flag"></span></span>
+          </div>
+
+          <div class="msg unread">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c4)">LI</span>
+            <span class="from">Linear</span>
+            <span class="when">08:03</span>
+            <span class="subject">COS-88 moved to In Review · “Theme file watcher debounce”</span>
+            <span class="snippet">Harry Leach moved this issue and requested review from you…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c4)"></i>pluscosmic</span></span>
+          </div>
+
+          <div class="msg unread">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c2)">RW</span>
+            <span class="from">Rust Weekly</span>
+            <span class="when">Wed</span>
+            <span class="subject">This Week in Rust #602 — async traits stabilize</span>
+            <span class="snippet">RPITIT lands on stable, tokio 1.42 released, and a deep dive into…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c1)"></i>gmail</span></span>
+          </div>
+
+          <div class="msg unread">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c13)">OM</span>
+            <span class="from">omarchy-announce</span>
+            <span class="when">Wed</span>
+            <span class="subject">omarchy 2.4 — colors.toml is now canonical</span>
+            <span class="snippet">Theme authors: the per-app color file has moved. Migration notes below…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c4)"></i>pluscosmic</span></span>
+          </div>
+
+          <div class="msg">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c14)">MC</span>
+            <span class="from">Marcus Chen</span>
+            <span class="when">Tue</span>
+            <span class="subject">Coffee next week? + that book you mentioned</span>
+            <span class="snippet">Was great catching up at the meetup. I finally ordered “Designing…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c1)"></i>gmail</span></span>
+          </div>
+
+          <div class="msg">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c5)">ST</span>
+            <span class="from">Stripe</span>
+            <span class="when">Tue</span>
+            <span class="subject">You received a payment of £249.00 GBP</span>
+            <span class="snippet">Plus Cosmic Ltd received a payment. View the transaction in your…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c4)"></i>pluscosmic</span></span>
+          </div>
+
+          <div class="msg">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c3)">PA</span>
+            <span class="from">Priya Anand</span>
+            <span class="when">Mon</span>
+            <span class="subject">Signed contract attached — ready to countersign</span>
+            <span class="snippet">Hi Harry, attached is the signed SOW from our side. Let me know if…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c1)"></i>gmail</span><span class=""> 1</span></span>
+          </div>
+
+          <div class="msg">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c6)">HZ</span>
+            <span class="from">Hetzner</span>
+            <span class="when">Mon</span>
+            <span class="subject">Scheduled maintenance — FSN1, 12 July 02:00 UTC</span>
+            <span class="snippet">Dear customer, we will be performing network maintenance affecting…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c4)"></i>pluscosmic</span></span>
+          </div>
+
+          <div class="msg">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c3)">MZ</span>
+            <span class="from">Mozilla</span>
+            <span class="when">Sun</span>
+            <span class="subject">Security notice: review recent sign-ins</span>
+            <span class="snippet">New sign-in from Arch Linux · Firefox. If this was you, no action…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c1)"></i>gmail</span></span>
+          </div>
+
+          <div class="msg">
+            <span class="dot"></span>
+            <span class="av" style="background:var(--c14)">CN</span>
+            <span class="from">Cal Newport (list)</span>
+            <span class="when">Sun</span>
+            <span class="subject">On the quiet productivity of a well-tended inbox</span>
+            <span class="snippet">A reader wrote in last week asking how to reconcile deep work with…</span>
+            <span class="acctdot"><span class="src"><i style="background:var(--c1)"></i>gmail</span></span>
+          </div>
+        </div>
+
+        <!-- reader -->
+        <div class="col reader">
+          <div class="r-head">
+            <h1 class="r-subj">IDLE loop drops connection after 25m timeout (#142)</h1>
+            <div class="r-row">
+              <div class="r-av" style="background:var(--c6)">GH</div>
+              <div class="r-who">
+                <div class="n">GitHub</div>
+                <div class="a">notifications@github.com → harry@pluscosmic.dev</div>
+              </div>
+              <div class="r-when">Thu, 9 Jul 2026<br>09:42</div>
+            </div>
+            <div class="r-actions">
+              <button class="r-act pri"><span class="ic"></span> Reply</button>
+              <button class="r-act"><span class="ic"></span> Reply all</button>
+              <button class="r-act"><span class="ic"></span> Forward</button>
+              <button class="r-act"><span class="ic"></span> Archive</button>
+              <button class="r-act"><span class="ic"></span> Delete</button>
+            </div>
+          </div>
+
+          <div class="r-body">
+            <p>@harry — opening this after debugging the sync engine on my machine overnight.</p>
+            <p>When the IMAP server closes the connection at the 25-minute IDLE ceiling, the
+               <code>SyncManager</code> task logs the disconnect but never re-establishes IDLE,
+               so the inbox stops receiving push updates until a manual sync. Repro is reliable
+               against <code>imap.gmail.com</code>.</p>
+            <p>Proposed fix:</p>
+            <ul>
+              <li>Treat the 25-min timeout as an ordinary IDLE wakeup.</li>
+              <li>Re-run the envelope fetch for new UIDs (<code>UID FETCH &lt;last+1&gt;:*</code>), upsert, emit events.</li>
+              <li>Re-enter IDLE; only emit <code>sync-state: error</code> if the reconnect fails after backoff (30s → 5m cap).</li>
+            </ul>
+            <p><a href="#">View it on GitHub</a> or reply to this email directly.</p>
+            <p class="r-sig">— You are receiving this because you were mentioned on cosmic-mail/dev.</p>
+          </div>
+
+          <div class="r-attach">
+            <div class="chipf"><span class="i"></span> idle-timeout-trace.log <span class="s">18 KB</span></div>
+            <div class="chipf"><span class="i"></span> reconnect-patch.diff <span class="s">2.4 KB</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- footer -->
+      <div class="footer">
+        <span class="fh"><kbd>j</kbd><kbd>k</kbd><span class="lbl">navigate</span></span>
+        <span class="fh"><kbd>enter</kbd><span class="lbl">open</span></span>
+        <span class="fh"><kbd>a</kbd><span class="lbl">archive</span></span>
+        <span class="fh"><kbd>r</kbd><span class="lbl">reply</span></span>
+        <span class="fh"><kbd>u</kbd><span class="lbl">toggle unread</span></span>
+        <span class="fh"><kbd>/</kbd><span class="lbl">search</span></span>
+        <span class="fh"><kbd>⌃</kbd><kbd>k</kbd><span class="lbl">commands</span></span>
+        <span class="fspacer"></span>
+        <span class="fmeta">message 1 of 128 · pluscosmic ⇄ gmail</span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ---- Shared omarchy theme switcher (identical in all three prototypes) ----
+    const THEMES = {
+      "kanagawa": {
+        "--bg":"#1f1f28","--fg":"#dcd7ba","--accent":"#7e9cd8","--cursor":"#c8c093",
+        "--sel-bg":"#2d4f67","--sel-fg":"#c8c093",
+        "--c0":"#090618","--c1":"#c34043","--c2":"#76946a","--c3":"#c0a36e",
+        "--c4":"#7e9cd8","--c5":"#957fb8","--c6":"#6a9589","--c7":"#c8c093",
+        "--c8":"#727169","--c9":"#e82424","--c10":"#98bb6c","--c11":"#e6c384",
+        "--c12":"#7fb4ca","--c13":"#938aa9","--c14":"#7aa89f","--c15":"#dcd7ba"
+      },
+      "tokyo-night": {
+        "--bg":"#1a1b26","--fg":"#a9b1d6","--accent":"#7aa2f7","--cursor":"#c0caf5",
+        "--sel-bg":"#33467c","--sel-fg":"#c0caf5",
+        "--c0":"#15161e","--c1":"#f7768e","--c2":"#9ece6a","--c3":"#e0af68",
+        "--c4":"#7aa2f7","--c5":"#bb9af7","--c6":"#7dcfff","--c7":"#a9b1d6",
+        "--c8":"#414868","--c9":"#f7768e","--c10":"#9ece6a","--c11":"#e0af68",
+        "--c12":"#7aa2f7","--c13":"#bb9af7","--c14":"#7dcfff","--c15":"#c0caf5"
+      },
+      "everforest": {
+        "--bg":"#2d353b","--fg":"#d3c6aa","--accent":"#a7c080","--cursor":"#d3c6aa",
+        "--sel-bg":"#543a48","--sel-fg":"#d3c6aa",
+        "--c0":"#343f44","--c1":"#e67e80","--c2":"#a7c080","--c3":"#dbbc7f",
+        "--c4":"#7fbbb3","--c5":"#d699b6","--c6":"#83c092","--c7":"#d3c6aa",
+        "--c8":"#859289","--c9":"#e67e80","--c10":"#a7c080","--c11":"#dbbc7f",
+        "--c12":"#7fbbb3","--c13":"#d699b6","--c14":"#83c092","--c15":"#d3c6aa"
+      }
+    };
+    function applyTheme(name) {
+      const t = THEMES[name]; if (!t) return;
+      const r = document.documentElement;
+      for (const k in t) r.style.setProperty(k, t[k]);
+    }
+    document.getElementById("themeSelect").addEventListener("change", e => applyTheme(e.target.value));
+    applyTheme("kanagawa");
+  </script>
+</body>
+</html>

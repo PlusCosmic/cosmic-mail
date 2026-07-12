@@ -1,0 +1,159 @@
+/* Global styles for Cosmic Mail.
+ * All colors derive from the theme custom properties set by lib/theme.ts.
+ * Derived tones use color-mix() against --bg / --fg so they track the theme.
+ * Sharp, minimal omarchy aesthetic: 1px borders, no shadows, <=4px radius. */
+
+:root {
+	/* Fallbacks in case theme.ts hasn't run yet (kanagawa). */
+	--bg: #1f1f28;
+	--fg: #dcd7ba;
+	--accent: #7e9cd8;
+	--cursor: #c8c093;
+	--sel-bg: #2d4f67;
+	--sel-fg: #c8c093;
+	--c0: #090618;
+	--c1: #c34043;
+	--c2: #76946a;
+	--c3: #c0a36e;
+	--c4: #7e9cd8;
+	--c5: #957fb8;
+	--c6: #6a9589;
+	--c7: #c8c093;
+	--c8: #727169;
+	--c9: #e82424;
+	--c10: #98bb6c;
+	--c11: #e6c384;
+	--c12: #7fb4ca;
+	--c13: #938aa9;
+	--c14: #7aa89f;
+	--c15: #dcd7ba;
+
+	/* Derived tones. */
+	--border: color-mix(in srgb, var(--fg) 16%, var(--bg));
+	--border-strong: color-mix(in srgb, var(--fg) 30%, var(--bg));
+	--muted: color-mix(in srgb, var(--fg) 55%, var(--bg));
+	--faint: color-mix(in srgb, var(--fg) 35%, var(--bg));
+	--panel: color-mix(in srgb, var(--fg) 4%, var(--bg));
+	--panel-2: color-mix(in srgb, var(--fg) 8%, var(--bg));
+	--hover: color-mix(in srgb, var(--fg) 7%, var(--bg));
+	--accent-dim: color-mix(in srgb, var(--accent) 40%, var(--bg));
+
+	/* Extra derived tones from prototype 03. */
+	--rail: color-mix(in srgb, var(--bg) 82%, var(--c0) 18%);
+	--border-soft: color-mix(in srgb, var(--c8) 28%, transparent);
+	--muted-2: color-mix(in srgb, var(--fg) 36%, var(--bg) 64%);
+	--accent-soft: color-mix(in srgb, var(--accent) 17%, transparent);
+
+	--radius: 4px;
+	--mono: "CaskaydiaMono Nerd Font", "JetBrainsMono Nerd Font", monospace;
+
+	color-scheme: dark;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body {
+	margin: 0;
+	padding: 0;
+	height: 100%;
+}
+
+body {
+	background: var(--bg);
+	color: var(--fg);
+	font-family: var(--mono);
+	font-size: 13px;
+	line-height: 1.45;
+	-webkit-font-smoothing: antialiased;
+	overflow: hidden;
+}
+
+::selection {
+	background: var(--sel-bg);
+	color: var(--sel-fg);
+}
+
+/* Scrollbars */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+	background: var(--border-strong);
+	border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+button {
+	font-family: inherit;
+	font-size: inherit;
+	color: var(--fg);
+	background: var(--panel-2);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 5px 10px;
+	cursor: pointer;
+}
+button:hover {
+	background: var(--hover);
+	border-color: var(--border-strong);
+}
+button:focus-visible {
+	outline: 1px solid var(--accent);
+	outline-offset: 1px;
+}
+button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+button.primary {
+	background: color-mix(in srgb, var(--accent) 20%, var(--bg));
+	border-color: var(--accent-dim);
+	color: var(--fg);
+}
+button.primary:hover {
+	background: color-mix(in srgb, var(--accent) 30%, var(--bg));
+}
+
+input,
+select {
+	font-family: inherit;
+	font-size: inherit;
+	color: var(--fg);
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	padding: 5px 8px;
+	width: 100%;
+}
+input:focus,
+select:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+a {
+	color: var(--accent);
+}
+
+kbd {
+	font-family: inherit;
+	font-size: 10.5px;
+	background: var(--panel-2);
+	border: 1px solid var(--border);
+	border-bottom-width: 2px;
+	border-radius: 3px;
+	padding: 0 5px;
+	color: var(--fg);
+	min-width: 12px;
+	text-align: center;
+}
