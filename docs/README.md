@@ -6,6 +6,8 @@ Documentation for agents and humans picking up this project without prior contex
 | doc | what it gives you |
 |---|---|
 | this file | 2-minute project overview |
+| [SETUP.md](SETUP.md) | Requirements, account setup, Gmail OAuth, keyboard shortcuts, and local data locations |
+| [OMARCHY.md](OMARCHY.md) | Live theming, Mako notifications, and the background application lifecycle |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **The binding contract** between Rust backend and Svelte frontend: commands, events, wire types, DB schema, module layout, sync/notification/oauth/discovery specs. Conform to it exactly; update it in the same change that alters the API surface. |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build/run/test commands, verification workflow, local state paths, how to test each subsystem |
 | [RELEASING.md](RELEASING.md) | manually promote an immutable local daily build into the Omarchy launcher |
@@ -51,6 +53,5 @@ prototypes/         3 static HTML design mockups (open in browser; 03-hybrid is 
   Live-network tests are `#[ignore]`d; run them when touching discovery/sync.
 - Rust style: edition 2021, no `unwrap()` outside tests/main, `anyhow` internally,
   `AppError` at command boundaries, `tracing` for logs.
-- The human (Harry, harry@pluscosmic.dev) runs the app in his own terminal via
-  `npm run tauri dev` — it auto-rebuilds on Rust changes, so he often sees your edits
-  live. Don't leave the tree broken between commits.
+- `npm run tauri dev` auto-rebuilds on Rust and frontend changes. Keep intermediate
+  changes buildable when another developer may have the dev process running.

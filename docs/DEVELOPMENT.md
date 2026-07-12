@@ -39,20 +39,15 @@ Do not run `npm run tauri dev` at the same time as the daily service when testin
 builds use the same application identifier, and the first process to own the session D-Bus name is
 the one that receives launcher activations and runs sync.
 
-## Machine / environment specifics
+## Platform and environment specifics
 
-- Arch Linux, Hyprland (Wayland), **NVIDIA RTX 4080** → WebKitGTK needs
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1`, which `main.rs` sets automatically. Don't remove.
+- On NVIDIA/Wayland systems, WebKitGTK may need `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+  `main.rs` sets it automatically. Don't remove it.
 - omarchy is installed; mako is the notification daemon; current theme files live at
   `~/.config/omarchy/current/theme/` (symlink swapped by `omarchy-theme-set`).
-- Gmail OAuth client credentials resolve as: runtime env vars
-  `COSMIC_MAIL_GOOGLE_CLIENT_ID` (+ `COSMIC_MAIL_GOOGLE_CLIENT_SECRET`) →
-  `~/.config/cosmic-mail/google-oauth.json` (`{"clientId": "…", "clientSecret": "…"}`) →
-  compile-time baked defaults (`COSMIC_MAIL_BUILD_GOOGLE_CLIENT_ID` /
-  `..._SECRET` set when building a packaged release). For local dev, the JSON file is
-  the way — no per-shell env vars needed. Without any source, Gmail sign-in and token
-  refresh fail with a clear error ("obtaining Gmail access token" warnings in sync
-  mean credentials are missing in that process).
+- Gmail OAuth credential setup and precedence are documented in [SETUP.md](SETUP.md#gmail).
+  Without a credential source, Gmail sign-in and token refresh fail with a clear error;
+  `obtaining Gmail access token` warnings mean credentials are missing in that process.
 - Port 1420 is vite's fixed dev port — a stray vite from a previous session blocks new
   `tauri dev` runs (`pkill -f 'vite dev'`). Also check for orphaned
   `target/debug/cosmic-mail` processes after killing dev sessions.
@@ -90,7 +85,7 @@ Inspect sync progress without the UI:
 - **Discovery**: `cargo test --lib -- --ignored` covers ISPDB (gmx.de), provider
   autoconfig (fastmail.com), and the MX→provider path (pluscosmic.dev/Purelymail).
 - **Gmail e2e**: verified working 2026-07-09 (OAuth → XOAUTH2 → folder LIST → envelope
-  sync → UI). Harry's test account data may exist locally — don't wipe it casually.
+  sync → UI). Do not wipe local account data unless the test explicitly requires it.
 
 ## Logging
 

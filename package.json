@@ -2,6 +2,7 @@
   "name": "tauri-app",
   "version": "0.1.0",
   "description": "",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -12,7 +13,7 @@
     "promote:local": "bash scripts/promote-local.sh",
     "tauri": "tauri"
   },
-  "license": "MIT",
+  "license": "UNLICENSED",
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
