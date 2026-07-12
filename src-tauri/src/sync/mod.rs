@@ -2,10 +2,10 @@
 //!
 //! Each task connects, lists folders, performs an initial sync (newest 200
 //! envelopes per folder), then enters an INBOX IDLE loop that re-syncs on
-//! wakeup or every 25 minutes. Bodies are fetched lazily by commands. Errors
-//! trigger exponential backoff (30s → 5 min). Notifications fire only for new
-//! inbox messages above the folder's `last_seen_uid`, and never during the
-//! initial sync.
+//! wakeup or every 25 minutes. A small inbox working set is prefetched without
+//! changing `\Seen`; other bodies remain lazy. Errors trigger exponential
+//! backoff (30s → 5 min). Notifications fire only for new inbox messages above
+//! the folder's `last_seen_uid`, and never during the initial sync.
 
 pub mod imap;
 
@@ -23,6 +23,9 @@ use crate::state::Db;
 use crate::store::{self, FolderRole, MessageUpsert};
 
 const INITIAL_SYNC_LIMIT: u32 = 200;
+const BODY_PREFETCH_WORKING_SET: u32 = 20;
+const BODY_PREFETCH_LIMIT: u32 = 5;
+const BODY_PREFETCH_MAX_BYTES: u32 = 1024 * 1024;
 const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const BACKOFF_MIN: Duration = Duration::from_secs(30);
@@ -223,10 +226,6 @@ async fn sync_folder_uids(
     // last UID on some servers) and keep only genuinely new ones.
     envelopes.retain(|e| e.uid > last_uid);
 
-    if envelopes.is_empty() {
-        return Ok(());
-    }
-
     let mut new_summaries: Vec<crate::wire::MessageSummary> = Vec::new();
     let mut notify_list: Vec<NewMail> = Vec::new();
     let mut highest_uid = last_uid;
@@ -249,6 +248,7 @@ async fn sync_folder_uids(
                 seen: env.seen,
                 flagged: env.flagged,
                 has_attachments: env.has_attachments,
+                rfc822_size: env.rfc822_size,
             };
             let id = store::upsert_message(&conn, &upsert)?;
             highest_uid = highest_uid.max(env.uid);
@@ -281,26 +281,95 @@ async fn sync_folder_uids(
         }
     }
 
-    // Emit new-messages event.
-    let _ = app.emit(
-        "mail:new-messages",
-        serde_json::json!({
-            "accountId": account.id,
-            "folderId": folder_id,
-            "messages": new_summaries,
-        }),
-    );
-    let _ = app.emit(
-        "mail:messages-updated",
-        MessagesUpdatedPayload { folder_id },
-    );
+    if !envelopes.is_empty() {
+        // Emit and notify before prefetch so body downloads do not delay new-mail delivery.
+        let _ = app.emit(
+            "mail:new-messages",
+            serde_json::json!({
+                "accountId": account.id,
+                "folderId": folder_id,
+                "messages": new_summaries,
+            }),
+        );
+        let _ = app.emit(
+            "mail:messages-updated",
+            MessagesUpdatedPayload { folder_id },
+        );
 
-    // Notify (batching handled inside).
-    if !notify_list.is_empty() {
-        notifications::notify_new_mail(app, &account.email, &notify_list);
+        if !notify_list.is_empty() {
+            notifications::notify_new_mail(app, &account.email, &notify_list);
+        }
+    }
+
+    if role == FolderRole::Inbox {
+        prefetch_message_bodies(db, folder_id, session).await;
     }
 
     Ok(())
+}
+
+async fn prefetch_message_bodies(db: &Db, folder_id: i64, session: &mut imap::ImapSession) {
+    let candidates = {
+        let conn = db.lock().expect("db poisoned");
+        store::body_prefetch_candidates(
+            &conn,
+            folder_id,
+            BODY_PREFETCH_WORKING_SET,
+            BODY_PREFETCH_LIMIT,
+            BODY_PREFETCH_MAX_BYTES,
+        )
+    };
+    let candidates = match candidates {
+        Ok(candidates) => candidates,
+        Err(err) => {
+            tracing::warn!(folder_id, error = %err, "could not select body prefetch candidates");
+            return;
+        }
+    };
+
+    for candidate in candidates {
+        let size = if candidate.rfc822_size == 0 {
+            match imap::fetch_message_size(session, candidate.uid).await {
+                Ok(size) => {
+                    let conn = db.lock().expect("db poisoned");
+                    if let Err(err) = store::set_message_size(&conn, candidate.id, size) {
+                        tracing::warn!(message_id = candidate.id, error = %err, "could not cache message size");
+                    }
+                    size
+                }
+                Err(err) => {
+                    tracing::warn!(message_id = candidate.id, error = %err, "body prefetch size lookup failed");
+                    continue;
+                }
+            }
+        } else {
+            candidate.rfc822_size
+        };
+        if size > BODY_PREFETCH_MAX_BYTES {
+            continue;
+        }
+
+        let body = match imap::fetch_body(session, candidate.uid).await {
+            Ok(body) => body,
+            Err(err) => {
+                tracing::warn!(message_id = candidate.id, error = %err, "body prefetch failed");
+                continue;
+            }
+        };
+        let snippet = body.text.as_deref().map(imap::snippet_from_text);
+        let conn = db.lock().expect("db poisoned");
+        if let Err(err) = store::set_body(
+            &conn,
+            candidate.id,
+            body.text.as_deref(),
+            body.html.as_deref(),
+            &body.to_addrs,
+            &body.cc_addrs,
+            snippet.as_deref(),
+        ) {
+            tracing::warn!(message_id = candidate.id, error = %err, "could not cache prefetched body");
+        }
+    }
 }
 
 /// Enter IDLE on the currently-selected mailbox and wait for a server wakeup or

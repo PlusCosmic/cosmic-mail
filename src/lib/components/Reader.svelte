@@ -2,6 +2,7 @@
 	import DOMPurify from "dompurify";
 	import { mail } from "$lib/stores/mail.svelte";
 	import { fullDate, initials, avatarColor } from "$lib/format";
+	import { messageFrameDocument } from "$lib/message-html";
 
 	// The reader focuses this element when a message is opened (Enter).
 	let {
@@ -12,34 +13,51 @@
 
 	const msg = $derived(mail.selectedMessage);
 	const body = $derived(mail.body);
+	let remoteContentMessageIds = $state<number[]>([]);
+	const remoteContentAllowed = $derived(
+		msg ? remoteContentMessageIds.includes(msg.id) : false,
+	);
 
 	// Base style injected into the iframe so mail with no colors of its own
 	// adopts the omarchy theme. Uses the resolved values, not var() (the iframe
 	// is a separate document and can't see our custom properties).
-	function iframeSrcdoc(rawHtml: string): string {
+	function iframeSrcdoc(rawHtml: string, allowRemoteContent: boolean): string {
 		const clean = DOMPurify.sanitize(rawHtml, {
-			WHOLE_DOCUMENT: true,
-			// Block anything that could phone home or run script.
-			FORBID_TAGS: ["script", "style", "iframe", "object", "embed", "form"],
+			// The iframe CSP controls resource loading; sanitization stays strict after opt-in.
+			FORBID_TAGS: [
+				"script",
+				"style",
+				"iframe",
+				"object",
+				"embed",
+				"form",
+				"base",
+				"link",
+				"meta",
+			],
 			FORBID_ATTR: ["srcset"],
 		});
 		const css = getComputedStyle(document.documentElement);
 		const bg = css.getPropertyValue("--bg").trim() || "#1f1f28";
 		const fg = css.getPropertyValue("--fg").trim() || "#dcd7ba";
 		const accent = css.getPropertyValue("--accent").trim() || "#7e9cd8";
-		const base = `<base target="_blank"><style>
-			html,body{background:${bg};color:${fg};margin:0;padding:12px;
-				font-family:'CaskaydiaMono Nerd Font','JetBrainsMono Nerd Font',ui-sans-serif,system-ui,sans-serif;
-				font-size:14px;line-height:1.5;word-wrap:break-word;}
-			a{color:${accent};}
-			img{max-width:100%;height:auto;}
-			table{max-width:100%;}
-			blockquote{border-left:2px solid ${accent};margin:0 0 0 4px;padding-left:10px;opacity:.85;}
-		</style>`;
-		return base + clean;
+		return messageFrameDocument(
+			clean,
+			{ background: bg, foreground: fg, accent },
+			allowRemoteContent,
+		);
 	}
 
-	const srcdoc = $derived(body?.html ? iframeSrcdoc(body.html) : null);
+	const srcdoc = $derived(
+		body?.html ? iframeSrcdoc(body.html, remoteContentAllowed) : null,
+	);
+
+	function toggleRemoteContent() {
+		if (!msg) return;
+		remoteContentMessageIds = remoteContentAllowed
+			? remoteContentMessageIds.filter((id) => id !== msg.id)
+			: [...remoteContentMessageIds, msg.id];
+	}
 
 	const senderIni = $derived(msg ? initials(msg.fromName, msg.fromAddr) : "");
 	const senderColor = $derived(msg ? avatarColor(msg.fromAddr || msg.fromName) : "var(--muted)");
@@ -103,6 +121,20 @@
 			{#if mail.loadingBody}
 				<div class="empty">Loading…</div>
 			{:else if srcdoc}
+				<div class="remote-content" role="status">
+					<span>
+						{remoteContentAllowed
+							? "Remote images are allowed for this message."
+							: "Remote images are blocked to protect your privacy."}
+					</span>
+					<button
+						type="button"
+						aria-pressed={remoteContentAllowed}
+						onclick={toggleRemoteContent}
+					>
+						{remoteContentAllowed ? "Block remote images" : "Load remote images"}
+					</button>
+				</div>
 				<iframe
 					class="html-body"
 					title="Message body"
@@ -236,6 +268,33 @@
 		width: 100%;
 		border: none;
 		background: var(--bg);
+	}
+
+	.remote-content {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		padding: 7px 14px;
+		border-bottom: 1px solid var(--border);
+		color: var(--muted);
+		background: var(--surface);
+		font-size: 11.5px;
+	}
+
+	.remote-content button {
+		flex-shrink: 0;
+		border: 0;
+		padding: 2px 0;
+		color: var(--accent);
+		background: transparent;
+		font: inherit;
+		font-weight: 700;
+		cursor: pointer;
+	}
+
+	.remote-content button:hover {
+		text-decoration: underline;
 	}
 
 	.wrap {

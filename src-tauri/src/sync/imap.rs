@@ -21,6 +21,8 @@ use tokio_rustls::TlsConnector;
 use crate::accounts::{Account, AccountKind};
 use crate::store::FolderRole;
 
+const BODY_FETCH_QUERY: &str = "(BODY.PEEK[])";
+
 /// An authenticated IMAP session over a TLS stream.
 pub type ImapSession = Session<TlsStream<TcpStream>>;
 
@@ -242,6 +244,7 @@ pub struct EnvelopeSummary {
     pub seen: bool,
     pub flagged: bool,
     pub has_attachments: bool,
+    pub rfc822_size: u32,
 }
 
 /// Fetch envelope summaries for a UID range string (e.g. `"12:*"` or `"1:200"`).
@@ -249,7 +252,7 @@ pub async fn fetch_envelopes(
     session: &mut ImapSession,
     uid_set: &str,
 ) -> Result<Vec<EnvelopeSummary>> {
-    let query = "(UID FLAGS INTERNALDATE ENVELOPE BODYSTRUCTURE)";
+    let query = "(UID FLAGS INTERNALDATE ENVELOPE BODYSTRUCTURE RFC822.SIZE)";
     let mut stream = session
         .uid_fetch(uid_set, query)
         .await
@@ -277,7 +280,7 @@ pub async fn fetch_recent_envelopes(
     let Some(sequence_set) = recent_sequence_set(exists, limit) else {
         return Ok(Vec::new());
     };
-    let query = "(UID FLAGS INTERNALDATE ENVELOPE BODYSTRUCTURE)";
+    let query = "(UID FLAGS INTERNALDATE ENVELOPE BODYSTRUCTURE RFC822.SIZE)";
     let mut stream = session
         .fetch(sequence_set, query)
         .await
@@ -365,6 +368,7 @@ fn envelope_from_fetch(fetch: &Fetch) -> Option<EnvelopeSummary> {
         seen,
         flagged,
         has_attachments,
+        rfc822_size: fetch.size.unwrap_or(0),
     })
 }
 
@@ -445,7 +449,7 @@ pub struct FetchedBody {
 /// Fetch and parse the full body for a single UID.
 pub async fn fetch_body(session: &mut ImapSession, uid: u32) -> Result<FetchedBody> {
     let mut stream = session
-        .uid_fetch(uid.to_string(), "(RFC822)")
+        .uid_fetch(uid.to_string(), BODY_FETCH_QUERY)
         .await
         .context("issuing UID FETCH for body")?;
 
@@ -474,6 +478,22 @@ pub async fn fetch_body(session: &mut ImapSession, uid: u32) -> Result<FetchedBo
         to_addrs,
         cc_addrs,
     })
+}
+
+/// Read the server-reported full-message size without fetching body content.
+pub async fn fetch_message_size(session: &mut ImapSession, uid: u32) -> Result<u32> {
+    let mut stream = session
+        .uid_fetch(uid.to_string(), "(RFC822.SIZE)")
+        .await
+        .context("issuing UID FETCH for message size")?;
+
+    while let Some(item) = stream.next().await {
+        let fetch = item.context("reading message size fetch item")?;
+        if let Some(size) = fetch.size {
+            return Ok(size);
+        }
+    }
+    bail!("server returned no size for message")
 }
 
 fn collect_addrs(addr: Option<&mail_parser::Address<'_>>) -> Vec<String> {
@@ -519,7 +539,7 @@ pub fn snippet_from_text(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::recent_sequence_set;
+    use super::{recent_sequence_set, BODY_FETCH_QUERY};
 
     #[test]
     fn recent_sequence_range_is_bounded_to_existing_messages() {
@@ -527,5 +547,11 @@ mod tests {
         assert_eq!(recent_sequence_set(42, 200).as_deref(), Some("1:*"));
         assert_eq!(recent_sequence_set(0, 200), None);
         assert_eq!(recent_sequence_set(42, 0), None);
+    }
+
+    #[test]
+    fn body_fetch_query_never_sets_seen() {
+        assert_eq!(BODY_FETCH_QUERY, "(BODY.PEEK[])");
+        assert!(!BODY_FETCH_QUERY.contains("RFC822"));
     }
 }

@@ -86,6 +86,10 @@ Inspect sync progress without the UI:
 - **Compose/send**: automated tests validate construction only and never send external mail. For a
   live check, send through one Gmail and one password account, verify receipt and provider-side Sent
   behavior, then test `c`, `r`, Reply all, Escape, and Ctrl+Enter from the compose dialog.
+- **Body prefetch/privacy**: after an inbox sync, recent/unread messages up to 1 MiB should open
+  immediately without changing unread state before selection. Open an HTML message with a controlled
+  remote image and verify no request occurs until `Load remote images` is pressed; selecting another
+  message must restore the default block. `npm test` covers the generated iframe resource policy.
 - **Discovery**: `cargo test --lib -- --ignored` covers ISPDB (gmx.de), provider
   autoconfig (fastmail.com), and the MX→provider path (pluscosmic.dev/Purelymail).
 - **Gmail e2e**: verified working 2026-07-09 (OAuth → XOAUTH2 → folder LIST → envelope

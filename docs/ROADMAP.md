@@ -51,6 +51,11 @@ Last updated: 2026-07-12.
   PLAIN/LOGIN authentication, and Gmail XOAUTH2 through the existing token refresh path. Recipient,
   Bcc, threading-header safety, and reply metadata have unit coverage. Live delivery was verified
   through both Gmail XOAUTH2 and password-authenticated IMAP/SMTP accounts.
+- **Safe message-body prefetch (2026-07-12)**: each inbox sync opportunistically caches a bounded
+  recent/unread working set with a 5-message cycle cap and 1 MiB per-message limit. All foreground
+  and background body fetches use `BODY.PEEK[]`, empty bodies have an explicit cache marker, and
+  parsed recipients/snippets are retained. HTML reader frames deny network resources by default;
+  remote images require session-only per-message consent without relaxing sanitization.
 - Shakedown fixes landed: WebKit DMA-BUF/Wayland crash, rustls dual-backend panic,
   XOAUTH2 double-encoding, theme-watcher feedback loop (see GOTCHAS.md).
 
@@ -61,13 +66,13 @@ Last updated: 2026-07-12.
 
 ## Next up (rough priority)
 
-1. **Safe message-body prefetch** — opportunistically cache bodies for a bounded set of recent or
-   unread messages so keyboard skimming is immediate. Fetch with IMAP `BODY.PEEK[...]` so caching
-   never sets `\Seen`; keep the explicit `mark_read` path separate. Prefetch must not render HTML
-   or load remote resources, and the reader needs a remote-image policy so tracking pixels/read
-   receipts remain separately controlled when a cached message is opened.
-2. **Command palette (Ctrl+K)** — walker/telescope-style fuzzy palette from prototype 02
+1. **Command palette (Ctrl+K)** — walker/telescope-style fuzzy palette from prototype 02
    (the remaining piece of the shell convergence).
+2. **Settings window** — add a cog to the bottom action group in the account rail, alongside
+   Compose and Add account, opening a keyboard-accessible settings surface. Start with a persisted
+   global `Always download remote images` preference: off by default; when enabled, HTML messages
+   may load HTTP(S) images without per-message consent, while DOMPurify sanitization, iframe
+   sandboxing, and all non-image network restrictions remain unchanged.
 3. **Search** — local SQLite FTS5 over envelopes/bodies first; server-side IMAP SEARCH later
    (header input currently only filters loaded messages client-side).
 4. **Attachments** — BODYSTRUCTURE part listing, download/save, inline images policy.
@@ -85,8 +90,6 @@ Last updated: 2026-07-12.
   manual sync, fetch `(UID FLAGS)` for the cached 200 messages, update changed rows, and emit
   `mail:messages-updated`; consider CONDSTORE/QRESYNC later.
 - Attachment detection is a BODYSTRUCTURE heuristic.
-- Reader iframe: no remote-content blocking toggle yet (sanitized, scripts stripped, but
-  remote images load).
 - Compose is plain text only. It does not save drafts, attach files, preserve a source message's
   full References chain, honor Reply-To, or locally append to Sent; provider SMTP behavior applies.
 - No account-removal control in the UI (backend command + store method exist).

@@ -202,7 +202,7 @@ pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<Mess
             .lock()
             .map_err(|_| AppError::msg("db lock poisoned"))?;
         if let Some(cached) = store::get_body(&conn, message_id).map_err(AppError::from)? {
-            if cached.text.is_some() || cached.html.is_some() {
+            if cached.cached {
                 return Ok(MessageBody {
                     id: message_id,
                     html: cached.html,
@@ -247,6 +247,12 @@ pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<Mess
             message_id,
             body.text.as_deref(),
             body.html.as_deref(),
+            &body.to_addrs,
+            &body.cc_addrs,
+            body.text
+                .as_deref()
+                .map(sync_imap::snippet_from_text)
+                .as_deref(),
         )
         .map_err(AppError::from)?;
     }

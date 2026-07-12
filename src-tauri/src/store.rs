@@ -91,14 +91,48 @@ CREATE TABLE IF NOT EXISTS messages (
   seen INTEGER NOT NULL DEFAULT 0,
   flagged INTEGER NOT NULL DEFAULT 0,
   has_attachments INTEGER NOT NULL DEFAULT 0,
+  rfc822_size INTEGER NOT NULL DEFAULT 0,
   body_text TEXT, body_html TEXT,
+  body_cached INTEGER NOT NULL DEFAULT 0,
   UNIQUE(folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder_date ON messages(folder_id, date DESC);
 "#,
     )
     .context("creating schema")?;
+
+    if !message_column_exists(conn, "rfc822_size")? {
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN rfc822_size INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("adding message size column")?;
+    }
+    if !message_column_exists(conn, "body_cached")? {
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN body_cached INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("adding body cache marker")?;
+        conn.execute(
+            "UPDATE messages SET body_cached = 1 \
+             WHERE body_text IS NOT NULL OR body_html IS NOT NULL",
+            [],
+        )
+        .context("marking existing cached bodies")?;
+    }
     Ok(())
+}
+
+fn message_column_exists(conn: &Connection, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // --- Row projections ---------------------------------------------------------
@@ -150,6 +184,7 @@ pub struct MessageUpsert {
     pub seen: bool,
     pub flagged: bool,
     pub has_attachments: bool,
+    pub rfc822_size: u32,
 }
 
 /// Trusted metadata used to thread a reply without accepting raw headers from the UI.
@@ -157,6 +192,14 @@ pub struct MessageUpsert {
 pub struct ReplyMetadata {
     pub account_id: String,
     pub message_id: Option<String>,
+}
+
+/// A body prefetch target from the bounded inbox working set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BodyPrefetchCandidate {
+    pub id: i64,
+    pub uid: u32,
+    pub rfc822_size: u32,
 }
 
 // --- Folder queries ----------------------------------------------------------
@@ -303,14 +346,14 @@ pub fn upsert_message(conn: &Connection, m: &MessageUpsert) -> Result<i64> {
     conn.execute(
         "INSERT INTO messages \
            (folder_id, uid, message_id, subject, from_name, from_addr, to_addrs, cc_addrs, \
-            date, snippet, seen, flagged, has_attachments) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) \
-         ON CONFLICT(folder_id, uid) DO UPDATE SET \
+             date, snippet, seen, flagged, has_attachments, rfc822_size) \
+          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14) \
+          ON CONFLICT(folder_id, uid) DO UPDATE SET \
            message_id=excluded.message_id, subject=excluded.subject, \
            from_name=excluded.from_name, from_addr=excluded.from_addr, \
            to_addrs=excluded.to_addrs, cc_addrs=excluded.cc_addrs, date=excluded.date, \
            snippet=excluded.snippet, seen=excluded.seen, flagged=excluded.flagged, \
-           has_attachments=excluded.has_attachments",
+            has_attachments=excluded.has_attachments, rfc822_size=excluded.rfc822_size",
         params![
             m.folder_id,
             m.uid,
@@ -325,6 +368,7 @@ pub fn upsert_message(conn: &Connection, m: &MessageUpsert) -> Result<i64> {
             m.seen as i64,
             m.flagged as i64,
             m.has_attachments as i64,
+            m.rfc822_size,
         ],
     )
     .context("upserting message")?;
@@ -468,12 +512,14 @@ pub struct CachedBody {
     pub html: Option<String>,
     pub to_addrs: Vec<String>,
     pub cc_addrs: Vec<String>,
+    pub cached: bool,
 }
 
 /// Read cached body columns for a message (body parts may be `None`).
 pub fn get_body(conn: &Connection, message_id: i64) -> Result<Option<CachedBody>> {
     conn.query_row(
-        "SELECT body_text, body_html, to_addrs, cc_addrs FROM messages WHERE id = ?1",
+        "SELECT body_text, body_html, to_addrs, cc_addrs, body_cached \
+         FROM messages WHERE id = ?1",
         params![message_id],
         |r| {
             let to_json: String = r.get(2)?;
@@ -483,6 +529,7 @@ pub fn get_body(conn: &Connection, message_id: i64) -> Result<Option<CachedBody>
                 html: r.get(1)?,
                 to_addrs: serde_json::from_str(&to_json).unwrap_or_default(),
                 cc_addrs: serde_json::from_str(&cc_json).unwrap_or_default(),
+                cached: r.get::<_, i64>(4)? != 0,
             })
         },
     )
@@ -496,12 +543,64 @@ pub fn set_body(
     message_id: i64,
     text: Option<&str>,
     html: Option<&str>,
+    to_addrs: &[String],
+    cc_addrs: &[String],
+    snippet: Option<&str>,
 ) -> Result<()> {
+    let to_json = serde_json::to_string(to_addrs).unwrap_or_else(|_| "[]".into());
+    let cc_json = serde_json::to_string(cc_addrs).unwrap_or_else(|_| "[]".into());
     conn.execute(
-        "UPDATE messages SET body_text = ?1, body_html = ?2 WHERE id = ?3",
-        params![text, html, message_id],
+        "UPDATE messages SET body_text = ?1, body_html = ?2, to_addrs = ?3, cc_addrs = ?4, \
+         snippet = COALESCE(?5, snippet), body_cached = 1 WHERE id = ?6",
+        params![text, html, to_json, cc_json, snippet, message_id],
     )
     .context("storing body")?;
+    Ok(())
+}
+
+/// Select a bounded batch of uncached bodies from recent and unread inbox messages.
+pub fn body_prefetch_candidates(
+    conn: &Connection,
+    folder_id: i64,
+    working_set_limit: u32,
+    fetch_limit: u32,
+    maximum_size: u32,
+) -> Result<Vec<BodyPrefetchCandidate>> {
+    let mut stmt = conn.prepare(
+        "WITH unread AS ( \
+           SELECT id FROM messages WHERE folder_id = ?1 AND seen = 0 \
+           ORDER BY date DESC LIMIT ?2 \
+         ), recent AS ( \
+           SELECT id FROM messages WHERE folder_id = ?1 ORDER BY date DESC LIMIT ?2 \
+         ), working AS (SELECT id FROM unread UNION SELECT id FROM recent) \
+         SELECT m.id, m.uid, m.rfc822_size FROM messages m \
+         JOIN working w ON w.id = m.id \
+         WHERE m.body_cached = 0 AND (m.rfc822_size = 0 OR m.rfc822_size <= ?3) \
+         ORDER BY m.seen ASC, m.date DESC LIMIT ?4",
+    )?;
+    let rows = stmt
+        .query_map(
+            params![folder_id, working_set_limit, maximum_size, fetch_limit],
+            |r| {
+                Ok(BodyPrefetchCandidate {
+                    id: r.get(0)?,
+                    uid: r.get::<_, i64>(1)? as u32,
+                    rfc822_size: r.get::<_, i64>(2)? as u32,
+                })
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("collecting body prefetch candidates")?;
+    Ok(rows)
+}
+
+/// Store a size discovered separately for a pre-migration envelope.
+pub fn set_message_size(conn: &Connection, message_id: i64, size: u32) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET rfc822_size = ?1 WHERE id = ?2",
+        params![size, message_id],
+    )
+    .context("storing message size")?;
     Ok(())
 }
 
@@ -574,6 +673,7 @@ mod tests {
                 seen: true,
                 flagged: false,
                 has_attachments: false,
+                rfc822_size: 100,
             },
         )
         .expect("cache one message");
@@ -618,6 +718,7 @@ mod tests {
                 seen: true,
                 flagged: false,
                 has_attachments: false,
+                rfc822_size: 100,
             },
         )
         .expect("insert message");
@@ -629,5 +730,56 @@ mod tests {
                 message_id: Some("<parent@example.com>".into()),
             })
         );
+    }
+
+    #[test]
+    fn body_prefetch_is_bounded_prioritized_and_tracks_empty_bodies() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_schema(&conn).expect("initialize schema");
+        let (folder_id, _) =
+            upsert_folder(&conn, "account", "INBOX", FolderRole::Inbox, 1).expect("insert folder");
+
+        let mut ids = Vec::new();
+        for uid in 1..=6 {
+            let id = upsert_message(
+                &conn,
+                &MessageUpsert {
+                    folder_id,
+                    uid,
+                    message_id: None,
+                    subject: format!("message {uid}"),
+                    from_name: String::new(),
+                    from_addr: "sender@example.com".into(),
+                    to_addrs: Vec::new(),
+                    cc_addrs: Vec::new(),
+                    date: format!("2026-07-12T00:00:0{uid}Z"),
+                    snippet: String::new(),
+                    seen: uid != 2,
+                    flagged: false,
+                    has_attachments: false,
+                    rfc822_size: if uid == 6 { 2_000_000 } else { 100 },
+                },
+            )
+            .expect("insert message");
+            ids.push(id);
+        }
+
+        let candidates =
+            body_prefetch_candidates(&conn, folder_id, 5, 3, 1_048_576).expect("select candidates");
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates[0].uid, 2, "unread messages come first");
+        assert!(candidates.iter().all(|candidate| candidate.uid != 6));
+
+        let empty_id = ids[1];
+        set_body(&conn, empty_id, None, None, &[], &[], None).expect("cache empty body");
+        let cached = get_body(&conn, empty_id)
+            .expect("read body")
+            .expect("message exists");
+        assert!(cached.cached);
+        assert!(cached.text.is_none());
+        assert!(cached.html.is_none());
+        let candidates = body_prefetch_candidates(&conn, folder_id, 5, 5, 1_048_576)
+            .expect("select candidates again");
+        assert!(candidates.iter().all(|candidate| candidate.id != empty_id));
     }
 }

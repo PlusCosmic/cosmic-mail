@@ -180,7 +180,9 @@ CREATE TABLE IF NOT EXISTS messages (
   seen INTEGER NOT NULL DEFAULT 0,
   flagged INTEGER NOT NULL DEFAULT 0,
   has_attachments INTEGER NOT NULL DEFAULT 0,
+  rfc822_size INTEGER NOT NULL DEFAULT 0,       -- server-reported bytes; 0 when not known yet
   body_text TEXT, body_html TEXT,             -- NULL until body fetched
+  body_cached INTEGER NOT NULL DEFAULT 0,      -- distinguishes an unfetched body from an empty one
   UNIQUE(folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder_date ON messages(folder_id, date DESC);
@@ -337,11 +339,30 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   backoff (30s → 5 min cap).
 - Initial sync: use message sequence numbers from `STATUS MESSAGES` to `FETCH` exactly the
   newest 200 existing messages per folder (or all when fewer than 200), including `UID` in the
-  response. Do not `UID FETCH 1:*` and trim afterward. Bodies remain lazy.
+  response. Do not `UID FETCH 1:*` and trim afterward.
 - Incremental sync: `UID FETCH <cached-max-uid+1>:*` and ignore any duplicate boundary item.
   Folder `totalCount`/`unreadCount` stay server-authoritative even when only 200 envelopes are
   cached; successful local flag changes adjust the stored server count until the next STATUS.
+- After each inbox envelope sync, opportunistically cache at most 5 bodies from the newest 20
+  unread and newest 20 overall cached envelopes. Prefetch is sequential and best-effort so an
+  individual body failure does not fail the sync cycle. Skip messages larger than 1 MiB, using
+  a separate `RFC822.SIZE` lookup when a pre-migration envelope has no stored size. Fetch full
+  messages with `BODY.PEEK[]`, never `BODY[]`/`RFC822`, so caching cannot set `\Seen`; only the
+  explicit `mark_read` command changes that flag. Parsing and caching do not render HTML or load
+  network resources. Foreground cache misses use the same non-marking fetch.
 - rustls: `tokio_rustls` with `rustls_native_certs` root store.
+
+## Reader remote-content policy
+
+- HTML message bodies are sanitized with DOMPurify and rendered in a sandboxed `srcdoc` iframe.
+  Sender scripts, style elements, frames, objects, embeds, forms, and `srcset` remain forbidden.
+- Every generated iframe document places a Content Security Policy before sender content. The
+  default policy denies all network resources while allowing trusted inline reader styles and
+  embedded `data:`/`cid:` images. This also blocks tracking pixels referenced by inline CSS.
+- A visible reader action may allow HTTP(S) image resources for the selected message.
+  Consent is keyed by message rowid, kept only for the current frontend session, and never carries
+  over to another message or persists across application restarts. Sanitization and sandboxing are
+  unchanged when remote content is allowed.
 
 ## Conventions
 

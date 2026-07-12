@@ -213,6 +213,14 @@
 		);
 	}
 
+	function isInteractiveTarget(t: EventTarget | null): boolean {
+		return (
+			t instanceof HTMLElement &&
+			(t.isContentEditable ||
+				t.closest("button, a, input, textarea, select, [role='button'], [role='separator']") !== null)
+		);
+	}
+
 	function defaultComposeAccountId(): string | null {
 		return (
 			mail.selectedAccountId ??
@@ -259,6 +267,8 @@
 		if (showAddAccount || composeSeed) return;
 		// Let modifier combos through to the browser.
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
+		// Native controls retain their normal Enter/Space/arrow behavior.
+		if (isInteractiveTarget(e.target)) return;
 
 		// '/' focuses search input from anywhere (even if target is body).
 		if (e.key === "/" && !isEditableTarget(e.target)) {
