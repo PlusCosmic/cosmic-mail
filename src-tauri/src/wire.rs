@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::{FolderRow, MessageRow};
+use crate::store::{AttachmentRow, FolderRow, MessageRow};
 
 /// A mail folder projection.
 #[derive(Debug, Clone, Serialize)]
@@ -70,7 +70,30 @@ impl MessageSummary {
     }
 }
 
-/// A message body plus recipient lists.
+/// Attachment metadata shown in the reader (no bytes; download refetches).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentInfo {
+    pub id: i64,
+    pub filename: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub is_inline: bool,
+}
+
+impl From<AttachmentRow> for AttachmentInfo {
+    fn from(r: AttachmentRow) -> Self {
+        AttachmentInfo {
+            id: r.id,
+            filename: r.filename,
+            mime_type: r.mime_type,
+            size_bytes: r.size_bytes,
+            is_inline: r.is_inline,
+        }
+    }
+}
+
+/// A message body plus recipient lists and attachment metadata.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageBody {
@@ -79,6 +102,7 @@ pub struct MessageBody {
     pub text: Option<String>,
     pub to_addrs: Vec<String>,
     pub cc_addrs: Vec<String>,
+    pub attachments: Vec<AttachmentInfo>,
 }
 
 /// Input for adding a plain IMAP account.

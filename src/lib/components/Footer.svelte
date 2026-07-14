@@ -29,11 +29,16 @@
 	<span class="fh"><kbd>u</kbd><span class="lbl">toggle unread</span></span>
 	<span class="fh"><kbd>c</kbd><span class="lbl">compose</span></span>
 	<span class="fh"><kbd>r</kbd><span class="lbl">reply</span></span>
+	<span class="fh"><kbd>a</kbd><span class="lbl">archive</span></span>
+	<span class="fh"><kbd>d</kbd><span class="lbl">delete</span></span>
+	<span class="fh"><kbd>f</kbd><span class="lbl">flag</span></span>
+	<span class="fh"><kbd>m</kbd><span class="lbl">move</span></span>
 	<span class="fh"><kbd>/</kbd><span class="lbl">filter</span></span>
 	<span class="fh"><kbd>g</kbd><kbd>g</kbd><span class="lbl">top</span></span>
 	<span class="fh"><kbd>G</kbd><span class="lbl">bottom</span></span>
 	<span class="fh"><kbd>1</kbd><span class="lbl">unified</span></span>
 	<span class="fh"><kbd>2</kbd>…<span class="lbl">accounts</span></span>
+	<span class="fh"><kbd>⌃</kbd><kbd>k</kbd><span class="lbl">palette</span></span>
 
 	<span class="fspacer"></span>
 

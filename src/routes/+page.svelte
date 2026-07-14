@@ -10,7 +10,10 @@
 	import Toasts from "$lib/components/Toasts.svelte";
 	import AddAccountModal from "$lib/components/AddAccountModal.svelte";
 	import ComposeModal from "$lib/components/ComposeModal.svelte";
+	import CommandPalette from "$lib/components/CommandPalette.svelte";
+	import SettingsModal from "$lib/components/SettingsModal.svelte";
 	import { replySeed, type ComposeSeed } from "$lib/compose";
+	import type { PaletteCommand } from "$lib/palette";
 	import {
 		DEFAULT_LIST_PANE_RATIO,
 		PANE_DIVIDER_WIDTH,
@@ -22,7 +25,11 @@
 	} from "$lib/pane-layout";
 
 	let showAddAccount = $state(false);
+	let showSettings = $state(false);
 	let composeSeed = $state<ComposeSeed | null>(null);
+	let showPalette = $state(false);
+	let paletteCommands = $state<PaletteCommand[]>([]);
+	let palettePlaceholder = $state("Run a command…");
 	let listEl = $state<HTMLElement>();
 	let readerEl = $state<HTMLElement>();
 	let searchEl = $state<HTMLInputElement>();
@@ -259,12 +266,198 @@
 		queueMicrotask(() => (wasReply ? readerEl : listEl)?.focus());
 	}
 
+	// Reuse the command palette as a folder picker for moving the selected message.
+	// Commands are the message's account folders minus its current folder.
+	function openMovePicker() {
+		const message = mail.selectedMessage;
+		if (!message) return;
+		const folders = mail.foldersByAccount[message.accountId] ?? [];
+		const cmds: PaletteCommand[] = folders
+			.filter((folder) => folder.id !== message.folderId)
+			.map((folder) => ({
+				id: `move:${folder.id}`,
+				title: `Move to — ${folder.name}`,
+				keywords: ["move", folder.role, folder.name],
+				run: () => void mail.moveMessage(message, folder.id),
+			}));
+		if (cmds.length === 0) return;
+		paletteCommands = cmds;
+		palettePlaceholder = "Move to folder…";
+		showPalette = true;
+	}
+
+	// Build the currently-applicable command set for the palette. Evaluated when the
+	// palette opens so it reflects the live selection, folders, and message state.
+	function buildPaletteCommands(): PaletteCommand[] {
+		const cmds: PaletteCommand[] = [];
+
+		cmds.push({
+			id: "unified",
+			title: "Unified inbox",
+			keywords: ["all", "inbox"],
+			run: () => void mail.selectUnified(),
+		});
+
+		for (const acc of mail.accounts) {
+			cmds.push({
+				id: `account:${acc.id}`,
+				title: `Open inbox — ${acc.email}`,
+				keywords: ["account", "inbox", acc.displayName],
+				run: () => void mail.selectAccount(acc.id),
+			});
+		}
+
+		// Folders of the currently-selected account (per-account mode only).
+		if (!mail.unified && mail.selectedAccountId) {
+			const folders = mail.foldersByAccount[mail.selectedAccountId] ?? [];
+			for (const folder of folders) {
+				cmds.push({
+					id: `folder:${folder.id}`,
+					title: `Go to folder — ${folder.name}`,
+					keywords: ["folder", folder.role],
+					run: () => void mail.selectFolder(folder),
+				});
+			}
+		}
+
+		cmds.push({
+			id: "compose",
+			title: "Compose",
+			hint: "c",
+			keywords: ["new", "write", "mail"],
+			run: () => openCompose(),
+		});
+
+		// Reply / reply all require a selected message whose body is loaded — the
+		// same precondition openReply enforces.
+		const selected = mail.selectedMessage;
+		if (selected && mail.body?.id === selected.id) {
+			cmds.push({
+				id: "reply",
+				title: "Reply",
+				hint: "r",
+				keywords: ["respond"],
+				run: () => openReply(false),
+			});
+			cmds.push({
+				id: "reply-all",
+				title: "Reply all",
+				keywords: ["respond", "everyone"],
+				run: () => openReply(true),
+			});
+		}
+
+		if (selected) {
+			cmds.push({
+				id: "toggle-read",
+				title: "Toggle read",
+				hint: "u",
+				keywords: ["unread", "seen", "mark"],
+				run: () => void mail.toggleRead(selected),
+			});
+			cmds.push({
+				id: "archive-message",
+				title: "Archive message",
+				hint: "a",
+				keywords: ["archive"],
+				run: () => void mail.archiveMessage(selected),
+			});
+			cmds.push({
+				id: "delete-message",
+				title: "Delete message",
+				hint: "d",
+				keywords: ["trash", "remove", "delete"],
+				run: () => void mail.deleteMessage(selected),
+			});
+			cmds.push({
+				id: "toggle-flag",
+				title: selected.flagged ? "Remove flag" : "Flag message",
+				hint: "f",
+				keywords: ["flag", "star", "important"],
+				run: () => void mail.toggleFlagged(selected),
+			});
+			cmds.push({
+				id: "move-message",
+				title: "Move message…",
+				hint: "m",
+				keywords: ["move", "folder"],
+				run: () => openMovePicker(),
+			});
+		}
+
+		if (!mail.unified && mail.selectedFolderId !== null) {
+			cmds.push({
+				id: "sync-folder",
+				title: "Sync current folder",
+				keywords: ["refresh", "fetch"],
+				run: () => void mail.syncSelectedFolder(),
+			});
+		}
+
+		for (const acc of mail.accounts) {
+			cmds.push({
+				id: `sync-account:${acc.id}`,
+				title: `Sync account — ${acc.email}`,
+				keywords: ["refresh", "fetch"],
+				run: () => void mail.syncAccount(acc.id),
+			});
+		}
+
+		cmds.push({
+			id: "add-account",
+			title: "Add account",
+			keywords: ["new", "imap", "gmail"],
+			run: () => (showAddAccount = true),
+		});
+
+		cmds.push({
+			id: "open-settings",
+			title: "Open settings",
+			keywords: ["preferences", "config", "options", "remote images"],
+			run: () => (showSettings = true),
+		});
+
+		cmds.push({
+			id: "focus-search",
+			title: "Search all mail",
+			hint: "/",
+			keywords: ["filter", "find", "search", "query"],
+			run: () => searchEl?.focus(),
+		});
+
+		return cmds;
+	}
+
+	function openPalette() {
+		paletteCommands = buildPaletteCommands();
+		palettePlaceholder = "Run a command…";
+		showPalette = true;
+	}
+
+	function closePalette() {
+		showPalette = false;
+		listEl?.focus();
+	}
+
+	function closeSettings() {
+		showSettings = false;
+		queueMicrotask(() => listEl?.focus());
+	}
+
 	// Currently selected index for footer display.
 	const selectedIndex = $derived(currentIndex());
 
 	function onKeydown(e: KeyboardEvent) {
-		// Ignore when a modal is open.
-		if (showAddAccount || composeSeed) return;
+		// Ctrl/Cmd+K opens the palette from anywhere (including the search input),
+		// but never over another modal. Handled before the modifier early-return.
+		if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+			if (showAddAccount || showSettings || composeSeed) return;
+			e.preventDefault();
+			if (!showPalette) openPalette();
+			return;
+		}
+		// Ignore when a modal is open — the palette handles its own keys.
+		if (showAddAccount || showSettings || composeSeed || showPalette) return;
 		// Let modifier combos through to the browser.
 		if (e.metaKey || e.ctrlKey || e.altKey) return;
 		// Native controls retain their normal Enter/Space/arrow behavior.
@@ -325,6 +518,22 @@
 				e.preventDefault();
 				openReply();
 				break;
+			case "a":
+				e.preventDefault();
+				if (mail.selectedMessage) void mail.archiveMessage(mail.selectedMessage);
+				break;
+			case "d":
+				e.preventDefault();
+				if (mail.selectedMessage) void mail.deleteMessage(mail.selectedMessage);
+				break;
+			case "f":
+				e.preventDefault();
+				if (mail.selectedMessage) void mail.toggleFlagged(mail.selectedMessage);
+				break;
+			case "m":
+				e.preventDefault();
+				openMovePicker();
+				break;
 			case "1":
 				e.preventDefault();
 				void mail.selectUnified();
@@ -359,7 +568,11 @@
 		</div>
 	{:else}
 		<div class="rail-col">
-			<Rail onAddAccount={() => (showAddAccount = true)} onCompose={openCompose} />
+			<Rail
+				onAddAccount={() => (showAddAccount = true)}
+				onCompose={openCompose}
+				onOpenSettings={() => (showSettings = true)}
+			/>
 		</div>
 
 		<div class="main">
@@ -394,7 +607,12 @@
 					></div>
 
 					<div class="reader-col">
-						<Reader bind:paneEl={readerEl} onReply={() => openReply()} onReplyAll={() => openReply(true)} />
+						<Reader
+							bind:paneEl={readerEl}
+							onReply={() => openReply()}
+							onReplyAll={() => openReply(true)}
+							onMove={openMovePicker}
+						/>
 					</div>
 				</div>
 			</div>
@@ -410,8 +628,16 @@
 	<AddAccountModal onClose={() => (showAddAccount = false)} />
 {/if}
 
+{#if showSettings}
+	<SettingsModal onClose={closeSettings} />
+{/if}
+
 {#if composeSeed}
 	<ComposeModal seed={composeSeed} onClose={closeCompose} />
+{/if}
+
+{#if showPalette}
+	<CommandPalette commands={paletteCommands} placeholder={palettePlaceholder} onClose={closePalette} />
 {/if}
 
 <style>

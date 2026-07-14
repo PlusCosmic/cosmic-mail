@@ -368,6 +368,10 @@ async fn prefetch_message_bodies(db: &Db, folder_id: i64, session: &mut imap::Im
             snippet.as_deref(),
         ) {
             tracing::warn!(message_id = candidate.id, error = %err, "could not cache prefetched body");
+            continue;
+        }
+        if let Err(err) = store::replace_attachments(&conn, candidate.id, &body.attachments) {
+            tracing::warn!(message_id = candidate.id, error = %err, "could not cache prefetched attachments");
         }
     }
 }

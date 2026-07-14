@@ -18,6 +18,7 @@ import type {
 	NewMessagesEvent,
 	OmarchyTheme,
 	SendMessageInput,
+	Settings,
 	SyncStateEvent,
 } from "./types";
 
@@ -62,12 +63,44 @@ export function listUnifiedMessages(
 	return invoke("list_unified_messages", { offset, limit });
 }
 
+export function searchMessages(
+	query: string,
+	accountId: string | null,
+	offset: number,
+	limit: number,
+): Promise<MessageSummary[]> {
+	return invoke("search_messages", { query, accountId, offset, limit });
+}
+
 export function getMessageBody(messageId: number): Promise<MessageBody> {
 	return invoke("get_message_body", { messageId });
 }
 
+export function saveAttachment(attachmentId: number): Promise<string> {
+	return invoke("save_attachment", { attachmentId });
+}
+
 export function markRead(messageId: number, seen: boolean): Promise<void> {
 	return invoke("mark_read", { messageId, seen });
+}
+
+export function markFlagged(messageId: number, flagged: boolean): Promise<void> {
+	return invoke("mark_flagged", { messageId, flagged });
+}
+
+export function moveMessage(
+	messageId: number,
+	targetFolderId: number,
+): Promise<void> {
+	return invoke("move_message", { messageId, targetFolderId });
+}
+
+export function archiveMessage(messageId: number): Promise<void> {
+	return invoke("archive_message", { messageId });
+}
+
+export function deleteMessage(messageId: number): Promise<void> {
+	return invoke("delete_message", { messageId });
 }
 
 export function sendMessage(input: SendMessageInput): Promise<void> {
@@ -90,6 +123,14 @@ export function discoverAccountConfig(
 	email: string,
 ): Promise<DiscoveredConfig> {
 	return invoke("discover_account_config", { email });
+}
+
+export function getSettings(): Promise<Settings> {
+	return invoke("get_settings");
+}
+
+export function updateSettings(settings: Settings): Promise<Settings> {
+	return invoke("update_settings", { settings });
 }
 
 // ---- Events ----

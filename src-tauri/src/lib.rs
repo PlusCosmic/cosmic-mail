@@ -1,6 +1,7 @@
 //! Cosmic Mail backend core: Tauri wiring, state setup, and background tasks.
 
 mod accounts;
+mod attachments;
 mod auth;
 mod autoconfig;
 mod commands;
@@ -9,6 +10,7 @@ mod error;
 mod notifications;
 mod omarchy;
 mod send;
+mod settings;
 mod state;
 mod store;
 mod sync;
@@ -103,13 +105,21 @@ pub fn run() {
             commands::list_folders,
             commands::list_messages,
             commands::list_unified_messages,
+            commands::search_messages,
             commands::get_message_body,
+            commands::save_attachment,
             commands::mark_read,
+            commands::mark_flagged,
+            commands::move_message,
+            commands::archive_message,
+            commands::delete_message,
             commands::send_message,
             commands::sync_folder,
             commands::sync_account,
             commands::test_notification,
             commands::discover_account_config,
+            commands::get_settings,
+            commands::update_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

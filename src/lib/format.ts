@@ -78,6 +78,21 @@ export function relativeDate(iso: string): string {
 	);
 }
 
+/** Human-readable byte size, e.g. 1536 → "1.5 KB", 0 → "0 B". */
+export function formatBytes(bytes: number): string {
+	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+	const units = ["B", "KB", "MB", "GB", "TB"];
+	const exp = Math.min(
+		Math.floor(Math.log(bytes) / Math.log(1024)),
+		units.length - 1,
+	);
+	const value = bytes / 1024 ** exp;
+	// Whole bytes and round values read better without a trailing ".0".
+	const rounded = exp === 0 ? value : Math.round(value * 10) / 10;
+	const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+	return `${text} ${units[exp]}`;
+}
+
 /** Full timestamp for the reader header. */
 export function fullDate(iso: string): string {
 	const d = new Date(iso);

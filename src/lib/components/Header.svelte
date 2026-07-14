@@ -28,7 +28,17 @@
 	});
 
 	function onSearchKeydown(e: KeyboardEvent) {
-		if (e.key === "Escape") {
+		if (e.key === "Enter") {
+			e.preventDefault();
+			// Run a backend full-cache search over the current scope, then blur so
+			// j/k navigation works on the results.
+			void mail.runSearch(mail.query);
+			searchEl?.blur();
+		} else if (e.key === "Escape") {
+			e.preventDefault();
+			// Escape clears an active search back to the normal view; otherwise it
+			// just clears the live filter. Either way, blur.
+			if (mail.searchActive) void mail.clearSearch();
 			mail.query = "";
 			searchEl?.blur();
 		}
@@ -44,17 +54,30 @@
 	</div>
 	<div class="h-sub">{subtitle}</div>
 
+	{#if mail.searchActive}
+		<span class="search-status">
+			results for “{mail.searchQuery}” — {mail.visibleMessages.length}{mail.hasMore
+				? "+"
+				: ""}
+			<button type="button" class="clear-search" onclick={() => mail.clearSearch()}>
+				clear
+			</button>
+		</span>
+	{/if}
+
 	<div class="search">
 		<span class="search-icon"></span>
 		<input
 			bind:this={searchEl}
 			bind:value={mail.query}
 			type="text"
-			placeholder="Filter loaded messages…"
-			aria-label="Filter messages"
+			placeholder={mail.searchActive
+				? "Search all mail…"
+				: "Filter loaded messages…"}
+			aria-label="Search messages"
 			onkeydown={onSearchKeydown}
 		/>
-		<span class="kbd">/</span>
+		<span class="kbd">{mail.searchActive ? "⏎" : "/"}</span>
 	</div>
 
 	<span class="h-sync">
@@ -95,6 +118,37 @@
 		color: var(--muted);
 		font-size: 11px;
 		white-space: nowrap;
+	}
+
+	.search-status {
+		margin-left: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		font-size: 11px;
+		color: var(--accent);
+		white-space: nowrap;
+	}
+
+	.clear-search {
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		color: var(--muted);
+		font: inherit;
+		font-size: 10px;
+		padding: 1px 7px;
+		cursor: pointer;
+	}
+
+	.clear-search:hover {
+		color: var(--fg);
+		border-color: var(--accent);
+	}
+
+	/* When the search-status element is present it owns the left auto-margin. */
+	.search-status + .search {
+		margin-left: 0;
 	}
 
 	.search {

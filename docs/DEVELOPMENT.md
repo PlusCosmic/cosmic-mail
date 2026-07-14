@@ -58,6 +58,7 @@ the one that receives launcher activations and runs sync.
 | what | where |
 |---|---|
 | account configs (no secrets) | `~/.config/cosmic-mail/accounts.json` |
+| global preferences (no secrets) | `~/.config/cosmic-mail/settings.json` |
 | message cache (SQLite, WAL) | `~/.local/share/cosmic-mail/mail.db` |
 | secrets | Secret Service keyring, service `dev.pluscosmic.mail`, keys `imap-password:<id>` / `oauth-refresh-token:<id>` |
 
@@ -90,6 +91,33 @@ Inspect sync progress without the UI:
   immediately without changing unread state before selection. Open an HTML message with a controlled
   remote image and verify no request occurs until `Load remote images` is pressed; selecting another
   message must restore the default block. `npm test` covers the generated iframe resource policy.
+- **Search**: `cargo test --lib` covers the store layer — FTS5 availability, the MATCH-expression
+  builder (quoting/escaping, operators as literals), per-column and prefix matching, account
+  scoping, trigger sync (rows appear after `upsert_message`/`set_body`, disappear on delete). For a
+  live check: sync an account, type a term in the header field and press Enter — the list shows
+  relevance-ranked results across the current scope (all accounts in the unified inbox, one account
+  in account view) and matches cached bodies too; Escape or the header's clear control restores the
+  normal view. `sqlite3 ~/.local/share/cosmic-mail/mail.db "SELECT count(*) FROM messages_fts;"`
+  should track the cached message count.
+- **Attachments**: `cargo test --lib` covers extraction (metadata incl. RFC 2047 filenames, mime,
+  size, inline flag, content-id), the deterministic part index, the cid→data rewrite happening
+  under caps and being skipped over the per-part/total budgets, `has_attachments` reconciliation
+  from the real parse, filename sanitization, and non-overwriting collision naming (temp dir).
+  `npm test` covers `formatBytes`. For a live check: open a message with an attachment, click its
+  chip in the reader, and confirm a byte-identical file appears in the downloads directory (a
+  second save suffixes `name (1).ext`); confirm an inline `cid:` image renders in the body while an
+  over-cap inline image renders blank without any network request.
+- **Message actions**: `cargo test --lib` covers the store layer — `set_flagged`, `remove_message`
+  count adjustments (seen vs. unseen, floored at 0) with the FTS delete trigger and attachment
+  cascade, `find_folder_by_role`, and `message_action_context`. `npm test` covers the
+  next-selection helper. The IMAP round-trips cannot be unit-tested without a server. Live check on
+  **both** account kinds (Gmail advertises `MOVE`; a plain-IMAP provider such as Purelymail may
+  exercise the `UID COPY` + `\Deleted` + `UID EXPUNGE`, or plain-`EXPUNGE`, fallback): with a synced
+  account, press `f` to flag (star round-trips to the server), `a` to archive (Gmail: lands in All
+  Mail and leaves the inbox), `d` to delete (moves to Trash; a second `d` from within Trash deletes
+  permanently), and `m` to open the folder picker and move. Confirm the selected row is removed
+  locally, the next message is selected, folder totals/unread settle after the next STATUS, and the
+  message reappears in the destination on its next sync with no duplicates.
 - **Discovery**: `cargo test --lib -- --ignored` covers ISPDB (gmx.de), provider
   autoconfig (fastmail.com), and the MX→provider path (pluscosmic.dev/Purelymail).
 - **Gmail e2e**: verified working 2026-07-09 (OAuth → XOAUTH2 → folder LIST → envelope

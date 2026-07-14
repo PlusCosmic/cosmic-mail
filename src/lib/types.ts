@@ -43,12 +43,21 @@ export interface MessageSummary {
 	hasAttachments: boolean;
 }
 
+export interface AttachmentInfo {
+	id: number; // attachments.id rowid
+	filename: string; // decoded, sanitized display name
+	mimeType: string; // e.g. "application/pdf"
+	sizeBytes: number; // decoded byte length
+	isInline: boolean; // inline cid part vs. a listed attachment
+}
+
 export interface MessageBody {
 	id: number;
 	html: string | null; // sanitization happens frontend-side before render
 	text: string | null;
 	toAddrs: string[];
 	ccAddrs: string[];
+	attachments: AttachmentInfo[]; // empty until the body is cached/parsed
 }
 
 export interface OmarchyTheme {
@@ -96,6 +105,10 @@ export interface SendMessageInput {
 	subject: string;
 	bodyText: string;
 	replyToMessageId: number | null; // local db rowid; backend resolves RFC headers
+}
+
+export interface Settings {
+	alwaysDownloadRemoteImages: boolean;
 }
 
 // ---- Event payloads (backend -> frontend) ----

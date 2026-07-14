@@ -2,7 +2,11 @@
 	import { mail } from "$lib/stores/mail.svelte";
 	import { initials, avatarColor } from "$lib/format";
 
-	let { onAddAccount, onCompose }: { onAddAccount: () => void; onCompose: () => void } = $props();
+	let {
+		onAddAccount,
+		onCompose,
+		onOpenSettings,
+	}: { onAddAccount: () => void; onCompose: () => void; onOpenSettings: () => void } = $props();
 
 	function capBadge(n: number): string {
 		return n > 99 ? "99+" : n > 0 ? String(n) : "";
@@ -85,6 +89,20 @@
 		<span class="av add">+</span>
 		<span class="tip">Add account</span>
 	</div>
+
+	<!-- Settings -->
+	<div
+		class="rail-btn"
+		role="button"
+		tabindex="0"
+		title="Settings"
+		onclick={onOpenSettings}
+		onkeydown={(e) => e.key === "Enter" && onOpenSettings()}
+		aria-label="Settings"
+	>
+		<span class="av settings">⚙</span>
+		<span class="tip">Settings</span>
+	</div>
 </nav>
 
 <style>
@@ -141,7 +159,8 @@
 	}
 
 	.rail-btn .av.compose,
-	.rail-btn .av.add {
+	.rail-btn .av.add,
+	.rail-btn .av.settings {
 		background: var(--panel-2);
 		color: var(--muted);
 		font-size: 14px;

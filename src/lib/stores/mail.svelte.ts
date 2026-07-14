@@ -6,13 +6,16 @@
 import * as api from "$lib/api";
 import type {
 	Account,
+	AttachmentInfo,
 	Folder,
 	MessageBody,
 	MessageSummary,
 	SendMessageInput,
+	Settings,
 	SyncState,
 } from "$lib/types";
 import type { UnlistenFn } from "$lib/api";
+import { nextSelectionId } from "$lib/selection";
 
 export const PAGE_LIMIT = 50;
 
@@ -53,6 +56,15 @@ export class MailStore {
 
 	/** Client-side search query (case-insensitive, matches from/subject/snippet). */
 	query = $state("");
+
+	/** True while the message list shows backend full-cache search results. */
+	searchActive = $state(false);
+
+	/** The submitted backend search term (distinct from the live `query` filter). */
+	searchQuery = $state("");
+
+	/** Persisted global preferences (defaults until loaded from the backend). */
+	settings = $state<Settings>({ alwaysDownloadRemoteImages: false });
 
 	// Lifecycle
 	loadingAccounts = $state(true);
@@ -145,6 +157,11 @@ export class MailStore {
 	// ---- Init / teardown ----
 
 	async init(): Promise<void> {
+		try {
+			this.settings = await api.getSettings();
+		} catch {
+			// Backend unavailable (plain browser) — keep defaults.
+		}
 		await this.loadAccounts();
 		try {
 			this.#unlisteners.push(
@@ -246,6 +263,8 @@ export class MailStore {
 		this.messages = [];
 		this.filter = "all";
 		this.query = "";
+		this.searchActive = false;
+		this.searchQuery = "";
 		await this.#fetchPage(false);
 	}
 
@@ -260,6 +279,8 @@ export class MailStore {
 		this.messages = [];
 		this.filter = "all";
 		this.query = "";
+		this.searchActive = false;
+		this.searchQuery = "";
 		await this.#fetchPage(false);
 	}
 
@@ -277,10 +298,62 @@ export class MailStore {
 			this.selectedMessageId = null;
 			this.body = null;
 			this.messages = [];
+			this.searchActive = false;
+			this.searchQuery = "";
 		}
 	}
 
+	/** Run a backend full-cache search for `q`, replacing the message list. */
+	async runSearch(q: string): Promise<void> {
+		const query = q.trim();
+		if (!query) {
+			await this.clearSearch();
+			return;
+		}
+		this.searchActive = true;
+		this.searchQuery = query;
+		// Clear the live filter so it doesn't further constrain the ranked
+		// results (a multi-word live filter requires a contiguous substring the
+		// FTS match does not); the active-search indicator carries the term.
+		this.query = "";
+		this.selectedMessageId = null;
+		this.body = null;
+		this.offset = 0;
+		this.messages = [];
+		await this.#fetchPage(false);
+	}
+
+	/** Exit search mode and refetch the underlying (unified or folder) view. */
+	async clearSearch(): Promise<void> {
+		if (!this.searchActive) return;
+		this.searchActive = false;
+		this.searchQuery = "";
+		this.selectedMessageId = null;
+		this.body = null;
+		this.offset = 0;
+		this.messages = [];
+		await this.#fetchPage(false);
+	}
+
 	async #fetchPage(append: boolean): Promise<void> {
+		if (this.searchActive) {
+			this.loadingMessages = true;
+			const query = this.searchQuery;
+			const accountId = this.unified ? null : this.selectedAccountId;
+			try {
+				const page = await api.searchMessages(query, accountId, this.offset, PAGE_LIMIT);
+				// Guard against races: still searching the same term?
+				if (!this.searchActive || this.searchQuery !== query) return;
+				this.messages = append ? [...this.messages, ...page] : page;
+				this.hasMore = page.length === PAGE_LIMIT;
+			} catch (e) {
+				if (append) this.#error("Failed to load more results", e);
+				else this.messages = [];
+			} finally {
+				this.loadingMessages = false;
+			}
+			return;
+		}
 		this.loadingMessages = true;
 		if (this.unified) {
 			const snap = true; // we're in unified mode at call time
@@ -373,6 +446,28 @@ export class MailStore {
 		this.toast("Message sent");
 	}
 
+	/** Download an attachment, reporting the saved path (or an error) via toast. */
+	async saveAttachment(attachment: AttachmentInfo): Promise<void> {
+		try {
+			const path = await api.saveAttachment(attachment.id);
+			this.toast(`Saved to ${path}`);
+		} catch (e) {
+			this.#error(`Failed to save ${attachment.filename || "attachment"}`, e);
+		}
+	}
+
+	/** Persist updated settings optimistically, rolling back on failure. */
+	async updateSettings(next: Settings): Promise<void> {
+		const prev = this.settings;
+		this.settings = next;
+		try {
+			this.settings = await api.updateSettings(next);
+		} catch (e) {
+			this.settings = prev;
+			this.#error("Failed to save settings", e);
+		}
+	}
+
 	selectByIndex(index: number): void {
 		const msg = this.visibleMessages[index];
 		if (msg) void this.selectMessage(msg);
@@ -395,6 +490,91 @@ export class MailStore {
 			this.#patchMessage(msg.id, { seen: prev });
 			this.#bumpUnread(msg.folderId, seen ? +1 : -1);
 			this.#error("Failed to update flag", e);
+		}
+	}
+
+	/** Toggle the flagged state of a message (optimistic, no unread change). */
+	async toggleFlagged(msg: MessageSummary): Promise<void> {
+		const flagged = !msg.flagged;
+		this.#patchMessage(msg.id, { flagged });
+		try {
+			await api.markFlagged(msg.id, flagged);
+		} catch (e) {
+			this.#patchMessage(msg.id, { flagged: !flagged });
+			this.#error("Failed to update flag", e);
+		}
+	}
+
+	/** Archive a message into its account's archive folder (optimistic). */
+	async archiveMessage(msg: MessageSummary): Promise<void> {
+		await this.#removeOptimistically(
+			msg,
+			() => api.archiveMessage(msg.id),
+			null,
+			"Failed to archive message",
+		);
+	}
+
+	/** Delete a message: to trash, or permanently when already in trash (optimistic). */
+	async deleteMessage(msg: MessageSummary): Promise<void> {
+		await this.#removeOptimistically(
+			msg,
+			() => api.deleteMessage(msg.id),
+			null,
+			"Failed to delete message",
+		);
+	}
+
+	/** Move a message to another folder of the same account (optimistic). */
+	async moveMessage(msg: MessageSummary, targetFolderId: number): Promise<void> {
+		if (targetFolderId === msg.folderId) return;
+		await this.#removeOptimistically(
+			msg,
+			() => api.moveMessage(msg.id, targetFolderId),
+			targetFolderId,
+			"Failed to move message",
+		);
+	}
+
+	/**
+	 * Shared optimistic removal for archive/delete/move: pick the next selection,
+	 * drop the row, adjust source (and, for a move, target) folder counts, select
+	 * the next message, then run `action`. On failure, refetch the current page +
+	 * affected folders and toast. `targetFolderId` is the move destination (whose
+	 * counts get bumped up) or `null` for archive/delete.
+	 */
+	async #removeOptimistically(
+		msg: MessageSummary,
+		action: () => Promise<void>,
+		targetFolderId: number | null,
+		errorPrefix: string,
+	): Promise<void> {
+		const nextId = nextSelectionId(this.visibleMessages, msg.id);
+		const wasSelected = this.selectedMessageId === msg.id;
+
+		this.messages = this.messages.filter((m) => m.id !== msg.id);
+		this.#bumpFolderCounts(msg.folderId, -1, msg.seen ? 0 : -1);
+		if (targetFolderId !== null) {
+			this.#bumpFolderCounts(targetFolderId, +1, msg.seen ? 0 : +1);
+		}
+
+		if (wasSelected) {
+			this.selectedMessageId = nextId;
+			this.body = null;
+			const next = nextId === null ? null : this.messages.find((m) => m.id === nextId);
+			if (next) void this.selectMessage(next);
+		}
+
+		try {
+			await action();
+		} catch (e) {
+			this.#error(errorPrefix, e);
+			// Full-refetch rollback: restore the list and the affected folder counts.
+			await this.refreshCurrentPage();
+			await this.loadFolders(msg.accountId);
+			if (this.messages.some((m) => m.id === msg.id)) {
+				this.selectedMessageId = msg.id;
+			}
 		}
 	}
 
@@ -435,6 +615,23 @@ export class MailStore {
 		this.foldersByAccount = next;
 	}
 
+	/** Adjust a folder's total and unread counts locally (both floored at 0). */
+	#bumpFolderCounts(folderId: number, totalDelta: number, unreadDelta: number): void {
+		const next: Record<string, Folder[]> = {};
+		for (const [accId, list] of Object.entries(this.foldersByAccount)) {
+			next[accId] = list.map((f) =>
+				f.id === folderId
+					? {
+							...f,
+							totalCount: Math.max(0, f.totalCount + totalDelta),
+							unreadCount: Math.max(0, f.unreadCount + unreadDelta),
+						}
+					: f,
+			);
+		}
+		this.foldersByAccount = next;
+	}
+
 	/** Find a folder by its id, scanning all accounts. */
 	#folderById(folderId: number): Folder | null {
 		for (const list of Object.values(this.foldersByAccount)) {
@@ -451,6 +648,14 @@ export class MailStore {
 		folderId: number;
 		messages: MessageSummary[];
 	}): void {
+		// While a search is active the list holds ranked results, not a folder
+		// view — don't prepend into it. The underlying view refreshes on clear.
+		// The unread badge still updates below.
+		if (this.searchActive) {
+			const newUnread = p.messages.filter((m) => !m.seen).length;
+			if (newUnread) this.#bumpUnread(p.folderId, newUnread);
+			return;
+		}
 		if (this.unified) {
 			// In unified mode, prepend if the event's folder is an inbox.
 			const folder = this.#folderById(p.folderId);
@@ -473,6 +678,13 @@ export class MailStore {
 	}
 
 	#onMessagesUpdated(p: { folderId: number }): void {
+		// Don't refresh the search result list into a folder view; still update
+		// the affected account's folder badges below.
+		if (this.searchActive) {
+			const acc = this.#accountForFolder(p.folderId);
+			if (acc) void this.loadFolders(acc);
+			return;
+		}
 		if (this.unified) {
 			// In unified mode, refresh if the updated folder is an inbox.
 			const folder = this.#folderById(p.folderId);

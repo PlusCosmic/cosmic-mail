@@ -10,8 +10,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, bail, Context, Result};
 use async_imap::types::{Fetch, Name};
 use async_imap::Session;
+use base64::Engine;
 use futures::StreamExt;
-use mail_parser::MessageParser;
+use mail_parser::{Message, MessageParser, MessagePart, MimeHeaders};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
@@ -19,9 +20,14 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
 use crate::accounts::{Account, AccountKind};
-use crate::store::FolderRole;
+use crate::store::{AttachmentMeta, FolderRole};
 
 const BODY_FETCH_QUERY: &str = "(BODY.PEEK[])";
+
+/// Per-part decoded-size cap for inlining a `cid:` image as a `data:` URI.
+const INLINE_IMAGE_MAX_BYTES: usize = 512 * 1024;
+/// Per-message total budget for inlined `cid:` image payloads.
+const INLINE_IMAGE_TOTAL_BUDGET: usize = 2 * 1024 * 1024;
 
 /// An authenticated IMAP session over a TLS stream.
 pub type ImapSession = Session<TlsStream<TcpStream>>;
@@ -441,13 +447,16 @@ fn parse_env_date(raw: &[u8]) -> Option<String> {
 #[derive(Debug, Clone)]
 pub struct FetchedBody {
     pub text: Option<String>,
+    /// HTML body with in-cap inline `cid:` images already rewritten to `data:` URIs.
     pub html: Option<String>,
     pub to_addrs: Vec<String>,
     pub cc_addrs: Vec<String>,
+    /// Attachment metadata (listed attachments and inline `cid:` parts).
+    pub attachments: Vec<AttachmentMeta>,
 }
 
-/// Fetch and parse the full body for a single UID.
-pub async fn fetch_body(session: &mut ImapSession, uid: u32) -> Result<FetchedBody> {
+/// Fetch the raw RFC822 bytes for a single UID with `BODY.PEEK[]` (never `\Seen`).
+async fn fetch_raw_body(session: &mut ImapSession, uid: u32) -> Result<Vec<u8>> {
     let mut stream = session
         .uid_fetch(uid.to_string(), BODY_FETCH_QUERY)
         .await
@@ -460,24 +469,199 @@ pub async fn fetch_body(session: &mut ImapSession, uid: u32) -> Result<FetchedBo
             raw = Some(body.to_vec());
         }
     }
-    let raw = raw.context("server returned no body for message")?;
+    raw.context("server returned no body for message")
+}
+
+/// Fetch and parse the full body for a single UID.
+pub async fn fetch_body(session: &mut ImapSession, uid: u32) -> Result<FetchedBody> {
+    let raw = fetch_raw_body(session, uid).await?;
 
     let parsed = MessageParser::default()
         .parse(&raw)
         .context("parsing message body")?;
 
+    Ok(parse_body(&parsed))
+}
+
+/// Decode a parsed message into cached body parts + attachment metadata.
+///
+/// Inline `cid:` image references in the HTML body are rewritten to `data:` URIs
+/// under strict per-part and per-message size caps; over-cap parts keep their
+/// `cid:` reference (which renders blank under the reader CSP). No network I/O.
+fn parse_body(parsed: &Message<'_>) -> FetchedBody {
     let text = parsed.body_text(0).map(|c| c.into_owned());
-    let html = parsed.body_html(0).map(|c| c.into_owned());
+    let html = parsed.body_html(0).map(|c| c.into_owned()).map(|h| {
+        let images = inline_image_data_uris(parsed);
+        if images.is_empty() {
+            h
+        } else {
+            rewrite_cid_references(&h, &images)
+        }
+    });
 
-    let to_addrs = collect_addrs(parsed.to());
-    let cc_addrs = collect_addrs(parsed.cc());
-
-    Ok(FetchedBody {
+    FetchedBody {
         text,
         html,
-        to_addrs,
-        cc_addrs,
-    })
+        to_addrs: collect_addrs(parsed.to()),
+        cc_addrs: collect_addrs(parsed.cc()),
+        attachments: extract_attachments(parsed),
+    }
+}
+
+/// Fetch the full message and return one part's decoded bytes by parse index.
+///
+/// Used by `save_attachment`: the raw RFC822 is not cached, so the message is
+/// refetched (`BODY.PEEK[]`, non-marking) and re-parsed, then the part at
+/// `part_index` (a stable mail-parser id) is decoded.
+pub async fn fetch_attachment_bytes(
+    session: &mut ImapSession,
+    uid: u32,
+    part_index: u32,
+) -> Result<Vec<u8>> {
+    let raw = fetch_raw_body(session, uid).await?;
+    let parsed = MessageParser::default()
+        .parse(&raw)
+        .context("parsing message body")?;
+    let part = parsed
+        .part(part_index)
+        .context("attachment part not found in message")?;
+    Ok(part.contents().to_vec())
+}
+
+/// The MIME type of a part as `type/subtype`, lowercased.
+fn part_mime_type(part: &MessagePart<'_>) -> String {
+    match part.content_type() {
+        Some(ct) => {
+            let main = ct.ctype().to_ascii_lowercase();
+            match ct.subtype() {
+                Some(sub) => format!("{main}/{}", sub.to_ascii_lowercase()),
+                None => main,
+            }
+        }
+        None => "application/octet-stream".to_string(),
+    }
+}
+
+/// Content-ID normalized without surrounding angle brackets.
+fn normalize_content_id(cid: &str) -> String {
+    cid.trim()
+        .trim_start_matches('<')
+        .trim_end_matches('>')
+        .trim()
+        .to_string()
+}
+
+/// Extract attachment metadata (listed attachments + inline `cid:` parts) in
+/// deterministic parse order. `part_index` is the mail-parser part id so the
+/// exact part can be re-fetched later.
+fn extract_attachments(parsed: &Message<'_>) -> Vec<AttachmentMeta> {
+    let mut out = Vec::new();
+    for &part_id in &parsed.attachments {
+        let Some(part) = parsed.part(part_id) else {
+            continue;
+        };
+        // Skip nested messages and multipart containers: no downloadable payload.
+        if part.is_message() || part.is_multipart() {
+            continue;
+        }
+        let content_id = part.content_id().map(normalize_content_id);
+        let disposition_attachment = part
+            .content_disposition()
+            .is_some_and(|d| d.is_attachment());
+        // A part with a Content-ID that is not an explicit attachment is inline
+        // (multipart/related embedded images render via cid:).
+        let is_inline = !disposition_attachment && content_id.is_some();
+        // mail-parser handles RFC 2231 in parameters but not RFC 2047
+        // encoded-words inside a filename value, so decode those ourselves.
+        let filename = part
+            .attachment_name()
+            .map(|n| decode_mime_words(n.as_bytes()))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
+        out.push(AttachmentMeta {
+            part_index: part_id,
+            filename,
+            mime_type: part_mime_type(part),
+            size_bytes: part.len() as u32,
+            is_inline,
+            content_id: content_id.filter(|s| !s.is_empty()),
+        });
+    }
+    out
+}
+
+/// Build `(normalized-lowercased content-id, data: URI)` pairs for inline images
+/// within the per-part and per-message size caps.
+fn inline_image_data_uris(parsed: &Message<'_>) -> Vec<(String, String)> {
+    let mut total = 0usize;
+    let mut out = Vec::new();
+    for &part_id in &parsed.attachments {
+        let Some(part) = parsed.part(part_id) else {
+            continue;
+        };
+        let Some(cid) = part.content_id() else {
+            continue;
+        };
+        let mime = part_mime_type(part);
+        if !mime.starts_with("image/") {
+            continue;
+        }
+        let bytes = part.contents();
+        if bytes.is_empty() || bytes.len() > INLINE_IMAGE_MAX_BYTES {
+            continue;
+        }
+        if total + bytes.len() > INLINE_IMAGE_TOTAL_BUDGET {
+            // Over the per-message budget: leave this part as a cid: reference.
+            continue;
+        }
+        total += bytes.len();
+        let cid_norm = normalize_content_id(cid);
+        if cid_norm.is_empty() {
+            continue;
+        }
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        out.push((
+            cid_norm.to_ascii_lowercase(),
+            format!("data:{mime};base64,{encoded}"),
+        ));
+    }
+    out
+}
+
+/// Replace each `cid:<content-id>` reference in `html` with its `data:` URI.
+/// Matching on the `cid:` prefix + content-id is ASCII case-insensitive.
+fn rewrite_cid_references(html: &str, images: &[(String, String)]) -> String {
+    let mut result = html.to_string();
+    for (cid_lower, data_uri) in images {
+        let needle = format!("cid:{cid_lower}");
+        result = replace_ascii_case_insensitive(&result, &needle, data_uri);
+    }
+    result
+}
+
+/// ASCII case-insensitive, literal (non-regex) substring replacement.
+fn replace_ascii_case_insensitive(haystack: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let hay_lower = haystack.to_ascii_lowercase();
+    let needle_lower = needle.to_ascii_lowercase();
+    let mut result = String::with_capacity(haystack.len());
+    let mut i = 0;
+    while i < haystack.len() {
+        if hay_lower[i..].starts_with(&needle_lower) {
+            result.push_str(replacement);
+            i += needle_lower.len();
+        } else {
+            let ch = haystack[i..]
+                .chars()
+                .next()
+                .expect("byte index is on a char boundary");
+            result.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    result
 }
 
 /// Read the server-reported full-message size without fetching body content.
@@ -531,6 +715,105 @@ pub async fn set_seen_flag(session: &mut ImapSession, uid: u32, seen: bool) -> R
     Ok(())
 }
 
+/// Set or clear the `\Flagged` flag on a message by UID.
+pub async fn set_flagged_flag(session: &mut ImapSession, uid: u32, flagged: bool) -> Result<()> {
+    let op = if flagged {
+        "+FLAGS (\\Flagged)"
+    } else {
+        "-FLAGS (\\Flagged)"
+    };
+    let mut stream = session
+        .uid_store(uid.to_string(), op)
+        .await
+        .context("issuing UID STORE for \\Flagged")?;
+    while let Some(item) = stream.next().await {
+        item.context("reading store response")?;
+    }
+    Ok(())
+}
+
+/// Move a message by UID from the currently-selected mailbox to `target_mailbox`.
+///
+/// Prefers `UID MOVE` (RFC 6851) when the server advertises the `MOVE`
+/// capability. Otherwise falls back to the equivalent `UID COPY` + mark
+/// `\Deleted` + expunge sequence, preferring `UID EXPUNGE` (RFC 4315 `UIDPLUS`)
+/// so only the copied message is expunged; when `UIDPLUS` is absent it falls
+/// back to a plain `EXPUNGE` (which removes every `\Deleted` message in the
+/// mailbox). The mailbox must already be selected read-write by the caller.
+pub async fn move_message(session: &mut ImapSession, uid: u32, target_mailbox: &str) -> Result<()> {
+    let (has_move, has_uidplus) = server_capabilities(session).await?;
+    if has_move {
+        // async-imap quotes/validates the mailbox name internally.
+        session
+            .uid_mv(uid.to_string(), target_mailbox)
+            .await
+            .with_context(|| format!("UID MOVE to {target_mailbox}"))?;
+        return Ok(());
+    }
+    session
+        .uid_copy(uid.to_string(), target_mailbox)
+        .await
+        .with_context(|| format!("UID COPY to {target_mailbox}"))?;
+    mark_deleted(session, uid).await?;
+    expunge_uid(session, uid, has_uidplus).await?;
+    Ok(())
+}
+
+/// Permanently delete a message by UID from the currently-selected mailbox.
+///
+/// Sets `\Deleted` then expunges, preferring `UID EXPUNGE` when `UIDPLUS` is
+/// available so only this UID is removed; otherwise a plain `EXPUNGE` is used.
+pub async fn delete_permanently(session: &mut ImapSession, uid: u32) -> Result<()> {
+    let (_has_move, has_uidplus) = server_capabilities(session).await?;
+    mark_deleted(session, uid).await?;
+    expunge_uid(session, uid, has_uidplus).await?;
+    Ok(())
+}
+
+/// Report `(supports MOVE, supports UIDPLUS)` for the current session.
+async fn server_capabilities(session: &mut ImapSession) -> Result<(bool, bool)> {
+    let caps = session
+        .capabilities()
+        .await
+        .context("reading server capabilities")?;
+    Ok((caps.has_str("MOVE"), caps.has_str("UIDPLUS")))
+}
+
+/// Add `\Deleted` to a single message by UID (draining the STORE response).
+async fn mark_deleted(session: &mut ImapSession, uid: u32) -> Result<()> {
+    let mut stream = session
+        .uid_store(uid.to_string(), "+FLAGS (\\Deleted)")
+        .await
+        .context("issuing UID STORE +FLAGS (\\Deleted)")?;
+    while let Some(item) = stream.next().await {
+        item.context("reading store response")?;
+    }
+    Ok(())
+}
+
+/// Expunge a UID, preferring `UID EXPUNGE` when `UIDPLUS` is available so only
+/// the given UID is removed; otherwise fall back to a plain `EXPUNGE`.
+async fn expunge_uid(session: &mut ImapSession, uid: u32, has_uidplus: bool) -> Result<()> {
+    // The expunge streams are not `Unpin`, so pin them before draining.
+    if has_uidplus {
+        let stream = session
+            .uid_expunge(uid.to_string())
+            .await
+            .context("issuing UID EXPUNGE")?;
+        futures::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            item.context("reading expunge response")?;
+        }
+    } else {
+        let stream = session.expunge().await.context("issuing EXPUNGE")?;
+        futures::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            item.context("reading expunge response")?;
+        }
+    }
+    Ok(())
+}
+
 /// Compute a single-line snippet from a text body (~160 chars).
 pub fn snippet_from_text(text: &str) -> String {
     let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -539,7 +822,11 @@ pub fn snippet_from_text(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{recent_sequence_set, BODY_FETCH_QUERY};
+    use super::{
+        parse_body, recent_sequence_set, replace_ascii_case_insensitive, BODY_FETCH_QUERY,
+    };
+    use base64::Engine;
+    use mail_parser::MessageParser;
 
     #[test]
     fn recent_sequence_range_is_bounded_to_existing_messages() {
@@ -553,5 +840,160 @@ mod tests {
     fn body_fetch_query_never_sets_seen() {
         assert_eq!(BODY_FETCH_QUERY, "(BODY.PEEK[])");
         assert!(!BODY_FETCH_QUERY.contains("RFC822"));
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn parse(raw: &str) -> super::FetchedBody {
+        let parsed = MessageParser::default()
+            .parse(raw.as_bytes())
+            .expect("parse fixture");
+        parse_body(&parsed)
+    }
+
+    #[test]
+    fn extracts_attachment_metadata_and_marks_non_inline() {
+        let raw = format!(
+            "From: a@b.com\r\nTo: c@d.com\r\nSubject: Test\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\r\n\
+             --BOUND\r\nContent-Type: text/plain\r\n\r\nHello body\r\n\
+             --BOUND\r\nContent-Type: application/pdf; name=\"report.pdf\"\r\n\
+             Content-Disposition: attachment; filename=\"report.pdf\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+             --BOUND--\r\n",
+            b64(b"PDF-CONTENT")
+        );
+        let body = parse(&raw);
+        assert_eq!(body.attachments.len(), 1);
+        let att = &body.attachments[0];
+        assert_eq!(att.filename, "report.pdf");
+        assert_eq!(att.mime_type, "application/pdf");
+        assert_eq!(att.size_bytes, "PDF-CONTENT".len() as u32);
+        assert!(!att.is_inline);
+        assert!(att.content_id.is_none());
+        // Deterministic part index: the pdf is the third flat part
+        // (root multipart = 0, text = 1, pdf = 2).
+        assert_eq!(att.part_index, 2);
+        // A non-inline attachment is present.
+        assert_eq!(body.attachments.iter().filter(|a| !a.is_inline).count(), 1);
+    }
+
+    #[test]
+    fn decodes_rfc2047_encoded_filenames() {
+        // "=?utf-8?B?ZsO2w7YucGRm?=" decodes to "föö.pdf".
+        let encoded = format!("=?utf-8?B?{}?=", b64("föö.pdf".as_bytes()));
+        let raw = format!(
+            "Subject: t\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"B\"\r\n\r\n\
+             --B\r\nContent-Type: text/plain\r\n\r\nbody\r\n\
+             --B\r\nContent-Type: application/pdf\r\n\
+             Content-Disposition: attachment; filename=\"{encoded}\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+             --B--\r\n",
+            b64(b"data")
+        );
+        let body = parse(&raw);
+        assert_eq!(body.attachments.len(), 1);
+        assert_eq!(body.attachments[0].filename, "föö.pdf");
+    }
+
+    #[test]
+    fn inlines_cid_image_within_caps() {
+        let png = vec![0x89u8; 1024];
+        let raw = format!(
+            "Subject: t\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/related; boundary=\"R\"\r\n\r\n\
+             --R\r\nContent-Type: text/html\r\n\r\n\
+             <html><body><img src=\"cid:img1@example.com\"></body></html>\r\n\
+             --R\r\nContent-Type: image/png\r\nContent-ID: <img1@example.com>\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+             --R--\r\n",
+            b64(&png)
+        );
+        let body = parse(&raw);
+        let html = body.html.expect("html present");
+        assert!(
+            html.contains("data:image/png;base64,"),
+            "cid should be rewritten to a data URI: {html}"
+        );
+        assert!(!html.contains("cid:img1"), "cid reference should be gone");
+        // The inline image is recorded as an inline attachment with its content-id.
+        let inline: Vec<_> = body.attachments.iter().filter(|a| a.is_inline).collect();
+        assert_eq!(inline.len(), 1);
+        assert_eq!(inline[0].content_id.as_deref(), Some("img1@example.com"));
+        assert_eq!(inline[0].mime_type, "image/png");
+    }
+
+    #[test]
+    fn leaves_over_per_part_cap_image_as_cid() {
+        // One byte over the 512 KiB per-part cap.
+        let png = vec![0x89u8; 512 * 1024 + 1];
+        let raw = format!(
+            "Subject: t\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/related; boundary=\"R\"\r\n\r\n\
+             --R\r\nContent-Type: text/html\r\n\r\n\
+             <img src=\"cid:big@x\">\r\n\
+             --R\r\nContent-Type: image/png\r\nContent-ID: <big@x>\r\n\
+             Content-Transfer-Encoding: base64\r\n\r\n{}\r\n\
+             --R--\r\n",
+            b64(&png)
+        );
+        let body = parse(&raw);
+        let html = body.html.expect("html present");
+        assert!(
+            html.contains("cid:big@x"),
+            "over-cap image keeps cid: {html}"
+        );
+        assert!(!html.contains("data:image/png"));
+    }
+
+    #[test]
+    fn enforces_total_inline_budget() {
+        // Five 500 KiB images: 4 fit within the 2 MiB budget, the 5th does not.
+        let mut parts = String::new();
+        let mut html = String::from("<html><body>");
+        let png = vec![0x89u8; 500 * 1024];
+        for i in 0..5 {
+            html.push_str(&format!("<img src=\"cid:i{i}@x\">"));
+            parts.push_str(&format!(
+                "--R\r\nContent-Type: image/png\r\nContent-ID: <i{i}@x>\r\n\
+                 Content-Transfer-Encoding: base64\r\n\r\n{}\r\n",
+                b64(&png)
+            ));
+        }
+        html.push_str("</body></html>");
+        let raw = format!(
+            "Subject: t\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/related; boundary=\"R\"\r\n\r\n\
+             --R\r\nContent-Type: text/html\r\n\r\n{html}\r\n{parts}--R--\r\n"
+        );
+        let body = parse(&raw);
+        let out = body.html.expect("html present");
+        let inlined = out.matches("data:image/png;base64,").count();
+        assert_eq!(inlined, 4, "only four images fit the 2 MiB budget");
+        assert!(
+            out.contains("cid:i4@x"),
+            "the fifth image stays a cid reference"
+        );
+    }
+
+    #[test]
+    fn cid_rewrite_is_case_insensitive_and_literal() {
+        assert_eq!(
+            replace_ascii_case_insensitive("<img src=CID:Foo@X>", "cid:foo@x", "data:x"),
+            "<img src=data:x>"
+        );
+        // Regex-special characters in the content-id are matched literally.
+        assert_eq!(
+            replace_ascii_case_insensitive("cid:a.b+c", "cid:a.b+c", "D"),
+            "D"
+        );
+        // No match leaves the string untouched.
+        assert_eq!(
+            replace_ascii_case_insensitive("nothing here", "cid:x", "D"),
+            "nothing here"
+        );
     }
 }

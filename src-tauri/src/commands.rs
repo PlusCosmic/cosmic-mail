@@ -9,10 +9,13 @@ use tauri::{AppHandle, Manager, State};
 use crate::accounts::{self, Account, AccountKind};
 use crate::error::{AppError, AppResult};
 use crate::omarchy::{self, OmarchyTheme};
+use crate::settings::{self, Settings};
 use crate::state::AppState;
 use crate::store;
 use crate::sync::imap as sync_imap;
-use crate::wire::{Folder, ImapAccountInput, MessageBody, MessageSummary, SendMessageInput};
+use crate::wire::{
+    AttachmentInfo, Folder, ImapAccountInput, MessageBody, MessageSummary, SendMessageInput,
+};
 
 /// Read the active omarchy theme.
 #[tauri::command]
@@ -190,6 +193,31 @@ pub fn list_unified_messages(
         .collect())
 }
 
+/// Full-text search over the local cache, relevance-ranked.
+///
+/// Searches cached envelopes and bodies via SQLite FTS5. When `account_id` is
+/// `null` the search spans every account; otherwise it is scoped to that
+/// account. This is local-cache-only — server-side IMAP SEARCH is not involved.
+#[tauri::command]
+pub fn search_messages(
+    state: State<'_, AppState>,
+    query: String,
+    account_id: Option<String>,
+    offset: i64,
+    limit: i64,
+) -> AppResult<Vec<MessageSummary>> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|_| AppError::msg("db lock poisoned"))?;
+    let rows = store::search_messages(&conn, &query, account_id.as_deref(), offset, limit)
+        .map_err(AppError::from)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| MessageSummary::from_row(r.msg, r.account_id))
+        .collect())
+}
+
 /// Get a message body, fetching from the server (and caching) if not present.
 #[tauri::command]
 pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<MessageBody> {
@@ -203,12 +231,18 @@ pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<Mess
             .map_err(|_| AppError::msg("db lock poisoned"))?;
         if let Some(cached) = store::get_body(&conn, message_id).map_err(AppError::from)? {
             if cached.cached {
+                let attachments = store::list_attachments(&conn, message_id)
+                    .map_err(AppError::from)?
+                    .into_iter()
+                    .map(AttachmentInfo::from)
+                    .collect();
                 return Ok(MessageBody {
                     id: message_id,
                     html: cached.html,
                     text: cached.text,
                     to_addrs: cached.to_addrs,
                     cc_addrs: cached.cc_addrs,
+                    attachments,
                 });
             }
         }
@@ -236,8 +270,8 @@ pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<Mess
         .map_err(AppError::from)?;
     let _ = session.logout().await;
 
-    // Cache the fetched parts.
-    {
+    // Cache the fetched parts and attachment metadata.
+    let attachments = {
         let conn = state
             .db
             .lock()
@@ -255,7 +289,13 @@ pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<Mess
                 .as_deref(),
         )
         .map_err(AppError::from)?;
-    }
+        store::replace_attachments(&conn, message_id, &body.attachments).map_err(AppError::from)?;
+        store::list_attachments(&conn, message_id)
+            .map_err(AppError::from)?
+            .into_iter()
+            .map(AttachmentInfo::from)
+            .collect()
+    };
 
     Ok(MessageBody {
         id: message_id,
@@ -263,7 +303,48 @@ pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<Mess
         text: body.text,
         to_addrs: body.to_addrs,
         cc_addrs: body.cc_addrs,
+        attachments,
     })
+}
+
+/// Save an attachment to the user's downloads directory, returning its path.
+///
+/// Raw RFC822 is not cached, so this refetches the message (`BODY.PEEK[]`,
+/// non-marking), re-parses, extracts the part by its stable index, decodes it,
+/// and writes it under a sanitized, collision-suffixed filename.
+#[tauri::command]
+pub async fn save_attachment(app: AppHandle, attachment_id: i64) -> AppResult<String> {
+    let state = app.state::<AppState>();
+
+    let location = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|_| AppError::msg("db lock poisoned"))?;
+        store::get_attachment(&conn, attachment_id)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::msg("attachment not found"))?
+    };
+
+    let account = load_account(&location.account_id)?;
+
+    let mut session = sync_imap::connect(&account).await.map_err(AppError::from)?;
+    sync_imap::select(&mut session, &location.folder_name)
+        .await
+        .map_err(AppError::from)?;
+    let bytes = sync_imap::fetch_attachment_bytes(&mut session, location.uid, location.part_index)
+        .await
+        .map_err(AppError::from)?;
+    let _ = session.logout().await;
+
+    let dir = crate::attachments::downloads_dir().map_err(AppError::from)?;
+    let name =
+        crate::attachments::safe_filename(&location.filename, &location.mime_type, attachment_id);
+    let path = crate::attachments::unique_path(&dir, &name);
+    std::fs::write(&path, &bytes)
+        .map_err(|e| AppError::msg(format!("Could not save attachment: {e}")))?;
+
+    Ok(path.to_string_lossy().into_owned())
 }
 
 /// Set/clear the seen flag on the server and in the local cache.
@@ -310,6 +391,126 @@ pub async fn mark_read(app: AppHandle, message_id: i64, seen: bool) -> AppResult
         serde_json::json!({ "folderId": folder_id }),
     );
     Ok(())
+}
+
+/// Set/clear the `\Flagged` flag on the server and in the local cache.
+#[tauri::command]
+pub async fn mark_flagged(app: AppHandle, message_id: i64, flagged: bool) -> AppResult<()> {
+    let state = app.state::<AppState>();
+
+    let (folder_id, uid, account_id, folder_name) = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|_| AppError::msg("db lock poisoned"))?;
+        store::locate_message(&conn, message_id)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::msg("message not found"))?
+    };
+
+    let account = load_account(&account_id)?;
+
+    let mut session = sync_imap::connect(&account).await.map_err(AppError::from)?;
+    sync_imap::select(&mut session, &folder_name)
+        .await
+        .map_err(AppError::from)?;
+    sync_imap::set_flagged_flag(&mut session, uid, flagged)
+        .await
+        .map_err(AppError::from)?;
+    let _ = session.logout().await;
+
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|_| AppError::msg("db lock poisoned"))?;
+        store::set_flagged(&conn, message_id, flagged).map_err(AppError::from)?;
+    }
+
+    emit_messages_updated(&app, folder_id);
+    Ok(())
+}
+
+/// Move a message to another folder of the same account.
+///
+/// Validates the target exists, belongs to the same account, and differs from
+/// the source, then performs the server move and removes the local row (the
+/// message reappears in the target on its next sync — no fabricated local row).
+#[tauri::command]
+pub async fn move_message(app: AppHandle, message_id: i64, target_folder_id: i64) -> AppResult<()> {
+    perform_move(&app, message_id, target_folder_id).await
+}
+
+/// Move a message to the account's archive-role folder.
+#[tauri::command]
+pub async fn archive_message(app: AppHandle, message_id: i64) -> AppResult<()> {
+    let state = app.state::<AppState>();
+    let target_folder_id = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|_| AppError::msg("db lock poisoned"))?;
+        let ctx = store::message_action_context(&conn, message_id)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::msg("message not found"))?;
+        store::find_folder_by_role(&conn, &ctx.account_id, store::FolderRole::Archive)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::msg("This account has no archive folder"))?
+            .id
+    };
+    perform_move(&app, message_id, target_folder_id).await
+}
+
+/// Delete a message: permanent when already in trash, otherwise move to trash.
+#[tauri::command]
+pub async fn delete_message(app: AppHandle, message_id: i64) -> AppResult<()> {
+    let state = app.state::<AppState>();
+
+    let ctx = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|_| AppError::msg("db lock poisoned"))?;
+        store::message_action_context(&conn, message_id)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::msg("message not found"))?
+    };
+
+    // Already in trash: permanently delete on the server, then locally.
+    if ctx.folder_role == store::FolderRole::Trash.as_str() {
+        let account = load_account(&ctx.account_id)?;
+        let mut session = sync_imap::connect(&account).await.map_err(AppError::from)?;
+        sync_imap::select(&mut session, &ctx.folder_name)
+            .await
+            .map_err(AppError::from)?;
+        sync_imap::delete_permanently(&mut session, ctx.uid)
+            .await
+            .map_err(AppError::from)?;
+        let _ = session.logout().await;
+
+        {
+            let conn = state
+                .db
+                .lock()
+                .map_err(|_| AppError::msg("db lock poisoned"))?;
+            store::remove_message(&conn, message_id).map_err(AppError::from)?;
+        }
+        emit_messages_updated(&app, ctx.folder_id);
+        return Ok(());
+    }
+
+    // Otherwise move to the account's trash folder.
+    let target_folder_id = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|_| AppError::msg("db lock poisoned"))?;
+        store::find_folder_by_role(&conn, &ctx.account_id, store::FolderRole::Trash)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::msg("This account has no trash folder"))?
+            .id
+    };
+    perform_move(&app, message_id, target_folder_id).await
 }
 
 /// Submit a plain-text message through the selected account's SMTP server.
@@ -383,7 +584,88 @@ pub async fn discover_account_config(
         .map_err(|_| AppError::msg("Please enter a valid email address"))
 }
 
+/// Read global application settings.
+///
+/// Never errors: a missing or malformed settings file yields defaults so the
+/// UI always has a value to render.
+#[tauri::command]
+pub fn get_settings() -> Settings {
+    settings::load_settings()
+}
+
+/// Persist global application settings and return the stored value.
+#[tauri::command]
+pub fn update_settings(settings: Settings) -> AppResult<Settings> {
+    settings::save_settings(&settings).map_err(AppError::from)?;
+    Ok(settings)
+}
+
 // --- helpers -----------------------------------------------------------------
+
+/// Emit `mail:messages-updated { folderId }` (flags/deletions ⇒ refetch).
+fn emit_messages_updated(app: &AppHandle, folder_id: i64) {
+    let _ = tauri::Emitter::emit(
+        app,
+        "mail:messages-updated",
+        serde_json::json!({ "folderId": folder_id }),
+    );
+}
+
+/// Move a message to `target_folder_id`, shared by move/archive/delete-to-trash.
+///
+/// Validates the target (exists, same account, not the source folder) before any
+/// network work, performs the server move, removes the local row, bumps the
+/// target folder's counts, and emits `mail:messages-updated` for both folders.
+async fn perform_move(app: &AppHandle, message_id: i64, target_folder_id: i64) -> AppResult<()> {
+    let state = app.state::<AppState>();
+
+    let (ctx, target_name) = {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|_| AppError::msg("db lock poisoned"))?;
+        let ctx = store::message_action_context(&conn, message_id)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::msg("message not found"))?;
+        let target = store::get_folder(&conn, target_folder_id)
+            .map_err(AppError::from)?
+            .ok_or_else(|| AppError::msg("Target folder not found"))?;
+        if target.account_id != ctx.account_id {
+            return Err(AppError::msg(
+                "Moving messages between accounts is not supported",
+            ));
+        }
+        if target.id == ctx.folder_id {
+            return Err(AppError::msg("The message is already in that folder"));
+        }
+        (ctx, target.name)
+    };
+
+    let account = load_account(&ctx.account_id)?;
+
+    let mut session = sync_imap::connect(&account).await.map_err(AppError::from)?;
+    sync_imap::select(&mut session, &ctx.folder_name)
+        .await
+        .map_err(AppError::from)?;
+    sync_imap::move_message(&mut session, ctx.uid, &target_name)
+        .await
+        .map_err(AppError::from)?;
+    let _ = session.logout().await;
+
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|_| AppError::msg("db lock poisoned"))?;
+        store::remove_message(&conn, message_id).map_err(AppError::from)?;
+        store::increment_folder_counts(&conn, target_folder_id, !ctx.seen)
+            .map_err(AppError::from)?;
+    }
+
+    emit_messages_updated(app, ctx.folder_id);
+    emit_messages_updated(app, target_folder_id);
+    Ok(())
+}
 
 fn load_account(account_id: &str) -> AppResult<Account> {
     accounts::load_accounts()

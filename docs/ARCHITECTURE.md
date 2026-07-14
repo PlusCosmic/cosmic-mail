@@ -31,7 +31,9 @@ src/                # SvelteKit (adapter-static, SPA)
   lib/api.ts        # typed invoke() wrappers — mirrors commands below
   lib/types.ts      # TS mirrors of the wire types below
   lib/theme.ts      # applies OmarchyTheme as CSS custom properties
+  lib/palette.ts    # command-palette fuzzy ranking (pure, unit-tested; no backend surface)
   lib/stores/       # Svelte 5 runes-based state
+  lib/components/   # *.svelte (incl. CommandPalette.svelte — the Ctrl+K overlay)
   routes/+page.svelte  # app shell
 prototypes/         # static HTML/CSS design mockups (no build step)
 ```
@@ -74,12 +76,22 @@ interface MessageSummary {
   hasAttachments: boolean;
 }
 
+interface AttachmentInfo {    // store.rs::AttachmentRow projection
+  id: number;                 // attachments.id rowid
+  filename: string;           // decoded (RFC 2047/2231), sanitized display name
+  mimeType: string;           // e.g. "application/pdf"
+  sizeBytes: number;          // decoded byte length
+  isInline: boolean;          // inline (cid) part vs. a listed attachment
+}
+
 interface MessageBody {
   id: number;
-  html: string | null;        // sanitization happens frontend-side before render
+  html: string | null;        // sanitization happens frontend-side before render;
+                              // inline cid: images are inlined as data: URIs at cache time (see policy)
   text: string | null;
   toAddrs: string[];
   ccAddrs: string[];
+  attachments: AttachmentInfo[];  // parsed from the body; empty until the body is cached
 }
 
 interface OmarchyTheme {
@@ -118,6 +130,10 @@ interface SendMessageInput {
   bodyText: string;                     // initial compose implementation is plain text
   replyToMessageId: number | null;      // local message rowid, never an arbitrary RFC header
 }
+
+interface Settings {                    // settings.rs::Settings — global preferences
+  alwaysDownloadRemoteImages: boolean;  // off by default; see "Reader remote-content policy"
+}
 ```
 
 ## Tauri commands (exact names)
@@ -132,13 +148,21 @@ interface SendMessageInput {
 | `list_folders` | `accountId: string` | `Folder[]` |
 | `list_messages` | `folderId: number, offset: number, limit: number` | `MessageSummary[]` (date DESC) |
 | `list_unified_messages` | `offset: number, limit: number` | `MessageSummary[]` (date DESC across all folders with role 'inbox', all accounts) |
+| `search_messages` | `query: string, accountId: string \| null, offset: number, limit: number` | `MessageSummary[]` (relevance-ranked; local FTS5 over cached envelopes/bodies. `accountId` null = all accounts, else scoped to that account; all folder roles; empty/whitespace query ⇒ `[]`) |
 | `get_message_body` | `messageId: number` | `MessageBody` (fetches from server if not cached) |
+| `save_attachment` | `attachmentId: number` | `string` (absolute path of the saved file; refetches raw RFC822 from the server — see below — since it is never cached, re-parses, decodes the part, and writes it to the downloads directory with a sanitized, collision-suffixed name) |
 | `mark_read` | `messageId: number, seen: boolean` | `void` (updates server flag + db) |
+| `mark_flagged` | `messageId: number, flagged: boolean` | `void` (server `\Flagged` flag + db; emits `mail:messages-updated`) |
+| `move_message` | `messageId: number, targetFolderId: number` | `void` (server move to another folder of the **same** account; removes the local row; emits `mail:messages-updated` for both folders) |
+| `archive_message` | `messageId: number` | `void` (moves to the account's `archive`-role folder; errors if none) |
+| `delete_message` | `messageId: number` | `void` (permanent delete when the source folder role is `trash`, otherwise moves to the `trash`-role folder; errors if no trash folder) |
 | `send_message` | `input: SendMessageInput` | `void` (submits through the selected account's SMTP server) |
 | `sync_folder` | `folderId: number` | `void` (triggers refresh; progress via events) |
 | `sync_account` | `accountId: string` | `void` |
 | `test_notification` | — | `void` (sends a sample mako notification) |
 | `discover_account_config` | `email: string` | `DiscoveredConfig` (never errors on "not found" — falls back to a `guess` with `confident: false`; errors only on invalid email) |
+| `get_settings` | — | `Settings` (never errors; a missing/malformed settings file yields defaults) |
+| `update_settings` | `settings: Settings` | `Settings` (persists to `settings.json`, returns the stored value) |
 
 Errors: commands return `Result<T, String>` — human-readable message, frontend shows it in a toast.
 
@@ -186,9 +210,47 @@ CREATE TABLE IF NOT EXISTS messages (
   UNIQUE(folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder_date ON messages(folder_id, date DESC);
+
+-- Attachment metadata, populated when a message body is parsed (foreground miss
+-- or background prefetch). Raw part bytes are NOT stored; `save_attachment`
+-- refetches and re-parses. `part_index` is the mail-parser MessagePartId (stable
+-- position in the flat parse order) so the exact part can be re-extracted.
+-- Needs no FTS triggers. Rows are replaced wholesale each time a body is cached.
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY,
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  part_index INTEGER NOT NULL,          -- stable index in deterministic parse order
+  filename TEXT NOT NULL DEFAULT '',
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  is_inline INTEGER NOT NULL DEFAULT 0,
+  content_id TEXT,
+  UNIQUE(message_id, part_index)
+);
+-- `messages.has_attachments` starts as a BODYSTRUCTURE heuristic (envelope-only
+-- rows) and is corrected to the real count of non-inline attachments once a body
+-- is parsed, in the same transaction that replaces attachment rows.
+
+-- Local full-text search index (SQLite FTS5, external-content over `messages`).
+-- Searches the local cache only — never the server. Created once, guarded on
+-- existence; existing rows are backfilled with the FTS5 `rebuild` command.
+-- `body_text` is NULL until a body is cached and indexes as empty until then.
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+  subject, from_name, from_addr, snippet, body_text,
+  content='messages', content_rowid='id'
+);
+-- AFTER INSERT / AFTER DELETE / AFTER UPDATE OF (the five indexed columns)
+-- triggers keep the index in sync using the external-content delete/insert form
+-- (`INSERT INTO messages_fts(messages_fts, rowid, …) VALUES('delete', …)`).
 ```
 
+`search_messages` builds its MATCH expression by splitting the raw query on whitespace,
+escaping each token (doubling embedded `"`), quoting it, and appending `*` for prefix
+matching — never passing untrusted text to MATCH — then `ORDER BY rank` (bm25).
+
 Account configs (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/accounts.json`.
+Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.json`
+(`settings.rs`); the read path never errors — a missing or malformed file yields defaults.
 
 ## Secrets (keyring, Secret Service via keyring v4 zbus store)
 
@@ -307,6 +369,35 @@ Account configs (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/accounts.json
 - SMTP acceptance completes the command. Providers such as Gmail normally copy SMTP submissions to
   Sent themselves; Cosmic Mail does not locally insert or IMAP-APPEND the outgoing message.
 
+## Message actions (commands.rs + sync/imap.rs)
+
+Flag/archive/delete/move follow the same shape as `mark_read`: locate the row → open a
+per-command IMAP connection → select the source folder → run the server op → update the DB →
+emit events. All are server-authoritative; the local cache is adjusted optimistically on the
+frontend and reconciled by the emitted `mail:messages-updated` events (which refetch the page
+and reload folder counts).
+
+- **Flag** — `UID STORE ±FLAGS (\Flagged)`, mirroring the `\Seen` path. No unread-count change.
+- **Move** (also the mechanism behind archive and non-trash delete) — prefers `UID MOVE`
+  (RFC 6851, `MOVE` capability); otherwise falls back to `UID COPY` + `UID STORE +FLAGS
+  (\Deleted)` + expunge, preferring `UID EXPUNGE` (RFC 4315 `UIDPLUS`) so only the copied
+  message is removed, and dropping to a plain `EXPUNGE` when `UIDPLUS` is absent (which removes
+  every `\Deleted` message in the mailbox). The target must belong to the **same account** and
+  differ from the source (moving between accounts is unsupported; both are rejected with a clear
+  error). The local source row is **removed** — no fabricated local row with a guessed UID; the
+  message reappears in the target on its next sync. The target folder's counts are bumped
+  best-effort (`total +1`, `unread +1` when the message was unseen) until the next STATUS.
+- **Archive** — resolves the account's `archive`-role folder, then moves. Gmail's All Mail
+  carries the `\All` SPECIAL-USE attribute, which `list_folders_with_roles` already maps to the
+  `archive` role, so Gmail archive resolves to All Mail.
+- **Delete** — permanent (`UID STORE +FLAGS (\Deleted)` + expunge) when the source folder's role
+  is already `trash`; otherwise a move to the `trash`-role folder. The local row is removed in
+  both cases.
+
+`remove_message` deletes the local row (the FTS5 delete trigger and the `attachments`
+foreign-key cascade clean up derived rows) and decrements the source folder's `total_count`
+(and `unread_count` when the row was unseen), floored at 0.
+
 ## Settings discovery (autoconfig.rs)
 
 `discover_account_config` resolves IMAP/SMTP settings from just the address, trying in order
@@ -359,10 +450,24 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 - Every generated iframe document places a Content Security Policy before sender content. The
   default policy denies all network resources while allowing trusted inline reader styles and
   embedded `data:`/`cid:` images. This also blocks tracking pixels referenced by inline CSS.
+- Inline `cid:` images are resolved to `data:` URIs backend-side at body-cache time — never by a
+  network fetch. When a body is parsed, each `image/*` part carrying a Content-ID whose decoded size
+  is ≤ 512 KiB, and while a running per-message budget of ≤ 2 MiB is not exceeded, has its stored
+  `body_html` `cid:<content-id>` references rewritten (case-insensitive, exact string match) to
+  `data:<mime>;base64,<payload>` before caching. Over-cap parts keep their `cid:` reference, which
+  renders blank under the CSP (`cid:` has no resolver in the sandboxed frame) — safe by construction.
+  This happens without rendering HTML or loading any resource.
 - A visible reader action may allow HTTP(S) image resources for the selected message.
   Consent is keyed by message rowid, kept only for the current frontend session, and never carries
   over to another message or persists across application restarts. Sanitization and sandboxing are
   unchanged when remote content is allowed.
+- The global `Settings.alwaysDownloadRemoteImages` preference (off by default; persisted in
+  `settings.json`) relaxes the block for **images only**: when on, every HTML message renders with the
+  same `img-src … http: https:` CSP the per-message opt-in uses, and the per-message consent control is
+  hidden because it is already satisfied. This changes nothing else — DOMPurify sanitization, iframe
+  sandboxing, and every non-image CSP directive (scripts, media, objects, frames, forms) stay exactly
+  as they are with the setting off. When the preference is off, per-message session consent semantics
+  above are unchanged. Turning the preference off applies to subsequently rendered messages.
 
 ## Conventions
 

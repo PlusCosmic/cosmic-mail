@@ -1,7 +1,7 @@
 <script lang="ts">
 	import DOMPurify from "dompurify";
 	import { mail } from "$lib/stores/mail.svelte";
-	import { fullDate, initials, avatarColor } from "$lib/format";
+	import { fullDate, initials, avatarColor, formatBytes } from "$lib/format";
 	import { messageFrameDocument } from "$lib/message-html";
 
 	// The reader focuses this element when a message is opened (Enter).
@@ -9,13 +9,22 @@
 		paneEl = $bindable(),
 		onReply,
 		onReplyAll,
-	}: { paneEl?: HTMLElement; onReply: () => void; onReplyAll: () => void } = $props();
+		onMove,
+	}: {
+		paneEl?: HTMLElement;
+		onReply: () => void;
+		onReplyAll: () => void;
+		onMove: () => void;
+	} = $props();
 
 	const msg = $derived(mail.selectedMessage);
 	const body = $derived(mail.body);
 	let remoteContentMessageIds = $state<number[]>([]);
+	// The global preference grants remote images to every message; otherwise
+	// consent is per-message and session-only.
+	const alwaysRemote = $derived(mail.settings.alwaysDownloadRemoteImages);
 	const remoteContentAllowed = $derived(
-		msg ? remoteContentMessageIds.includes(msg.id) : false,
+		alwaysRemote || (msg ? remoteContentMessageIds.includes(msg.id) : false),
 	);
 
 	// Base style injected into the iframe so mail with no colors of its own
@@ -59,6 +68,14 @@
 			: [...remoteContentMessageIds, msg.id];
 	}
 
+	// Listed (non-inline) attachments for the currently-loaded body. Inline cid
+	// images already render in the body, so they are not shown as chips.
+	const attachments = $derived(
+		body && msg && body.id === msg.id
+			? body.attachments.filter((a) => !a.isInline)
+			: [],
+	);
+
 	const senderIni = $derived(msg ? initials(msg.fromName, msg.fromAddr) : "");
 	const senderColor = $derived(msg ? avatarColor(msg.fromAddr || msg.fromName) : "var(--muted)");
 
@@ -99,13 +116,26 @@
 				<button class="r-act" disabled title="Coming soon">
 					<span class="ic">→</span> Forward
 				</button>
-				<button class="r-act" disabled title="Coming soon">
+				<button class="r-act" title="Archive (a)" onclick={() => mail.archiveMessage(msg)}>
 					<span class="ic">📦</span> Archive
 				</button>
-				<button class="r-act" disabled title="Coming soon">
+				<button class="r-act" title="Delete (d)" onclick={() => mail.deleteMessage(msg)}>
 					<span class="ic">🗑</span> Delete
 				</button>
-				<!-- Mark read/unread: the one working action -->
+				<button
+					class="r-act"
+					class:pri={msg.flagged}
+					title={msg.flagged ? "Remove flag (f)" : "Flag (f)"}
+					aria-pressed={msg.flagged}
+					onclick={() => mail.toggleFlagged(msg)}
+				>
+					<span class="ic">★</span>
+					{msg.flagged ? "Unflag" : "Flag"}
+				</button>
+				<button class="r-act" title="Move to folder (m)" onclick={onMove}>
+					<span class="ic">↦</span> Move
+				</button>
+				<!-- Mark read/unread -->
 				<button
 					class="r-act"
 					title={msg.seen ? "Mark unread" : "Mark read"}
@@ -115,26 +145,45 @@
 					{msg.seen ? "Mark unread" : "Mark read"}
 				</button>
 			</div>
+
+			{#if attachments.length}
+				<div class="r-atts" aria-label="Attachments">
+					{#each attachments as att (att.id)}
+						<button
+							type="button"
+							class="r-att"
+							title={`Save ${att.filename || "attachment"} (${formatBytes(att.sizeBytes)})`}
+							onclick={() => mail.saveAttachment(att)}
+						>
+							<span class="ic" aria-hidden="true">📎</span>
+							<span class="name">{att.filename || "attachment"}</span>
+							<span class="size">{formatBytes(att.sizeBytes)}</span>
+						</button>
+					{/each}
+				</div>
+			{/if}
 		</div>
 
 		<div class="body">
 			{#if mail.loadingBody}
 				<div class="empty">Loading…</div>
 			{:else if srcdoc}
-				<div class="remote-content" role="status">
-					<span>
-						{remoteContentAllowed
-							? "Remote images are allowed for this message."
-							: "Remote images are blocked to protect your privacy."}
-					</span>
-					<button
-						type="button"
-						aria-pressed={remoteContentAllowed}
-						onclick={toggleRemoteContent}
-					>
-						{remoteContentAllowed ? "Block remote images" : "Load remote images"}
-					</button>
-				</div>
+				{#if !alwaysRemote}
+					<div class="remote-content" role="status">
+						<span>
+							{remoteContentAllowed
+								? "Remote images are allowed for this message."
+								: "Remote images are blocked to protect your privacy."}
+						</span>
+						<button
+							type="button"
+							aria-pressed={remoteContentAllowed}
+							onclick={toggleRemoteContent}
+						>
+							{remoteContentAllowed ? "Block remote images" : "Load remote images"}
+						</button>
+					</div>
+				{/if}
 				<iframe
 					class="html-body"
 					title="Message body"
@@ -254,6 +303,56 @@
 	.r-act:disabled {
 		opacity: 0.45;
 		cursor: default;
+	}
+
+	.r-atts {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-top: 12px;
+	}
+
+	.r-att {
+		display: inline-flex;
+		align-items: center;
+		gap: 7px;
+		max-width: 100%;
+		padding: 5px 11px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--surface);
+		color: var(--fg);
+		font: inherit;
+		font-size: 12px;
+		cursor: pointer;
+	}
+
+	.r-att:hover {
+		background: var(--hover);
+		border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+	}
+
+	.r-att:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 1px var(--accent);
+	}
+
+	.r-att .ic {
+		color: var(--muted);
+		flex-shrink: 0;
+	}
+
+	.r-att .name {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 240px;
+	}
+
+	.r-att .size {
+		color: var(--muted);
+		font-size: 11px;
+		flex-shrink: 0;
 	}
 
 	.body {
