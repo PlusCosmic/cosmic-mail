@@ -8,7 +8,8 @@ artifacts and distro packages are planned for a later stage of the project.
 - Node.js and npm
 - A current Rust toolchain
 - Tauri's Linux development dependencies
-- Arch packages: `webkit2gtk-4.1`, `gtk3`, `librsvg`, and `openssl`
+- Arch packages: `webkit2gtk-4.1`, `gtk3`, `librsvg`, `openssl`, and
+  `libayatana-appindicator` (system tray runtime)
 - A running Secret Service implementation for credential storage
 
 Omarchy's default environment provides the expected Hyprland, Mako, and Secret Service
@@ -71,6 +72,12 @@ changes save immediately.
   remain blocked. Leave it off if you want tracking-pixel protection on a per-message basis.
 
 Preferences are stored, without secrets, in `~/.config/cosmic-mail/settings.json`.
+
+## System tray
+
+Desktop builds keep a tray icon available while Cosmic Mail runs in the background. Its menu can
+open/focus the existing window, restart sync for every account, or quit the process. On Linux the
+tray is menu-driven; clicking it opens the menu rather than directly activating the window.
 
 ## Keyboard shortcuts
 

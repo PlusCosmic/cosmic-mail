@@ -33,9 +33,11 @@ installs `~/.local/share/applications/dev.pluscosmic.mail.desktop` plus the syst
 The desktop ID deliberately matches the app's notification hint.
 
 The service is enabled under `graphical-session.target` and immediately restarted onto the newly
-promoted binary. It owns background IMAP IDLE and notifications with no mapped window. The Walker
-entry sends an activation to that existing process; closing the window hides it. The
-single-instance session D-Bus owner prevents a launcher click from creating a second sync engine.
+promoted binary. It owns background IMAP IDLE, notifications, and the tray icon with no mapped
+window. The Walker entry and tray Open action send an activation to that existing process; closing
+the window hides it. The single-instance session D-Bus owner prevents a launcher click from
+creating a second sync engine. The service restarts after failures, but a clean tray Quit remains
+stopped for the current graphical session.
 
 There is no timer, updater daemon, package-manager hook, or connection to the dev binary.
 The daily install changes only when the promotion command succeeds. A failed build or

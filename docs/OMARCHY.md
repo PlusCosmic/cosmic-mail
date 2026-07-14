@@ -32,3 +32,18 @@ engine.
 
 See [Local daily releases](RELEASING.md) for promotion, service management, and rollback.
 
+## System tray
+
+The tray integration uses Tauri's built-in cross-platform tray API rather than calling
+`libappindicator` directly. Its menu provides **Open Cosmic Mail**, **Sync now**, and **Quit**.
+Open reuses the existing window-activation path, including the Hyprland focus fallback; Quit
+explicitly terminates the background process rather than only hiding its window. Sync now restarts
+every configured account's background sync task.
+
+Tauri's current Linux tray backend is menu-oriented. It does not emit direct tray pointer events,
+does not support tooltips or tray-rectangle queries, and cannot remove or replace a menu after it
+has been attached (although the menu's contents can change). Consequently, Waybar interaction
+will go through the tray menu instead of making a left click directly reveal the window. The Linux
+bundle metadata declares the detected compatible AppIndicator/Ayatana runtime library through
+Tauri's packaging path, but that is an implementation detail rather than an API Cosmic Mail uses
+directly.

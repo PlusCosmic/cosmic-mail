@@ -1,6 +1,6 @@
 # Roadmap & status
 
-Last updated: 2026-07-14 (message actions).
+Last updated: 2026-07-14 (system tray).
 
 ## Done and verified
 
@@ -100,11 +100,22 @@ Last updated: 2026-07-14 (message actions).
   folder sync (flags preserved across moves), move-picker round-trips back to INBOX, and folder
   totals/unread settling to their original values. Remaining gaps are listed under "Not yet
   verified".
+- **Cross-platform system tray (2026-07-14)**: Tauri's built-in `tray-icon` backend owns one
+  process-lifetime icon with an attached **Open Cosmic Mail / Sync now / Quit** menu. Open reuses
+  the launcher/notification activation path, Sync now restarts every configured account task, and
+  Quit cleanly exits instead of hiding the window. The promoted systemd service now restarts only
+  on failure so an explicit Quit stays stopped. Linux bundle metadata uses Tauri's detected
+  AppIndicator/Ayatana runtime dependency; no direct AppIndicator API is called. Menu ID routing
+  has unit coverage, and a generated Debian bundle was verified to declare Ayatana alongside the
+  required WebKitGTK/GTK runtimes.
 - Shakedown fixes landed: WebKit DMA-BUF/Wayland crash, rustls dual-backend panic,
   XOAUTH2 double-encoding, theme-watcher feedback loop (see GOTCHAS.md).
 
 ## Not yet verified (built, needs live confirmation)
 
+- **System tray interactions**: confirm the icon and its three-item menu appear under Waybar from
+  both normal and `--background` startup; verify Open focuses the existing window, Sync now
+  restarts every account without another process, and Quit leaves the promoted service inactive.
 - **New-mail notification path** (IDLE wakeup → mako toast → click-to-focus): send a
   mail to a synced account while the app runs, expect notification within seconds.
 - **Inline `cid:` images (live)**: confirm an inline `cid:` image renders in the reader body
@@ -143,4 +154,3 @@ Last updated: 2026-07-14 (message actions).
   full References chain, honor Reply-To, or locally append to Sent; provider SMTP behavior applies.
 - No account-removal control in the UI (backend command + store method exist).
 - `G` doesn't auto-trigger "load more"; registrable-domain uses a tiny suffix list, not PSL.
-- No app icon yet (scaffold placeholder); no tray icon (would need libappindicator).

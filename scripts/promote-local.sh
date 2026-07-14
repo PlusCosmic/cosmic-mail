@@ -195,7 +195,7 @@ printf '%s\n' \
   '[Service]' \
   'Type=simple' \
   "ExecStart=\"$install_root/current/cosmic-mail\" --background" \
-  'Restart=always' \
+  'Restart=on-failure' \
   'RestartSec=30' \
   '' \
   '[Install]' \

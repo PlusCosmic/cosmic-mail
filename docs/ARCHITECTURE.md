@@ -15,6 +15,7 @@ src-tauri/src/
   lib.rs            # tauri::Builder wiring, state setup, background task spawn
   main.rs
   desktop.rs        # process/window lifecycle, launcher + notification activation
+  tray.rs           # persistent system tray and Open / Sync now / Quit menu
   error.rs          # AppError (thiserror) -> serialized as String to frontend
   state.rs          # AppState: db pool, account registry, sync handles
   commands.rs       # all #[tauri::command] fns (thin; delegate to modules)
@@ -307,9 +308,10 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   second process forwards its argv to that owner and exits before application setup can start a
   second set of sync tasks.
 - The promoted daily build installs `cosmic-mail.service`, a systemd user service bound to
-  `graphical-session.target`. It launches the current promoted binary with `--background`, keeps
-  it alive with `Restart=always`, and stops it with the graphical session. Development runs do
-  not install or control this service.
+  `graphical-session.target`. It launches the current promoted binary with `--background`, uses
+  `Restart=on-failure` for crash recovery, and stops it with the graphical session. A clean tray
+  Quit therefore remains stopped until the service is explicitly started or the next graphical
+  session. Development runs do not install or control this service.
 - The configured main webview is initially hidden. A normal first launch shows/focuses it; a
   `--background` first launch leaves it hidden while sync, IDLE, theme watching, and notification
   action listeners run normally.
@@ -319,6 +321,16 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   unminimizes, and focuses the existing main window. A second `--background` invocation is silent
   so service restarts cannot steal focus. Notification default actions use the same activation
   path, including the fixed-argument Hyprland focus fallback described above.
+- Desktop builds create one Tauri tray icon for the process lifetime. Its attached menu is kept
+  for the tray lifetime and contains **Open Cosmic Mail**, **Sync now**, and **Quit**. Open uses
+  the same activation path as launcher and notification actions. Sync now restarts the background
+  sync task for every configured account. Quit requests a clean application exit; it does not
+  merely hide the window.
+- Linux tray interaction is menu-driven. The backend does not depend on tray pointer events,
+  tooltips, or tray-rectangle queries, and it does not remove or replace the attached menu. Linux
+  bundles declare the detected compatible Ayatana/AppIndicator GTK3 runtime through Tauri's
+  built-in packaging path; Cosmic Mail uses only Tauri's tray API rather than calling that library
+  directly.
 
 ## Gmail (auth/oauth.rs)
 

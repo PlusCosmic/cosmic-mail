@@ -564,6 +564,20 @@ pub fn sync_account(app: AppHandle, account_id: String) -> AppResult<()> {
     restart_sync(&app, &account_id)
 }
 
+/// Restart every configured account's background sync task.
+///
+/// This is backend-only shared behavior for the tray menu, not a frontend
+/// command, so it does not extend the Tauri wire surface.
+pub(crate) fn sync_all_accounts(app: &AppHandle) -> AppResult<usize> {
+    let accounts = accounts::load_accounts().map_err(AppError::from)?;
+    let count = accounts.len();
+    let state = app.state::<AppState>();
+    for account in accounts {
+        state.sync.start(app.clone(), state.db.clone(), account);
+    }
+    Ok(count)
+}
+
 /// Send a sample notification.
 #[tauri::command]
 pub fn test_notification(app: AppHandle) -> AppResult<()> {

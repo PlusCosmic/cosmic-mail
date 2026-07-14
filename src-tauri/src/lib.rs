@@ -14,6 +14,8 @@ mod settings;
 mod state;
 mod store;
 mod sync;
+#[cfg(desktop)]
+mod tray;
 mod wire;
 
 use tauri::Manager;
@@ -60,6 +62,11 @@ pub fn run() {
             let db = app_state.db.clone();
 
             app.manage(app_state);
+
+            // Keep one tray icon and its menu attached for the lifetime of
+            // the desktop process, including background-only launches.
+            #[cfg(desktop)]
+            tray::setup(app)?;
 
             // The window is configured hidden to avoid a login flash. Only an
             // interactive first launch should reveal it; --background is used

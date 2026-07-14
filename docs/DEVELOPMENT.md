@@ -80,6 +80,11 @@ Inspect sync progress without the UI:
   verify the PID remains; a live notification action or another Walker launch must reveal and
   focus that same window. `pgrep -a cosmic-mail` and `hyprctl clients` are useful corroborating
   checks.
+- **System tray**: with a desktop tray host running, start normally and with `--background`; in
+  both cases expect one Cosmic Mail tray icon with **Open Cosmic Mail**, **Sync now**, and **Quit**.
+  Open must reveal/focus the existing window. Sync now must emit a new syncing state for every
+  configured account without creating another process. Quit must cleanly stop the process; for a
+  promoted build, verify `cosmic-mail.service` remains inactive rather than restarting it.
 - **Pane layout**: drag the separator between the message list and reader, switch between unified
   and account/folder views, and resize or maximize the window. Both panes must remain usable and
   the reader must receive surplus wide-screen space. Restart the app to verify persistence. With
