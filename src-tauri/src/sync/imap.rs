@@ -402,12 +402,53 @@ fn address_parts(addr: &async_imap::imap_proto::Address<'_>) -> (String, String)
     let name = addr
         .name
         .as_ref()
-        .map(|b| decode_mime_words(b))
+        .map(|b| unquote_display_name(&decode_mime_words(b)))
         .filter(|s| !s.is_empty())
         .unwrap_or_default();
     let email = address_email(addr).unwrap_or_default();
     let name = if name.is_empty() { email.clone() } else { name };
     (name, email)
+}
+
+/// Strip lingering RFC 5322 quoted-string syntax from a decoded display name.
+///
+/// The IMAP ENVELOPE personal-name is sometimes handed back still carrying
+/// the quoted-string form from the original `From:` header: either fully
+/// wrapped in a pair of literal `"` quotes, or (more commonly, e.g. some
+/// marketing senders) missing the real outer quotes but still containing
+/// escaped `\"` sequences from the original quoting. In both cases the
+/// backslash-escapes (`\"` -> `"`, `\\` -> `\`) need undoing so the name
+/// renders as plain text instead of `\"Amazon.co.uk\"`.
+fn unquote_display_name(name: &str) -> String {
+    fn unescape_quoted_pairs(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(escaped) = chars.next() {
+                    out.push(escaped);
+                }
+                // A trailing lone backslash has nothing to escape; drop it.
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    if name.len() >= 2 && name.starts_with('"') && name.ends_with('"') {
+        return unescape_quoted_pairs(&name[1..name.len() - 1]);
+    }
+    if name.contains("\\\"") {
+        // Unescaping may expose a quoted-string wrapper that was itself
+        // escaped (`\"Amazon.co.uk\"` -> `"Amazon.co.uk"`); strip it too.
+        let unescaped = unescape_quoted_pairs(name);
+        if unescaped.len() >= 2 && unescaped.starts_with('"') && unescaped.ends_with('"') {
+            return unescaped[1..unescaped.len() - 1].to_string();
+        }
+        return unescaped;
+    }
+    name.to_string()
 }
 
 /// Build the `mailbox@host` email string from an IMAP address.
@@ -823,7 +864,8 @@ pub fn snippet_from_text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_body, recent_sequence_set, replace_ascii_case_insensitive, BODY_FETCH_QUERY,
+        decode_mime_words, parse_body, recent_sequence_set, replace_ascii_case_insensitive,
+        unquote_display_name, BODY_FETCH_QUERY,
     };
     use base64::Engine;
     use mail_parser::MessageParser;
@@ -840,6 +882,63 @@ mod tests {
     fn body_fetch_query_never_sets_seen() {
         assert_eq!(BODY_FETCH_QUERY, "(BODY.PEEK[])");
         assert!(!BODY_FETCH_QUERY.contains("RFC822"));
+    }
+
+    #[test]
+    fn unquote_display_name_unescapes_unquoted_amazon_artifact() {
+        // No real outer quotes remain, but the escaped inner quotes from the
+        // original header survived ENVELOPE parsing — the exact bug report.
+        // Unescaping exposes a quote wrapper, which is stripped as well.
+        assert_eq!(unquote_display_name("\\\"Amazon.co.uk\\\""), "Amazon.co.uk");
+    }
+
+    #[test]
+    fn unquote_display_name_keeps_exposed_non_wrapping_quotes() {
+        // Unescaping yields interior quotes that do not wrap the whole name;
+        // they must be kept, not stripped.
+        assert_eq!(unquote_display_name("say \\\"hi\\\" now"), "say \"hi\" now");
+    }
+
+    #[test]
+    fn unquote_display_name_keeps_lone_backslash_without_escaped_quote() {
+        // A bare backslash with no `\"` artifact is not quoted-pair syntax;
+        // the name must pass through untouched.
+        assert_eq!(unquote_display_name("AC\\DC"), "AC\\DC");
+    }
+
+    #[test]
+    fn unquote_display_name_strips_plain_quoted_string() {
+        assert_eq!(unquote_display_name("\"Plain Name\""), "Plain Name");
+    }
+
+    #[test]
+    fn unquote_display_name_unescapes_interior_quoted_pair() {
+        assert_eq!(
+            unquote_display_name("\"He said \\\"hi\\\"\""),
+            "He said \"hi\""
+        );
+    }
+
+    #[test]
+    fn unquote_display_name_passes_through_unquoted_plain_name() {
+        assert_eq!(unquote_display_name("Jane Doe"), "Jane Doe");
+    }
+
+    #[test]
+    fn unquote_display_name_handles_lone_quote_and_empty() {
+        assert_eq!(unquote_display_name("\""), "\"");
+        assert_eq!(unquote_display_name(""), "");
+        assert_eq!(unquote_display_name("\"\""), "");
+    }
+
+    #[test]
+    fn decode_mime_words_still_decodes_encoded_names() {
+        assert_eq!(decode_mime_words("=?UTF-8?B?Sm9zw6k=?=".as_bytes()), "José");
+        // The unquote step is a no-op for a name with no quoting artifacts.
+        assert_eq!(
+            unquote_display_name(&decode_mime_words("=?UTF-8?B?Sm9zw6k=?=".as_bytes())),
+            "José"
+        );
     }
 
     fn b64(bytes: &[u8]) -> String {
