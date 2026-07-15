@@ -233,7 +233,11 @@ async fn sync_folder_uids(
     {
         let conn = db.lock().expect("db poisoned");
         for env in &envelopes {
-            let snippet = imap::snippet_from_text(&env.subject);
+            // No body has been fetched yet at envelope-sync time, so there is
+            // nothing to summarize; leave the snippet empty rather than
+            // seeding it from the subject (which just duplicates the subject
+            // line in the UI until the body is prefetched or opened).
+            let snippet = String::new();
             let upsert = MessageUpsert {
                 folder_id,
                 uid: env.uid,
@@ -262,7 +266,7 @@ async fn sync_folder_uids(
                 from_name: env.from_name.clone(),
                 from_addr: env.from_addr.clone(),
                 date: env.date.clone(),
-                snippet: imap::snippet_from_text(&env.subject),
+                snippet: String::new(),
                 seen: env.seen,
                 flagged: env.flagged,
                 has_attachments: env.has_attachments,
@@ -356,7 +360,7 @@ async fn prefetch_message_bodies(db: &Db, folder_id: i64, session: &mut imap::Im
                 continue;
             }
         };
-        let snippet = body.text.as_deref().map(imap::snippet_from_text);
+        let snippet = imap::snippet_for_body(body.text.as_deref(), body.html.as_deref());
         let conn = db.lock().expect("db poisoned");
         if let Err(err) = store::set_body(
             &conn,

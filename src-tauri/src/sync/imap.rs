@@ -12,6 +12,7 @@ use async_imap::types::{Fetch, Name};
 use async_imap::Session;
 use base64::Engine;
 use futures::StreamExt;
+use mail_parser::decoders::html::html_to_text;
 use mail_parser::{Message, MessageParser, MessagePart, MimeHeaders};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
@@ -855,17 +856,125 @@ async fn expunge_uid(session: &mut ImapSession, uid: u32, has_uidplus: bool) -> 
     Ok(())
 }
 
-/// Compute a single-line snippet from a text body (~160 chars).
+/// Max length (in `char`s) of a generated preview snippet.
+const SNIPPET_MAX_CHARS: usize = 160;
+
+/// Compute a single-line preview snippet from a message body.
+///
+/// Prefers `text` (the text/plain part); when that yields nothing usable,
+/// falls back to `html` by converting it to plain text first via
+/// [`mail_parser::decoders::html::html_to_text`] (which already drops
+/// `<style>`/`<script>`/`<head>` content and decodes entities) before
+/// running it through the same cleanup as the text path. Returns `None`
+/// when there is nothing to show, so callers can leave a prior snippet
+/// untouched (via `COALESCE`) or store an empty snippet.
+pub fn snippet_for_body(text: Option<&str>, html: Option<&str>) -> Option<String> {
+    if let Some(text) = text {
+        let snippet = snippet_from_text(text);
+        if !snippet.is_empty() {
+            return Some(snippet);
+        }
+    }
+    let html = html?;
+    let converted = html_to_text(html);
+    let snippet = snippet_from_text(&converted);
+    if snippet.is_empty() {
+        None
+    } else {
+        Some(snippet)
+    }
+}
+
+/// Compute a single-line snippet from a plain-text body (~160 chars).
+///
+/// Strips bare and bracket-wrapped (`()`, `[]`, `<>`) URLs — the "alt text +
+/// link soup" that marketing `text/plain` parts are usually made of — then
+/// collapses whitespace and trims leftover punctuation debris at the edges.
 pub fn snippet_from_text(text: &str) -> String {
-    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed.chars().take(160).collect()
+    let stripped = strip_urls(text);
+    let collapsed: String = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim_matches(|c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '-' | '\u{2013}'
+                    | '\u{2014}'
+                    | '|'
+                    | '*'
+                    | '>'
+                    | '<'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '\u{2022}'
+                    | '\u{00B7}'
+                    | ':'
+                    | ';'
+                    | ','
+            )
+    });
+    trimmed.chars().take(SNIPPET_MAX_CHARS).collect()
+}
+
+/// Remove `http(s)://` URLs from `text`: bare tokens (run to the next
+/// whitespace) and ones wrapped in `()`, `[]`, or `<>` (the whole bracketed
+/// span, brackets included).
+fn strip_urls(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let closing = match c {
+            '(' => Some(')'),
+            '[' => Some(']'),
+            '<' => Some('>'),
+            _ => None,
+        };
+        if let Some(close) = closing {
+            if is_url_start(&chars, i + 1) {
+                match chars[i + 1..].iter().position(|&ch| ch == close) {
+                    Some(offset) => {
+                        i = i + 1 + offset + 1;
+                    }
+                    None => {
+                        // Unbalanced bracket: drop the rest of the string.
+                        i = chars.len();
+                    }
+                }
+                continue;
+            }
+        }
+        if is_url_start(&chars, i) {
+            let mut j = i;
+            while j < chars.len() && !chars[j].is_whitespace() {
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Whether `chars[idx..]` begins with `http://` or `https://`.
+fn is_url_start(chars: &[char], idx: usize) -> bool {
+    const SCHEMES: [&str; 2] = ["http://", "https://"];
+    SCHEMES.iter().any(|scheme| {
+        let len = scheme.chars().count();
+        idx + len <= chars.len() && chars[idx..idx + len].iter().collect::<String>() == *scheme
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         decode_mime_words, parse_body, recent_sequence_set, replace_ascii_case_insensitive,
-        unquote_display_name, BODY_FETCH_QUERY,
+        snippet_for_body, snippet_from_text, unquote_display_name, BODY_FETCH_QUERY,
+        SNIPPET_MAX_CHARS,
     };
     use base64::Engine;
     use mail_parser::MessageParser;
@@ -1093,6 +1202,108 @@ mod tests {
         assert_eq!(
             replace_ascii_case_insensitive("nothing here", "cid:x", "D"),
             "nothing here"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_strips_alt_text_url_soup() {
+        // The exact repro from the papercut report: an image alt-text run
+        // followed by parenthesised and bracketed tracking links.
+        let input = "tick tock backblaze logo (https://link.example.com/xyz) Big Sale! [https://track.example.com/abc?x=1] View in browser";
+        assert_eq!(
+            snippet_from_text(input),
+            "tick tock backblaze logo Big Sale! View in browser"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_strips_bare_urls() {
+        assert_eq!(
+            snippet_from_text("Check this out: https://example.com/path?q=1 today"),
+            "Check this out: today"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_strips_angle_wrapped_urls() {
+        assert_eq!(
+            snippet_from_text("See <https://example.com/x> for details"),
+            "See for details"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_leaves_non_url_brackets_alone() {
+        // Only brackets that wrap a URL are removed; ordinary bracketed text
+        // (e.g. a parenthetical) must survive untouched.
+        assert_eq!(
+            snippet_from_text("Order #1234 (thanks!) has shipped"),
+            "Order #1234 (thanks!) has shipped"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_plain_text_is_unchanged() {
+        assert_eq!(
+            snippet_from_text("Hi team, quick update on the roadmap for next week."),
+            "Hi team, quick update on the roadmap for next week."
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_enforces_char_cap() {
+        let long = "word ".repeat(100);
+        let snippet = snippet_from_text(&long);
+        assert_eq!(snippet.chars().count(), SNIPPET_MAX_CHARS);
+    }
+
+    #[test]
+    fn snippet_from_text_trims_punctuation_debris() {
+        assert_eq!(
+            snippet_from_text("  -- View in browser (https://example.com/a) --  "),
+            "View in browser"
+        );
+    }
+
+    #[test]
+    fn snippet_for_body_falls_back_to_html_when_no_text_part() {
+        let html = "<html><head><style type=\"text/css\">\n\
+             body { font-family: Arial; color: #333; }\n\
+             .row > .cell { display:flex; }\n\
+             </style><script>var x = 1 < 2;</script></head>\n\
+             <body><p>Hello team,</p><p>Here&#39;s the update &amp; summary.</p>\n\
+             <p>&nbsp;</p></body></html>";
+        assert_eq!(
+            snippet_for_body(None, Some(html)),
+            Some("Hello team, Here's the update & summary.".to_string())
+        );
+    }
+
+    #[test]
+    fn snippet_for_body_prefers_text_over_html() {
+        assert_eq!(
+            snippet_for_body(Some("Plain text wins"), Some("<p>HTML loses</p>")),
+            Some("Plain text wins".to_string())
+        );
+    }
+
+    #[test]
+    fn snippet_for_body_falls_back_to_html_when_text_is_blank() {
+        // A text/plain part that collapses to nothing useful (e.g. only
+        // whitespace, or only URLs) should still fall back to HTML.
+        assert_eq!(
+            snippet_for_body(Some("   "), Some("<p>Fallback content</p>")),
+            Some("Fallback content".to_string())
+        );
+    }
+
+    #[test]
+    fn snippet_for_body_empty_text_and_html_is_none() {
+        assert_eq!(snippet_for_body(None, None), None);
+        assert_eq!(snippet_for_body(Some(""), Some("")), None);
+        assert_eq!(
+            snippet_for_body(Some("   "), Some("<style>a{}</style>")),
+            None
         );
     }
 }

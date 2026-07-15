@@ -489,7 +489,9 @@ pub fn upsert_message(conn: &Connection, m: &MessageUpsert) -> Result<i64> {
            message_id=excluded.message_id, subject=excluded.subject, \
            from_name=excluded.from_name, from_addr=excluded.from_addr, \
            to_addrs=excluded.to_addrs, cc_addrs=excluded.cc_addrs, date=excluded.date, \
-           snippet=excluded.snippet, seen=excluded.seen, flagged=excluded.flagged, \
+           snippet=CASE WHEN excluded.snippet='' THEN messages.snippet \
+                        ELSE excluded.snippet END, \
+           seen=excluded.seen, flagged=excluded.flagged, \
             has_attachments=excluded.has_attachments, rfc822_size=excluded.rfc822_size",
         params![
             m.folder_id,
@@ -1618,6 +1620,58 @@ mod tests {
         let hits = search_messages(&conn, "asparagus", None, 0, 50).expect("search");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].msg.id, id);
+    }
+
+    #[test]
+    fn envelope_resync_with_empty_snippet_keeps_body_derived_snippet() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_schema(&conn).expect("initialize schema");
+        let (folder_id, _) =
+            upsert_folder(&conn, "acct", "INBOX", FolderRole::Inbox, 1).expect("insert folder");
+        let read_snippet = |id: i64| -> String {
+            conn.query_row(
+                "SELECT snippet FROM messages WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .expect("read snippet")
+        };
+
+        // Envelope sync stores the message with an empty snippet.
+        let id = insert_searchable(&conn, folder_id, 7, "Sale", "Shop", "shop@example.com", "");
+        assert_eq!(read_snippet(id), "");
+
+        // Body prefetch derives a real snippet.
+        set_body(
+            &conn,
+            id,
+            Some("Big Sale! View in browser"),
+            None,
+            &[],
+            &[],
+            Some("Big Sale! View in browser"),
+        )
+        .expect("set body");
+        assert_eq!(read_snippet(id), "Big Sale! View in browser");
+
+        // A later envelope re-sync upserts the same (folder_id, uid) with an
+        // empty snippet; the body-derived snippet must survive.
+        let id_again =
+            insert_searchable(&conn, folder_id, 7, "Sale", "Shop", "shop@example.com", "");
+        assert_eq!(id_again, id, "upsert hits the same row");
+        assert_eq!(read_snippet(id), "Big Sale! View in browser");
+
+        // A non-empty incoming snippet still overwrites.
+        insert_searchable(
+            &conn,
+            folder_id,
+            7,
+            "Sale",
+            "Shop",
+            "shop@example.com",
+            "fresher snippet",
+        );
+        assert_eq!(read_snippet(id), "fresher snippet");
     }
 
     #[test]
