@@ -109,8 +109,10 @@
 	}
 
 	.dot.syncing {
+		/* Real IMAP IDLE wakeups fire often even for a healthy account, so an
+		   infinite pulse here reads as "stuck" rather than "active". A steady
+		   colour change is enough signal without being distracting. */
 		background: var(--accent);
-		animation: pulse 1.2s ease-in-out infinite;
 	}
 
 	.dot.error {
@@ -119,11 +121,5 @@
 
 	.acc-label {
 		font-size: 10px;
-	}
-
-	@keyframes pulse {
-		50% {
-			opacity: 0.3;
-		}
 	}
 </style>

@@ -118,13 +118,13 @@ async fn account_loop(app: AppHandle, db: Db, account: Account) {
     let mut first_run = true;
 
     loop {
-        emit_state(&app, &account.id, SyncState::Syncing, None);
         match run_once(&app, &db, &account, first_run).await {
             Ok(()) => {
                 backoff = BACKOFF_MIN;
                 first_run = false;
-                emit_state(&app, &account.id, SyncState::Idle, None);
-                // run_once returns after an IDLE/poll cycle; loop again.
+                // run_once already reported Idle once real work finished and it
+                // settled into the IDLE wait (or poll sleep); the next iteration's
+                // run_once reports Syncing again as soon as it reconnects.
             }
             Err(err) => {
                 tracing::warn!(error = %err, "sync cycle failed");
@@ -139,6 +139,11 @@ async fn account_loop(app: AppHandle, db: Db, account: Account) {
 /// One connect → sync → IDLE cycle. Returns after an IDLE wakeup/timeout so the
 /// caller re-runs (reconnecting fresh each cycle for robustness).
 async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) -> Result<()> {
+    // Real work is about to start: connect, discover folders, fetch/upsert
+    // envelopes, prefetch bodies. Report Syncing for exactly this span, not for
+    // the IDLE wait that follows (see Idle emissions below).
+    emit_state(app, &account.id, SyncState::Syncing, None);
+
     let mut session = imap::connect(account).await?;
 
     // Discover folders and reconcile with the DB.
@@ -179,7 +184,9 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
     let inbox = match inbox_name {
         Some(name) => name,
         None => {
-            // No inbox: just wait before the next full cycle.
+            // No inbox: nothing left to do this cycle; settle to Idle before
+            // waiting for the next one.
+            emit_state(app, &account.id, SyncState::Idle, None);
             tokio::time::sleep(POLL_INTERVAL).await;
             let _ = session.logout().await;
             return Ok(());
@@ -187,6 +194,9 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
     };
 
     imap::select(&mut session, &inbox).await?;
+    // Work is done; settle to Idle before entering IDLE (or the polling
+    // fallback inside idle_wait), which can last up to 25 minutes.
+    emit_state(app, &account.id, SyncState::Idle, None);
     idle_wait(session).await?;
     Ok(())
 }
@@ -408,4 +418,48 @@ async fn idle_wait(session: imap::ImapSession) -> Result<()> {
     let mut session = handle.done().await.context("closing IDLE handle")?;
     let _ = session.logout().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_state_as_str_matches_wire_contract() {
+        // The frontend matches on these exact lowercase strings
+        // (src/lib/types.ts SyncState) — this is the binding wire contract.
+        assert_eq!(SyncState::Idle.as_str(), "idle");
+        assert_eq!(SyncState::Syncing.as_str(), "syncing");
+        assert_eq!(SyncState::Error.as_str(), "error");
+    }
+
+    #[test]
+    fn sync_state_payload_serializes_camel_case() {
+        let payload = SyncStatePayload {
+            account_id: "acct-1",
+            state: SyncState::Syncing.as_str(),
+            error: None,
+        };
+        let json = serde_json::to_value(&payload).expect("serialize payload");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "accountId": "acct-1",
+                "state": "syncing",
+                "error": null,
+            })
+        );
+    }
+
+    #[test]
+    fn sync_state_payload_carries_error_message() {
+        let payload = SyncStatePayload {
+            account_id: "acct-1",
+            state: SyncState::Error.as_str(),
+            error: Some("connection refused".to_string()),
+        };
+        let json = serde_json::to_value(&payload).expect("serialize payload");
+        assert_eq!(json["state"], "error");
+        assert_eq!(json["error"], "connection refused");
+    }
 }
