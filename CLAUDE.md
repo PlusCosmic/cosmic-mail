@@ -23,4 +23,6 @@ theming.
 - Don't run git commits unless asked; the session owner supervises commits.
 
 Dev commands, local state paths, and per-subsystem test recipes: `docs/DEVELOPMENT.md`.
-Status and what to build next: `docs/ROADMAP.md`.
+Status and what to build next: `docs/ROADMAP.md`. Small bugs / UX quirks are GitHub
+issues labelled `papercut` (board: <https://github.com/users/PlusCosmic/projects/2>);
+file new ones there, not in the roadmap.

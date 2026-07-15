@@ -1,6 +1,6 @@
 # Roadmap & status
 
-Last updated: 2026-07-14 (system tray).
+Last updated: 2026-07-15 (known limitations migrated to GitHub issues).
 
 ## Done and verified
 
@@ -134,23 +134,17 @@ Last updated: 2026-07-14 (system tray).
 ## Next up (rough priority)
 
 1. **Server-side search** — IMAP SEARCH to reach beyond the local cache (local FTS5 search over
-   cached envelopes/bodies already landed; see above).
+   cached envelopes/bodies already landed; see above). Until then, search covers only the newest
+   ~200 envelopes/folder plus cached bodies — mail that was never synced is unreachable.
 
-## Known limitations / smaller backlog
+## Small bugs & UX papercuts → GitHub issues
 
-- IMAP connector is implicit-TLS (993) only — no STARTTLS; discovery skips STARTTLS-only
-  providers accordingly.
-- IDLE reconnects per cycle (simple, robust, slightly chatty).
-- Initial sync = newest 200 envelopes/folder; no full-history backfill UI.
-- Search covers only the local cache (newest ~200 envelopes/folder plus cached bodies); it does not
-  reach mail that was never synced. Server-side IMAP SEARCH comes later.
-- External flag changes are not reconciled for cached messages: IDLE wakes and STATUS refreshes
-  folder counts, but existing rows keep stale `seen`/`flagged` values. After INBOX IDLE wake and
-  manual sync, fetch `(UID FLAGS)` for the cached 200 messages, update changed rows, and emit
-  `mail:messages-updated`; consider CONDSTORE/QRESYNC later.
-- `has_attachments` is a BODYSTRUCTURE heuristic only until a body is cached, at which point the
-  real parse corrects it and populates the attachments table. Envelope-only rows keep the heuristic.
-- Compose is plain text only. It does not save drafts, attach files, preserve a source message's
-  full References chain, honor Reply-To, or locally append to Sent; provider SMTP behavior applies.
-- No account-removal control in the UI (backend command + store method exist).
-- `G` doesn't auto-trigger "load more"; registrable-domain uses a tiny suffix list, not PSL.
+Small bugs and UX quirks (anything that isn't a roadmap-sized feature) are tracked as
+GitHub issues labelled [`papercut`](https://github.com/PlusCosmic/cosmic-mail/issues?q=is%3Aissue+is%3Aopen+label%3Apapercut)
+and collected on the [Cosmic Mail Papercuts board](https://github.com/users/PlusCosmic/projects/2).
+File new friction there rather than growing this document; this roadmap stays the
+source of truth for feature-sized work and status.
+
+The known-limitations list that used to live here was migrated to GitHub issues
+[#11–#19](https://github.com/PlusCosmic/cosmic-mail/issues) on 2026-07-15
+(papercuts where they fit, `enhancement`/`bug` otherwise).
