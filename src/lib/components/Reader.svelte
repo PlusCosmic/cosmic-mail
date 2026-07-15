@@ -1,8 +1,9 @@
 <script lang="ts">
 	import DOMPurify from "dompurify";
+	import { openUrl } from "@tauri-apps/plugin-opener";
 	import { mail } from "$lib/stores/mail.svelte";
 	import { fullDate, initials, avatarColor, formatBytes } from "$lib/format";
-	import { messageFrameDocument } from "$lib/message-html";
+	import { messageFrameDocument, resolveOpenableLinkUrl } from "$lib/message-html";
 
 	// The reader focuses this element when a message is opened (Enter).
 	let {
@@ -60,6 +61,32 @@
 	const srcdoc = $derived(
 		body?.html ? iframeSrcdoc(body.html, remoteContentAllowed) : null,
 	);
+
+	let iframeEl = $state<HTMLIFrameElement | undefined>();
+
+	// Sender HTML must never navigate the sandboxed iframe or run script (the
+	// sandbox intentionally omits allow-popups/allow-scripts, and even a
+	// `<base target="_blank">` can't force a new-window request out to the
+	// system browser from inside a Tauri webview). Instead, once the frame's
+	// document is reachable (allow-same-origin), attach a single delegated
+	// click/auxclick listener: always prevent default anchor navigation, then
+	// forward only http(s) targets to the opener plugin. `srcdoc` changes
+	// (switching messages, toggling remote content) replace the iframe's
+	// document and fire a fresh "load", so re-running this on every load
+	// keeps the listener attached to whichever document is current.
+	function handleIframeLoad() {
+		const doc = iframeEl?.contentDocument;
+		if (!doc) return;
+		const openLink = (event: MouseEvent) => {
+			const anchor = (event.target as Element | null)?.closest?.("a[href]");
+			if (!anchor) return;
+			event.preventDefault();
+			const resolved = resolveOpenableLinkUrl(anchor.getAttribute("href") ?? "", doc.baseURI);
+			if (resolved) void openUrl(resolved);
+		};
+		doc.addEventListener("click", openLink);
+		doc.addEventListener("auxclick", openLink);
+	}
 
 	function toggleRemoteContent() {
 		if (!msg) return;
@@ -189,6 +216,8 @@
 					title="Message body"
 					sandbox="allow-same-origin"
 					srcdoc={srcdoc}
+					bind:this={iframeEl}
+					onload={handleIframeLoad}
 				></iframe>
 			{:else if body?.text}
 				<pre class="wrap">{body.text}</pre>

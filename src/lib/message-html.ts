@@ -4,6 +4,29 @@ export interface MessageFrameTheme {
 	accent: string;
 }
 
+const OPENABLE_LINK_SCHEMES = new Set(["http:", "https:"]);
+
+/**
+ * Resolves an anchor `href` against a base URL and returns it only if the
+ * resolved scheme is http: or https:. Used by the reader's delegated click
+ * handler to decide whether a link may be forwarded to the system browser
+ * via the opener plugin — everything else (javascript:, mailto:, data:,
+ * vbscript:, cid:, and relative/fragment-only hrefs that cannot resolve
+ * against an opaque `about:srcdoc` base) is rejected by returning null so
+ * the caller silently ignores the click.
+ */
+export function resolveOpenableLinkUrl(href: string, baseUrl: string): string | null {
+	const trimmed = href.trim();
+	if (!trimmed) return null;
+	let resolved: URL;
+	try {
+		resolved = new URL(trimmed, baseUrl);
+	} catch {
+		return null;
+	}
+	return OPENABLE_LINK_SCHEMES.has(resolved.protocol) ? resolved.href : null;
+}
+
 export function remoteContentCsp(allowRemoteContent: boolean): string {
 	const remote = allowRemoteContent ? " http: https:" : "";
 	return [
