@@ -3,7 +3,11 @@
 	import { openUrl } from "@tauri-apps/plugin-opener";
 	import { mail } from "$lib/stores/mail.svelte";
 	import { fullDate, initials, avatarColor, formatBytes } from "$lib/format";
-	import { messageFrameDocument, resolveOpenableLinkUrl } from "$lib/message-html";
+	import {
+		messageFrameDocument,
+		resolveOpenableLinkUrl,
+		OPEN_LINK_MESSAGE_TYPE,
+	} from "$lib/message-html";
 
 	// The reader focuses this element when a message is opened (Enter).
 	let {
@@ -64,29 +68,27 @@
 
 	let iframeEl = $state<HTMLIFrameElement | undefined>();
 
-	// Sender HTML must never navigate the sandboxed iframe or run script (the
-	// sandbox intentionally omits allow-popups/allow-scripts, and even a
-	// `<base target="_blank">` can't force a new-window request out to the
-	// system browser from inside a Tauri webview). Instead, once the frame's
-	// document is reachable (allow-same-origin), attach a single delegated
-	// click/auxclick listener: always prevent default anchor navigation, then
-	// forward only http(s) targets to the opener plugin. `srcdoc` changes
-	// (switching messages, toggling remote content) replace the iframe's
-	// document and fire a fresh "load", so re-running this on every load
-	// keeps the listener attached to whichever document is current.
-	function handleIframeLoad() {
-		const doc = iframeEl?.contentDocument;
-		if (!doc) return;
-		const openLink = (event: MouseEvent) => {
-			const anchor = (event.target as Element | null)?.closest?.("a[href]");
-			if (!anchor) return;
-			event.preventDefault();
-			const resolved = resolveOpenableLinkUrl(anchor.getAttribute("href") ?? "", doc.baseURI);
+	// Sender HTML must never navigate the frame or reach the app. WebKitGTK
+	// keeps a sandboxed srcdoc frame's contentDocument null from the parent's
+	// side, so clicks cannot be observed from out here — instead the frame
+	// document itself carries a click-forwarder script (see
+	// LINK_FORWARDER_SCRIPT) that swallows every anchor activation and
+	// postMessages the raw href to this window. The frame runs with
+	// sandbox="allow-scripts" only, so its origin is opaque: no parent DOM
+	// access, no Tauri IPC, and the frame CSP denies the network. Validation
+	// stays on this side — only http(s) hrefs reach the opener plugin.
+	$effect(() => {
+		const onMessage = (event: MessageEvent) => {
+			if (!iframeEl || event.source !== iframeEl.contentWindow) return;
+			const data = event.data as { type?: unknown; href?: unknown } | null;
+			if (!data || data.type !== OPEN_LINK_MESSAGE_TYPE) return;
+			if (typeof data.href !== "string") return;
+			const resolved = resolveOpenableLinkUrl(data.href, "about:srcdoc");
 			if (resolved) void openUrl(resolved);
 		};
-		doc.addEventListener("click", openLink);
-		doc.addEventListener("auxclick", openLink);
-	}
+		window.addEventListener("message", onMessage);
+		return () => window.removeEventListener("message", onMessage);
+	});
 
 	function toggleRemoteContent() {
 		if (!msg) return;
@@ -214,10 +216,9 @@
 				<iframe
 					class="html-body"
 					title="Message body"
-					sandbox="allow-same-origin"
+					sandbox="allow-scripts"
 					srcdoc={srcdoc}
 					bind:this={iframeEl}
-					onload={handleIframeLoad}
 				></iframe>
 			{:else if body?.text}
 				<pre class="wrap">{body.text}</pre>

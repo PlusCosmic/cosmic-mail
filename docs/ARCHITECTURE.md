@@ -480,17 +480,28 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   sandboxing, and every non-image CSP directive (scripts, media, objects, frames, forms) stay exactly
   as they are with the setting off. When the preference is off, per-message session consent semantics
   above are unchanged. Turning the preference off applies to subsequently rendered messages.
-- Links never navigate the sandbox (no `allow-popups`/`allow-scripts` is granted, and a webview
-  new-window request wouldn't reach the system browser anyway). `Reader.svelte` instead attaches one
-  delegated `click`/`auxclick` listener to `iframe.contentDocument` on every `load` (re-attached each
-  time `srcdoc` changes, e.g. switching messages), always calls `preventDefault()` on `a[href]`
-  activation, and forwards the resolved URL to `@tauri-apps/plugin-opener`'s `openUrl` only when its
-  scheme is `http:`/`https:` (pure resolution/scheme-check helper: `resolveOpenableLinkUrl` in
-  `message-html.ts`). The `opener:allow-open-url` capability permission is scoped to `http://*` /
-  `https://*` only — narrower than the plugin's `opener:default` set (which also grants
-  `mailto:`/`tel:` and `reveal_item_in_dir`, unneeded here). Gmail OAuth's own consent-URL open
-  (`auth/oauth.rs`) calls the Rust `OpenerExt::open_url` API directly and is unaffected by this
-  capability, since ACL scoping only gates the JS-invoked command.
+- Links never navigate the sandbox or reach the app: the iframe runs with `sandbox="allow-scripts"`
+  only (no `allow-popups`, no `allow-same-origin`), giving it an opaque origin — no parent DOM
+  access, no Tauri IPC, and a new-window request still can't reach the system browser directly.
+  Click handling lives inside the frame rather than being observed from the parent, because
+  WebKitGTK keeps a sandboxed `srcdoc` iframe's `contentDocument` null once the real document
+  loads. `messageFrameDocument` injects `LINK_FORWARDER_SCRIPT` into the frame's `<head>`, ahead
+  of sanitized sender HTML in `<body>` (DOMPurify already strips `<script>`, so sender content
+  can never pre-empt or terminate it — the head `<script>` tag is fully closed in the template
+  before sender markup is inserted into `<body>`). The forwarder listens for `click`/`auxclick` on
+  `a[href]`, calls `preventDefault()` unconditionally, and `postMessage`s
+  `{type: OPEN_LINK_MESSAGE_TYPE, href}` to the parent window. The frame CSP gains
+  `script-src 'unsafe-inline'` to permit only this inline forwarder script; `default-src 'none'`
+  still blocks the network, so the frame cannot fetch or exfiltrate anything else.
+  `Reader.svelte` listens for `message` events in a `$effect`, validates
+  `event.source === iframeEl.contentWindow` and the message shape, then resolves the href with
+  `resolveOpenableLinkUrl(href, "about:srcdoc")` (http/https only, in `message-html.ts`) before
+  forwarding to `@tauri-apps/plugin-opener`'s `openUrl`. The `opener:allow-open-url` capability
+  permission is scoped to `http://*` / `https://*` only — narrower than the plugin's
+  `opener:default` set (which also grants `mailto:`/`tel:` and `reveal_item_in_dir`, unneeded
+  here). Gmail OAuth's own consent-URL open (`auth/oauth.rs`) calls the Rust `OpenerExt::open_url`
+  API directly and is unaffected by this capability, since ACL scoping only gates the JS-invoked
+  command.
 
 ## Conventions
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	LINK_FORWARDER_SCRIPT,
+	OPEN_LINK_MESSAGE_TYPE,
 	messageFrameDocument,
 	remoteContentCsp,
 	resolveOpenableLinkUrl,
@@ -35,6 +37,35 @@ test("builds one deliberate iframe document", () => {
 	const html = messageFrameDocument("<p>Hello</p>", theme, false);
 	assert.match(html, /^<!doctype html><html><head>/);
 	assert.match(html, /<\/head><body><p>Hello<\/p><\/body><\/html>$/);
+});
+
+test("iframe document carries the click-forwarder script ahead of sender content", () => {
+	const html = messageFrameDocument('<a href="https://evil.test">click</a>', theme, false);
+	assert.ok(html.includes(LINK_FORWARDER_SCRIPT), "forwarder script must be inlined verbatim");
+	assert.ok(
+		html.indexOf(LINK_FORWARDER_SCRIPT) < html.indexOf("evil.test"),
+		"forwarder script must precede sender content",
+	);
+	assert.ok(
+		html.indexOf("</head>") > html.indexOf(LINK_FORWARDER_SCRIPT),
+		"forwarder script must live inside <head>",
+	);
+});
+
+test("csp permits only the inline forwarder script, nothing else", () => {
+	const policy = remoteContentCsp(false);
+	assert.match(policy, /script-src 'unsafe-inline'/);
+	assert.match(policy, /default-src 'none'/);
+});
+
+test("forwarder script posts the exported message type", () => {
+	assert.equal(OPEN_LINK_MESSAGE_TYPE, "cosmic-mail:open-link");
+	assert.ok(
+		LINK_FORWARDER_SCRIPT.includes(`"${OPEN_LINK_MESSAGE_TYPE}"`),
+		"forwarder must postMessage the same type constant Reader.svelte checks for",
+	);
+	assert.match(LINK_FORWARDER_SCRIPT, /window\.parent\.postMessage/);
+	assert.match(LINK_FORWARDER_SCRIPT, /preventDefault/);
 });
 
 const srcdocBase = "about:srcdoc";
