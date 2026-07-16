@@ -400,7 +400,9 @@ async fn idle_wait(session: imap::ImapSession) -> Result<()> {
 
     if let Err(err) = handle.init().await {
         tracing::info!(error = %err, "IDLE unavailable; falling back to polling");
-        // Recover the session and NOOP-poll.
+        // IDLE was never actually established here, so a failure to close it
+        // reflects a genuinely broken connection, not routine IDLE cleanup;
+        // keep surfacing it as a real failure.
         let mut session = handle
             .done()
             .await
@@ -412,12 +414,51 @@ async fn idle_wait(session: imap::ImapSession) -> Result<()> {
     }
 
     let (fut, _stop) = handle.wait_with_timeout(IDLE_TIMEOUT);
-    // We treat any of NewData / Timeout / ManualInterrupt as "re-sync now".
-    let _ = fut.await;
+    // NewData / Timeout / ManualInterrupt are all routine wakeups (the
+    // ~25-minute timeout is a *deliberate* re-issue per RFC 2177, not a
+    // failure). Only an `Err` here — a genuine IO/protocol failure while
+    // idling — is worth surfacing as a sync failure.
+    fut.await.context("IDLE wait failed")?;
 
-    let mut session = handle.done().await.context("closing IDLE handle")?;
-    let _ = session.logout().await;
+    // Best-effort: send DONE to end IDLE cleanly. The wakeup itself already
+    // succeeded, and every cycle reconnects fresh regardless of how this
+    // cycle ends (see module docs), so a failure here — e.g. the server or an
+    // intervening NAT/firewall silently dropped the connection during a
+    // long, uneventful IDLE, which routinely coincides with the ~25-minute
+    // re-issue interval — must not be reported as a sync failure. A
+    // genuinely dead connection is still caught for real by the next cycle's
+    // `imap::connect`.
+    match handle.done().await {
+        Ok(mut session) => {
+            let _ = session.logout().await;
+        }
+        Err(err) if is_benign_after_routine_wakeup(&err) => {
+            tracing::debug!(
+                error = %err,
+                "IDLE session close failed after routine wakeup; reconnecting next cycle"
+            );
+        }
+        Err(err) => return Err(err).context("closing IDLE handle"),
+    }
     Ok(())
+}
+
+/// Whether a failure to close an IDLE handle, occurring right after a
+/// routine wakeup (Timeout / NewData / ManualInterrupt already succeeded),
+/// should be swallowed rather than reported as a sync failure.
+///
+/// Every IDLE cycle reconnects fresh regardless of how it ends (see module
+/// docs), so once the wakeup itself is known-good, a `DONE` that fails
+/// because the connection or stream is gone is not new information — it is
+/// the routine downside of holding a socket idle for up to ~25 minutes
+/// (server timeout, NAT/firewall drop, etc.). A genuinely dead connection is
+/// still caught for real by the next cycle's `imap::connect`. The one case
+/// kept fatal is a malformed/unexpected server response to `DONE` itself
+/// (`Bad`/`Parse`), since that points at a protocol problem rather than a
+/// vanished connection.
+fn is_benign_after_routine_wakeup(err: &async_imap::error::Error) -> bool {
+    use async_imap::error::Error;
+    matches!(err, Error::Io(_) | Error::ConnectionLost | Error::No(_))
 }
 
 #[cfg(test)]
@@ -461,5 +502,37 @@ mod tests {
         let json = serde_json::to_value(&payload).expect("serialize payload");
         assert_eq!(json["state"], "error");
         assert_eq!(json["error"], "connection refused");
+    }
+
+    #[test]
+    fn idle_close_failure_is_benign_for_io_and_connection_loss() {
+        // The exact "closing IDLE handle" papercut: after a routine ~25-min
+        // IDLE re-issue, the server/NAT/firewall has already dropped the
+        // connection, so DONE fails with an IO error or ConnectionLost. Both
+        // must be swallowed rather than reported as a sync failure.
+        let io_err = async_imap::error::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe",
+        ));
+        assert!(is_benign_after_routine_wakeup(&io_err));
+        assert!(is_benign_after_routine_wakeup(
+            &async_imap::error::Error::ConnectionLost
+        ));
+        assert!(is_benign_after_routine_wakeup(
+            &async_imap::error::Error::No("server said no".to_string())
+        ));
+    }
+
+    #[test]
+    fn idle_close_failure_stays_fatal_for_protocol_errors() {
+        // A BAD or unparsable response to our own DONE points at a genuine
+        // protocol problem, not a vanished connection; keep it surfacing.
+        let bad = async_imap::error::Error::Bad("DONE not understood".to_string());
+        assert!(!is_benign_after_routine_wakeup(&bad));
+
+        let parse = async_imap::error::Error::Parse(async_imap::error::ParseError::Invalid(
+            b"garbage".to_vec(),
+        ));
+        assert!(!is_benign_after_routine_wakeup(&parse));
     }
 }
