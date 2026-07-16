@@ -52,6 +52,14 @@ related area. When you learn a new one, add it.
   fixed-argument (no shell) `hyprctl dispatch focuswindow class:^(cosmic-mail)$` fallback when
   `HYPRLAND_INSTANCE_SIGNATURE` is present. Test actions on a currently-live notification:
   restored mako history belongs to the old listener and cannot validate the callback.
+- **WebKitGTK never exposes a sandboxed `srcdoc` iframe's document to its parent** — even
+  with `sandbox="allow-same-origin"`, `contentDocument` goes null once the real document
+  loads (and the frame fires `load` more than once). Chromium happily allows it, so the
+  delegated-click-listener pattern from web articles silently does nothing here. Anything
+  that must observe events inside the reader frame has to run *inside* it (injected
+  script + `postMessage`, with `sandbox="allow-scripts"` for an opaque origin — see the
+  reader links bullet in ARCHITECTURE.md). Verify iframe behavior in a WebKit2GTK
+  harness, not a Chromium browser.
 
 ## IMAP sync
 
