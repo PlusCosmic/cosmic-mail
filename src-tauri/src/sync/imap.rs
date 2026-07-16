@@ -888,8 +888,11 @@ pub fn snippet_for_body(text: Option<&str>, html: Option<&str>) -> Option<String
 /// Compute a single-line snippet from a plain-text body (~160 chars).
 ///
 /// Strips bare and bracket-wrapped (`()`, `[]`, `<>`) URLs — the "alt text +
-/// link soup" that marketing `text/plain` parts are usually made of — then
-/// collapses whitespace and trims leftover punctuation debris at the edges.
+/// link soup" that marketing `text/plain` parts are usually made of — as
+/// well as raw HTML tags (some `text/plain` parts, e.g. The Economist's
+/// newsletters, embed literal markup like `<link rel=stylesheet href=...>`)
+/// — then collapses whitespace and trims leftover punctuation debris at the
+/// edges.
 pub fn snippet_from_text(text: &str) -> String {
     let stripped = strip_urls(text);
     let collapsed: String = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -917,9 +920,13 @@ pub fn snippet_from_text(text: &str) -> String {
     trimmed.chars().take(SNIPPET_MAX_CHARS).collect()
 }
 
-/// Remove `http(s)://` URLs from `text`: bare tokens (run to the next
-/// whitespace) and ones wrapped in `()`, `[]`, or `<>` (the whole bracketed
-/// span, brackets included).
+/// Remove `http(s)://` URLs and raw HTML tags from `text`: bare URL tokens
+/// (run to the next whitespace), URLs wrapped in `()`, `[]`, or `<>` (the
+/// whole bracketed span, brackets included), and tag-like `<...>` spans
+/// (opening, closing, or `<!...>` markers, with or without attributes).
+///
+/// A `<`/`>` that isn't part of a URL wrap or a tag — e.g. "1 < 2" or "5 > 4"
+/// — is left alone; only spans that actually look like markup are dropped.
 fn strip_urls(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -946,6 +953,18 @@ fn strip_urls(text: &str) -> String {
                 continue;
             }
         }
+        if c == '<' && is_tag_start(&chars, i + 1) {
+            match chars[i + 1..].iter().position(|&ch| ch == '>') {
+                Some(offset) => {
+                    i = i + 1 + offset + 1;
+                }
+                None => {
+                    // Unterminated tag: drop the rest of the string.
+                    i = chars.len();
+                }
+            }
+            continue;
+        }
         if is_url_start(&chars, i) {
             let mut j = i;
             while j < chars.len() && !chars[j].is_whitespace() {
@@ -967,6 +986,17 @@ fn is_url_start(chars: &[char], idx: usize) -> bool {
         let len = scheme.chars().count();
         idx + len <= chars.len() && chars[idx..idx + len].iter().collect::<String>() == *scheme
     })
+}
+
+/// Whether `chars[idx]` looks like the start of an HTML tag name/marker
+/// immediately after a `<`: a `/` (closing tag), `!` (comment/doctype), or
+/// an ASCII letter (opening tag). Used to distinguish real markup like
+/// `<div ...>` / `</p>` from a bare `<` used as "less than" in prose (e.g.
+/// "1 < 2" or "<3").
+fn is_tag_start(chars: &[char], idx: usize) -> bool {
+    chars
+        .get(idx)
+        .is_some_and(|c| *c == '/' || *c == '!' || c.is_ascii_alphabetic())
 }
 
 #[cfg(test)]
@@ -1262,6 +1292,57 @@ mod tests {
         assert_eq!(
             snippet_from_text("  -- View in browser (https://example.com/a) --  "),
             "View in browser"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_strips_economist_style_html_soup() {
+        // Real-world repro: The Economist's text/plain part is ~680 lines of
+        // whitespace, then a raw <link> tag with attributes, then the real
+        // content. The whole tag (including its embedded href URL) must
+        // disappear, leaving only the real content.
+        let input = "\n\n\n   \n\n <link rel=stylesheet href=https://marber-cdn.economist.com/foundations/latest/css/font-face.css>\nThe Economist July 16th 2026 For subscribers";
+        assert_eq!(
+            snippet_from_text(input),
+            "The Economist July 16th 2026 For subscribers"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_strips_tags_with_attributes() {
+        assert_eq!(
+            snippet_from_text("Before <div class=\"foo\" id='bar'> After"),
+            "Before After"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_strips_closing_tags() {
+        assert_eq!(snippet_from_text("Hello </p> world </div>"), "Hello world");
+    }
+
+    #[test]
+    fn snippet_from_text_drops_unterminated_tag_to_end() {
+        assert_eq!(
+            snippet_from_text("Real content <div class=\"unterminated"),
+            "Real content"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_preserves_non_tag_angle_brackets() {
+        assert_eq!(snippet_from_text("1 < 2 and 5 > 4"), "1 < 2 and 5 > 4");
+        assert_eq!(
+            snippet_from_text("aw <3 that's sweet"),
+            "aw <3 that's sweet"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_still_strips_angle_wrapped_url_alongside_tags() {
+        assert_eq!(
+            snippet_from_text("See <https://example.com/x> for details <br> ok"),
+            "See for details ok"
         );
     }
 
