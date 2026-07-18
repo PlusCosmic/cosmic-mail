@@ -13,6 +13,7 @@
 	import CommandPalette from "$lib/components/CommandPalette.svelte";
 	import SettingsModal from "$lib/components/SettingsModal.svelte";
 	import { replySeed, type ComposeSeed } from "$lib/compose";
+	import { displayFolderName } from "$lib/format";
 	import type { PaletteCommand } from "$lib/palette";
 	import {
 		DEFAULT_LIST_PANE_RATIO,
@@ -202,6 +203,22 @@
 		}
 	}
 
+	// G jumps to the bottom of what's loaded so far, then keeps pulling more
+	// pages (capped, so a very large mailbox can't loop indefinitely) until
+	// the store reports no more are available, landing on the true last
+	// message instead of an arbitrary load-page cutoff.
+	const JUMP_TO_BOTTOM_LOAD_CAP = 20;
+
+	async function jumpToBottom() {
+		selectIndex(mail.visibleMessages.length - 1);
+		let guard = 0;
+		while (mail.hasMore && guard < JUMP_TO_BOTTOM_LOAD_CAP) {
+			guard++;
+			await mail.loadMore();
+		}
+		selectIndex(mail.visibleMessages.length - 1);
+	}
+
 	function scrollRowIntoView(id: number) {
 		queueMicrotask(() => {
 			const row = listEl?.querySelector<HTMLElement>(`[data-msg-id="${id}"]`);
@@ -276,7 +293,7 @@
 			.filter((folder) => folder.id !== message.folderId)
 			.map((folder) => ({
 				id: `move:${folder.id}`,
-				title: `Move to — ${folder.name}`,
+				title: `Move to — ${displayFolderName(folder.name)}`,
 				keywords: ["move", folder.role, folder.name],
 				run: () => void mail.moveMessage(message, folder.id),
 			}));
@@ -313,7 +330,7 @@
 			for (const folder of folders) {
 				cmds.push({
 					id: `folder:${folder.id}`,
-					title: `Go to folder — ${folder.name}`,
+					title: `Go to folder — ${displayFolderName(folder.name)}`,
 					keywords: ["folder", folder.role],
 					run: () => void mail.selectFolder(folder),
 				});
@@ -486,7 +503,7 @@
 				break;
 			case "G":
 				e.preventDefault();
-				selectIndex(mail.visibleMessages.length - 1);
+				void jumpToBottom();
 				break;
 			case "g":
 				e.preventDefault();

@@ -94,7 +94,12 @@ export class MailStore {
 	/** Messages after filter + query applied — all keyboard nav operates on this. */
 	get visibleMessages(): MessageSummary[] {
 		let msgs = this.messages;
-		if (this.filter === "unread") msgs = msgs.filter((m) => !m.seen);
+		// Keep the currently selected message visible even once it's read —
+		// opening a message under the Unread filter shouldn't yank it (and the
+		// reader) out from under the user. It naturally drops out once
+		// selection moves elsewhere.
+		if (this.filter === "unread")
+			msgs = msgs.filter((m) => !m.seen || m.id === this.selectedMessageId);
 		else if (this.filter === "flagged") msgs = msgs.filter((m) => m.flagged);
 		if (this.query.trim()) {
 			const q = this.query.trim().toLowerCase();

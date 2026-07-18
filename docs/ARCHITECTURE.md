@@ -245,6 +245,16 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 -- (`INSERT INTO messages_fts(messages_fts, rowid, …) VALUES('delete', …)`).
 ```
 
+At startup — synchronously in application setup, before any sync task spawns (so it heals even
+when sync cannot run, e.g. a missing OAuth token) and before the webview requests its first
+message pages (so no update events are needed) — `store::heal_cached_snippets` recomputes the
+snippet of every row with `body_cached = 1` using the current `snippet_for_body` logic and
+updates only the rows whose snippet actually changes (the FTS `AFTER UPDATE` trigger re-indexes
+them; unchanged rows are skipped so the trigger doesn't fire needlessly). Cached bodies are never
+re-fetched, so this self-healing pass is how previously-cached rows pick up snippet-cleanup
+improvements; it runs on every launch — the cached-body population is small and the recompute is
+pure string work, which beats one-shot migration/version bookkeeping.
+
 `search_messages` builds its MATCH expression by splitting the raw query on whitespace,
 escaping each token (doubling embedded `"`), quoting it, and appending `*` for prefix
 matching — never passing untrusted text to MATCH — then `ORDER BY rank` (bm25).
@@ -389,6 +399,15 @@ emit events. All are server-authoritative; the local cache is adjusted optimisti
 frontend and reconciled by the emitted `mail:messages-updated` events (which refetch the page
 and reload folder counts).
 
+- **Mark read/unread** (`mark_read`) — `UID STORE ±FLAGS (\Seen)`, updates the local row, adjusts the
+  source folder's unread count, and emits `mail:messages-updated` for it. On a **Gmail** account
+  (`Account.kind == "gmail"`), the same physical message is exposed under multiple folders
+  (labels); after the primary update, every other cached copy in that account sharing the same
+  RFC 5322 Message-ID has its `seen` state and owning folder's unread count updated locally too
+  (`store::mark_seen_for_message_id_siblings`), and `mail:messages-updated` is emitted for each
+  additionally-changed folder — no new event/wire type, this just fans the existing event out to
+  more folder ids. Gmail's own `\Seen` propagation across labels means the next sync of those
+  folders reconciles regardless; this only removes the wait until that next sync.
 - **Flag** — `UID STORE ±FLAGS (\Flagged)`, mirroring the `\Seen` path. No unread-count change.
 - **Move** (also the mechanism behind archive and non-trash delete) — prefers `UID MOVE`
   (RFC 6851, `MOVE` capability); otherwise falls back to `UID COPY` + `UID STORE +FLAGS

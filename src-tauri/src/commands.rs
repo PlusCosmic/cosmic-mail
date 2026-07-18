@@ -345,6 +345,14 @@ pub async fn save_attachment(app: AppHandle, attachment_id: i64) -> AppResult<St
 }
 
 /// Set/clear the seen flag on the server and in the local cache.
+///
+/// On a Gmail account, the same physical message is exposed under multiple
+/// folders (labels). After the primary update, this also updates the seen
+/// state of any other cached copies sharing the same RFC 5322 Message-ID
+/// within the account, so the unread count and paperclip-adjacent state
+/// don't go stale in other folders until they're next synced (Gmail
+/// propagates `\Seen` across labels server-side; the next sync of those
+/// folders reconciles regardless).
 #[tauri::command]
 pub async fn mark_read(app: AppHandle, message_id: i64, seen: bool) -> AppResult<()> {
     let state = app.state::<AppState>();
@@ -380,13 +388,25 @@ pub async fn mark_read(app: AppHandle, message_id: i64, seen: bool) -> AppResult
             let delta = if seen { -1 } else { 1 };
             store::adjust_folder_unread_count(&conn, folder_id, delta).map_err(AppError::from)?;
         }
+        if account.kind == AccountKind::Gmail {
+            let header = store::message_id_header(&conn, message_id).map_err(AppError::from)?;
+            if let Some(header) = header.filter(|h| !h.is_empty()) {
+                sibling_folders = store::mark_seen_for_message_id_siblings(
+                    &conn,
+                    &account_id,
+                    &header,
+                    message_id,
+                    seen,
+                )
+                .map_err(AppError::from)?;
+            }
+        }
     }
 
-    let _ = tauri::Emitter::emit(
-        &app,
-        "mail:messages-updated",
-        serde_json::json!({ "folderId": folder_id }),
-    );
+    emit_messages_updated(&app, folder_id);
+    for sibling_folder_id in sibling_folders {
+        emit_messages_updated(&app, sibling_folder_id);
+    }
     Ok(())
 }
 
@@ -416,6 +436,7 @@ pub async fn mark_flagged(app: AppHandle, message_id: i64, flagged: bool) -> App
         .map_err(AppError::from)?;
     let _ = session.logout().await;
 
+    let mut sibling_folders = Vec::new();
     {
         let conn = state
             .db

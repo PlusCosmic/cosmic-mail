@@ -379,23 +379,89 @@ fn envelope_from_fetch(fetch: &Fetch) -> Option<EnvelopeSummary> {
     })
 }
 
-/// Very rough attachment heuristic from BODYSTRUCTURE: any `multipart/mixed`
-/// signals an attachment is likely present.
+/// Attachment heuristic from BODYSTRUCTURE, used for envelope-only rows
+/// before a body has been fetched and parsed for real (the real parse in
+/// `store::replace_attachments` corrects `has_attachments` once the body is
+/// cached). A part counts as a plausible real attachment when it carries
+/// `Content-Disposition: attachment`, or — absent an explicit `inline`
+/// disposition and a Content-ID — a `filename`/`name` param (some senders
+/// omit `Content-Disposition` entirely on real attachments).
+///
+/// Deliberately excludes:
+/// - `multipart/related` inline images (Content-ID'd parts referenced by
+///   `cid:` from the HTML body), identified by a present Content-ID with no
+///   explicit `attachment` disposition, regardless of any filename param;
+/// - the `text/plain`/`text/html` body parts themselves (no disposition, no
+///   Content-ID, no filename param ⇒ excluded by the rule above);
+/// - PGP/S-MIME signature parts (`application/pgp-signature`,
+///   `application/pkcs7-signature`/`x-pkcs7-signature`), excluded
+///   unconditionally since they ride along on every signed message but are
+///   never something a user would download as an attachment.
 fn bodystructure_has_attachment(fetch: &Fetch) -> bool {
-    use async_imap::imap_proto::BodyStructure;
+    fetch
+        .bodystructure()
+        .map(body_structure_has_real_attachment)
+        .unwrap_or(false)
+}
+
+fn body_structure_has_real_attachment(bs: &async_imap::imap_proto::BodyStructure<'_>) -> bool {
+    use async_imap::imap_proto::{
+        BodyContentCommon, BodyContentSinglePart, BodyParams, BodyStructure,
+    };
+
+    fn is_signature_mime(ty: &str, subtype: &str) -> bool {
+        ty.eq_ignore_ascii_case("application")
+            && (subtype.eq_ignore_ascii_case("pgp-signature")
+                || subtype.eq_ignore_ascii_case("pkcs7-signature")
+                || subtype.eq_ignore_ascii_case("x-pkcs7-signature"))
+    }
+
+    fn has_filename_param(params: &BodyParams<'_>) -> bool {
+        params.as_ref().is_some_and(|list| {
+            list.iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("filename") || k.eq_ignore_ascii_case("name"))
+        })
+    }
+
+    fn is_real_attachment(
+        common: &BodyContentCommon<'_>,
+        other: &BodyContentSinglePart<'_>,
+    ) -> bool {
+        if is_signature_mime(&common.ty.ty, &common.ty.subtype) {
+            return false;
+        }
+        let disposition_ty = common
+            .disposition
+            .as_ref()
+            .map(|d| d.ty.to_ascii_lowercase());
+        if disposition_ty.as_deref() == Some("attachment") {
+            return true;
+        }
+        if disposition_ty.as_deref() == Some("inline") {
+            return false;
+        }
+        if other.id.is_some() {
+            // A Content-ID with no explicit "attachment" disposition is an
+            // inline `cid:`-referenced part (multipart/related image), not a
+            // listed attachment, even if it also carries a filename param.
+            return false;
+        }
+        has_filename_param(&common.ty.params)
+            || common
+                .disposition
+                .as_ref()
+                .is_some_and(|d| has_filename_param(&d.params))
+    }
+
     fn walk(bs: &BodyStructure<'_>) -> bool {
         match bs {
-            BodyStructure::Multipart { common, bodies, .. } => {
-                if common.ty.subtype.eq_ignore_ascii_case("mixed") {
-                    return true;
-                }
-                bodies.iter().any(walk)
-            }
-            BodyStructure::Basic { common, .. } => common.ty.ty.eq_ignore_ascii_case("application"),
-            _ => false,
+            BodyStructure::Multipart { bodies, .. } => bodies.iter().any(walk),
+            BodyStructure::Basic { common, other, .. } => is_real_attachment(common, other),
+            BodyStructure::Text { common, other, .. } => is_real_attachment(common, other),
+            BodyStructure::Message { common, other, .. } => is_real_attachment(common, other),
         }
     }
-    fetch.bodystructure().map(walk).unwrap_or(false)
+    walk(bs)
 }
 
 /// Split an IMAP address into (display-name, email).
@@ -868,16 +934,45 @@ const SNIPPET_MAX_CHARS: usize = 160;
 /// running it through the same cleanup as the text path. Returns `None`
 /// when there is nothing to show, so callers can leave a prior snippet
 /// untouched (via `COALESCE`) or store an empty snippet.
+///
+/// Also falls back to `html` (when present) when `text` *looks* machine-glued
+/// — some senders' text/plain parts are tag-stripped HTML with no separators
+/// left between cells (e.g. Uber receipts: "15 Jul 202620:44Refunded…") — see
+/// [`looks_machine_glued`]. Text-only messages (no `html` part) always keep
+/// the text-derived snippet regardless of how it looks.
+///
+/// Whichever source is chosen, if it is itself machine-glued it is run
+/// through [`deglue`] before snippeting. This covers the sender class whose
+/// HTML is the *same* separator-free table markup the text part was stripped
+/// from — `html_to_text` then reproduces the glued text byte for byte, so
+/// falling back alone fixes nothing — as well as glued text-only messages.
+/// `deglue` is only ever applied to sources [`looks_machine_glued`] flagged:
+/// normal prose must never pass through it (it would split brand names like
+/// "PayPal" — acceptable collateral inside already-broken glued text, not in
+/// prose).
 pub fn snippet_for_body(text: Option<&str>, html: Option<&str>) -> Option<String> {
     if let Some(text) = text {
-        let snippet = snippet_from_text(text);
-        if !snippet.is_empty() {
-            return Some(snippet);
+        let glued = looks_machine_glued(text);
+        let prefer_text = html.is_none() || !glued;
+        if prefer_text {
+            let snippet = if glued {
+                snippet_from_text(&deglue(text))
+            } else {
+                snippet_from_text(text)
+            };
+            if !snippet.is_empty() {
+                return Some(snippet);
+            }
         }
     }
     let html = html?;
     let converted = html_to_text(html);
-    let snippet = snippet_from_text(&converted);
+    let source = if looks_machine_glued(&converted) {
+        deglue(&converted)
+    } else {
+        converted
+    };
+    let snippet = snippet_from_text(&source);
     if snippet.is_empty() {
         None
     } else {
@@ -885,16 +980,120 @@ pub fn snippet_for_body(text: Option<&str>, html: Option<&str>) -> Option<String
     }
 }
 
+/// Number of leading characters inspected by [`looks_machine_glued`].
+const GLUED_TEXT_SAMPLE_CHARS: usize = 200;
+/// Below this many sampled characters there isn't enough signal to judge;
+/// never flag short text as glued (avoids false positives on short prose).
+const GLUED_TEXT_MIN_SAMPLE_CHARS: usize = 40;
+/// Whitespace-to-character ratio below which the sample is considered
+/// machine-glued. Ordinary prose runs well above this (roughly one space per
+/// 5-6 characters, ratio ~0.15-0.2); tag-stripped machine-generated text with
+/// no separators between cells runs far below it. Kept conservative so real
+/// prose never trips it.
+const GLUED_TEXT_WHITESPACE_RATIO_THRESHOLD: f64 = 0.08;
+/// Number of glued boundaries (see [`glue_boundary_count`]) at or above which
+/// the sample is considered machine-glued. Real receipts hit several within
+/// their first line ("44Refunded", "Refunded15", "44Just"); normal prose
+/// almost never accumulates three in 200 chars (an occasional "3pm" or
+/// "PayPal" contributes one).
+const GLUED_TEXT_BOUNDARY_THRESHOLD: usize = 3;
+
+/// Whether the start of `text` looks like machine-glued, tag-stripped HTML
+/// rather than normal prose. Two signals over the first
+/// [`GLUED_TEXT_SAMPLE_CHARS`] characters, either of which qualifies:
+///
+/// - a very low whitespace-to-character ratio (fully glued output with no
+///   separators at all), or
+/// - several "glued boundaries" — digit→letter, letter→digit, or
+///   lowercase→uppercase adjacencies (partially glued output such as Uber
+///   receipts: "15 Jul 202620:44Refunded…" keeps normal spaces between many
+///   words, so its whitespace ratio looks like prose, but the cell seams
+///   leave these transitions behind).
+///
+/// Conservative by design — only the leading sample is checked, and short
+/// text never qualifies.
+fn looks_machine_glued(text: &str) -> bool {
+    let sample: Vec<char> = text
+        .trim_start()
+        .chars()
+        .take(GLUED_TEXT_SAMPLE_CHARS)
+        .collect();
+    if sample.len() < GLUED_TEXT_MIN_SAMPLE_CHARS {
+        return false;
+    }
+    let whitespace = sample.iter().filter(|c| c.is_whitespace()).count();
+    let ratio = whitespace as f64 / sample.len() as f64;
+    ratio < GLUED_TEXT_WHITESPACE_RATIO_THRESHOLD
+        || glue_boundary_count(&sample) >= GLUED_TEXT_BOUNDARY_THRESHOLD
+}
+
+/// Count adjacencies in `sample` that betray glued cell seams: an ASCII digit
+/// immediately followed by an ASCII letter ("44Refunded"), an ASCII letter
+/// immediately followed by an ASCII digit ("Refunded15"), or a lowercase
+/// ASCII letter immediately followed by an uppercase one ("Street.Total" is
+/// not one, but "TotalDue" is).
+fn glue_boundary_count(sample: &[char]) -> usize {
+    sample
+        .windows(2)
+        .filter(|pair| {
+            let (a, b) = (pair[0], pair[1]);
+            (a.is_ascii_digit() && b.is_ascii_alphabetic())
+                || (a.is_ascii_alphabetic() && b.is_ascii_digit())
+                || (a.is_ascii_lowercase() && b.is_ascii_uppercase())
+        })
+        .count()
+}
+
+/// Insert a single space at cell-seam boundaries in machine-glued text.
+///
+/// Splits between a character pair `(a, b)` when:
+/// - `a` is an ASCII digit and `b` an ASCII **uppercase** letter
+///   ("44Refunded" → "44 Refunded", "20:44Just" → "20:44 Just"),
+/// - `a` is an ASCII lowercase letter and `b` an ASCII uppercase letter
+///   ("appliedPrevious" → "applied Previous"),
+/// - `a` is an ASCII letter and `b` an ASCII digit
+///   ("Refunded15" → "Refunded 15"),
+/// - `a` is one of `.,!?;:` and `b` an ASCII uppercase letter
+///   ("Street.Total" → "Street. Total", "applied.To" → "applied. To").
+///
+/// Deliberately does **not** split digit→lowercase ("3pm" stays "3pm") or
+/// digit→digit ("202620:44" — the seam between "2026" and "20:44" — is
+/// ambiguous and must stay as-is). Punctuation followed by lowercase is also
+/// left alone so domains ("example.com") survive. Only ever called on text
+/// that [`looks_machine_glued`] already flagged — never on normal prose,
+/// where the lowercase→uppercase rule would split brand names ("PayPal").
+fn deglue(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 8);
+    let mut prev: Option<char> = None;
+    for c in text.chars() {
+        if let Some(p) = prev {
+            let split = (p.is_ascii_digit() && c.is_ascii_uppercase())
+                || (p.is_ascii_lowercase() && c.is_ascii_uppercase())
+                || (p.is_ascii_alphabetic() && c.is_ascii_digit())
+                || (matches!(p, '.' | ',' | '!' | '?' | ';' | ':') && c.is_ascii_uppercase());
+            if split {
+                out.push(' ');
+            }
+        }
+        out.push(c);
+        prev = Some(c);
+    }
+    out
+}
+
 /// Compute a single-line snippet from a plain-text body (~160 chars).
 ///
-/// Strips bare and bracket-wrapped (`()`, `[]`, `<>`) URLs — the "alt text +
-/// link soup" that marketing `text/plain` parts are usually made of — as
-/// well as raw HTML tags (some `text/plain` parts, e.g. The Economist's
-/// newsletters, embed literal markup like `<link rel=stylesheet href=...>`)
-/// — then collapses whitespace and trims leftover punctuation debris at the
-/// edges.
+/// Strips invisible preheader padding (literal HTML entities like `&zwnj;`
+/// and zero-width Unicode codepoints some senders abuse to pad the inbox
+/// preview text — see [`strip_invisible_padding`]), bare and bracket-wrapped
+/// (`()`, `[]`, `<>`) URLs — the "alt text + link soup" that marketing
+/// `text/plain` parts are usually made of — as well as raw HTML tags (some
+/// `text/plain` parts, e.g. The Economist's newsletters, embed literal markup
+/// like `<link rel=stylesheet href=...>`) — then collapses whitespace and
+/// trims leftover punctuation debris at the edges.
 pub fn snippet_from_text(text: &str) -> String {
-    let stripped = strip_urls(text);
+    let depadded = strip_invisible_padding(text);
+    let stripped = strip_urls(&depadded);
     let collapsed: String = stripped.split_whitespace().collect::<Vec<_>>().join(" ");
     let trimmed = collapsed.trim_matches(|c: char| {
         c.is_whitespace()
@@ -918,6 +1117,50 @@ pub fn snippet_from_text(text: &str) -> String {
             )
     });
     trimmed.chars().take(SNIPPET_MAX_CHARS).collect()
+}
+
+/// Named HTML entities some senders abuse as invisible preheader padding
+/// (e.g. "A Message From Our Team &zwnj; &zwnj; &zwnj; …" to push the real
+/// preview text out of the inbox list), paired with their plain-text
+/// replacement. `&nbsp;` becomes a literal space rather than being dropped so
+/// the words either side of it don't glue together; the rest are pure
+/// padding with nothing to preserve. Full entity decoding is not attempted —
+/// only this abused-as-padding set is handled.
+const PADDING_ENTITIES: &[(&str, &str)] = &[
+    ("&zwnj;", ""),
+    ("&zwj;", ""),
+    ("&shy;", ""),
+    ("&nbsp;", " "),
+];
+
+/// Whether `c` is an invisible/zero-width codepoint abused for the same
+/// preheader-padding purpose as [`PADDING_ENTITIES`] (e.g. a literal U+034F
+/// COMBINING GRAPHEME JOINER dropped between repeated entities).
+fn is_invisible_padding_char(c: char) -> bool {
+    matches!(
+        c,
+        '\u{200B}'
+            ..='\u{200D}' // zero-width space/non-joiner/joiner
+            | '\u{FEFF}'        // zero-width no-break space / BOM
+            | '\u{034F}'        // combining grapheme joiner
+            | '\u{00AD}' // soft hyphen
+    )
+}
+
+/// Strip literal HTML-entity and invisible-codepoint preheader padding from
+/// `text` before whitespace collapsing. Senders' `text/plain` parts sometimes
+/// contain literal entity text (not real HTML, so nothing decodes it
+/// upstream) interleaved with invisible Unicode padding characters purely to
+/// push real content out of the inbox preview.
+fn strip_invisible_padding(text: &str) -> String {
+    let mut result = text.to_string();
+    for (entity, replacement) in PADDING_ENTITIES {
+        result = replace_ascii_case_insensitive(&result, entity, replacement);
+    }
+    result
+        .chars()
+        .filter(|c| !is_invisible_padding_char(*c))
+        .collect()
 }
 
 /// Remove `http(s)://` URLs and raw HTML tags from `text`: bare URL tokens
@@ -1002,12 +1245,17 @@ fn is_tag_start(chars: &[char], idx: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_mime_words, parse_body, recent_sequence_set, replace_ascii_case_insensitive,
-        snippet_for_body, snippet_from_text, unquote_display_name, BODY_FETCH_QUERY,
-        SNIPPET_MAX_CHARS,
+        body_structure_has_real_attachment, decode_mime_words, deglue, parse_body,
+        recent_sequence_set, replace_ascii_case_insensitive, snippet_for_body, snippet_from_text,
+        unquote_display_name, BODY_FETCH_QUERY, SNIPPET_MAX_CHARS,
+    };
+    use async_imap::imap_proto::{
+        BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentDisposition,
+        ContentEncoding, ContentType,
     };
     use base64::Engine;
     use mail_parser::MessageParser;
+    use std::borrow::Cow;
 
     #[test]
     fn recent_sequence_range_is_bounded_to_existing_messages() {
@@ -1386,5 +1634,371 @@ mod tests {
             snippet_for_body(Some("   "), Some("<style>a{}</style>")),
             None
         );
+    }
+
+    // --- Issue #21: literal entity / invisible-codepoint preheader padding --
+
+    #[test]
+    fn snippet_from_text_strips_zwnj_entity_padding() {
+        // The exact repro flavor from the papercut report: an image alt-text
+        // style preamble padded with repeated literal &zwnj; entities to push
+        // the real preview text out of the inbox list.
+        let input = "A Message From Our Team &zwnj; &zwnj; &zwnj; &zwnj; Here is the real update for this week.";
+        assert_eq!(
+            snippet_from_text(input),
+            "A Message From Our Team Here is the real update for this week."
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_strips_invisible_codepoints_between_entities() {
+        // A literal U+034F COMBINING GRAPHEME JOINER interleaved between
+        // repeated padding entities, as seen in the real report.
+        let input =
+            "A Message From Our Team &zwnj;\u{034F} &zwnj;\u{034F} &zwnj;\u{034F} Real content here";
+        assert_eq!(
+            snippet_from_text(input),
+            "A Message From Our Team Real content here"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_replaces_nbsp_with_space_not_glue() {
+        // &nbsp; must become a space, not disappear, or the words either
+        // side of it would glue together.
+        assert_eq!(snippet_from_text("Hello&nbsp;World"), "Hello World");
+    }
+
+    #[test]
+    fn snippet_from_text_strips_other_padding_entities() {
+        assert_eq!(
+            snippet_from_text("Before &zwj; &shy; After"),
+            "Before After"
+        );
+    }
+
+    #[test]
+    fn snippet_from_text_strips_padding_case_insensitively() {
+        assert_eq!(snippet_from_text("Hi &ZWNJ; there"), "Hi there");
+        assert_eq!(snippet_from_text("Hi&NBSP;there"), "Hi there");
+    }
+
+    // --- Issue #20: machine-glued text/plain falls back to HTML ------------
+
+    const GLUED_UBER_STYLE_TEXT: &str = "TripreceiptTotal$24.5015Jul202620:44Refunded15Jul2026,20:44PaymentVisa1234SubtotalCityToCityFare$20.00BookingFee$2.50Tolls$2.00ThanksforridingwithUber";
+
+    /// The real repro from the issue: partially glued — normal spaces remain
+    /// between many words (whitespace ratio ~prose level), but the cell seams
+    /// leave digit→letter / letter→digit / lower→UPPER boundaries behind
+    /// ("44Refunded", "Refunded15", "44Just", "Street.Total£19.54").
+    const PARTIALLY_GLUED_UBER_REPRO_TEXT: &str = "15 Jul 202620:44Refunded15 Jul 2026 , 20:44Just a quick update, Harry\nWe adjusted the total for your trip to Hoe Street.Total£19.54 Your refund has been applied.To view your updated receipt, open the app.";
+
+    #[test]
+    fn snippet_for_body_falls_back_to_html_for_glued_machine_text() {
+        let html =
+            "<html><body><p>Trip receipt total is $24.50, refunded on 15 Jul 2026.</p></body></html>";
+        assert_eq!(
+            snippet_for_body(Some(GLUED_UBER_STYLE_TEXT), Some(html)),
+            Some("Trip receipt total is $24.50, refunded on 15 Jul 2026.".to_string())
+        );
+    }
+
+    #[test]
+    fn snippet_for_body_deglues_when_html_fallback_is_equally_glued() {
+        // The real Uber case (message row 1119): the sender's HTML is the
+        // same separator-free table markup its text part was stripped from,
+        // so html_to_text reproduces the glued text byte for byte and the
+        // fallback alone is a no-op. The chosen source must be deglued.
+        let html = format!(
+            "<html><body><table><tr><td>{PARTIALLY_GLUED_UBER_REPRO_TEXT}</td></tr></table></body></html>"
+        );
+        let snippet = snippet_for_body(Some(PARTIALLY_GLUED_UBER_REPRO_TEXT), Some(&html))
+            .expect("snippet present");
+        assert!(
+            snippet.contains("44 Refunded"),
+            "digit→uppercase seam split: {snippet}"
+        );
+        assert!(
+            snippet.contains("Refunded 15"),
+            "letter→digit seam split: {snippet}"
+        );
+        assert!(
+            snippet.contains("44 Just"),
+            "digit→uppercase seam split: {snippet}"
+        );
+        assert!(
+            !snippet.contains("44Refunded"),
+            "glued seam left: {snippet}"
+        );
+        assert!(!snippet.contains("44Just"), "glued seam left: {snippet}");
+    }
+
+    #[test]
+    fn snippet_for_body_keeps_normal_prose_text_even_with_html_present() {
+        let prose = "Hi team, just a quick update on the roadmap for next week. We shipped the new snippet heuristic and it looks solid.";
+        let html = "<html><body><p>HTML alt version, should not be used</p></body></html>";
+        assert_eq!(
+            snippet_for_body(Some(prose), Some(html)),
+            Some(prose.to_string())
+        );
+    }
+
+    #[test]
+    fn snippet_for_body_prose_never_passes_through_deglue() {
+        // Brand-style mixed case and times in prose must survive: deglue
+        // would split "PayPal", so it must only run on sources flagged as
+        // glued — this sentence carries two boundary signals ("yP" in
+        // PayPal, "3p" in 3pm), below the three-boundary threshold.
+        let prose =
+            "Your PayPal payment went through at 3pm as expected, nothing else for you to do.";
+        assert_eq!(snippet_for_body(Some(prose), None), Some(prose.to_string()));
+    }
+
+    #[test]
+    fn snippet_for_body_deglues_glued_text_when_no_html_part_exists() {
+        // Text-only messages have nothing to fall back to; the glued text
+        // itself is deglued before snippeting.
+        let snippet = snippet_for_body(Some(GLUED_UBER_STYLE_TEXT), None).expect("snippet present");
+        assert_eq!(snippet, snippet_from_text(&deglue(GLUED_UBER_STYLE_TEXT)));
+        assert!(
+            snippet.contains("44 Refunded"),
+            "seams must be split: {snippet}"
+        );
+        assert!(
+            !snippet.contains("44Refunded"),
+            "glued seam left: {snippet}"
+        );
+    }
+
+    #[test]
+    fn deglue_splits_each_boundary_class() {
+        // digit → uppercase.
+        assert_eq!(deglue("44Refunded"), "44 Refunded");
+        assert_eq!(deglue("20:44Just"), "20:44 Just");
+        // lowercase → uppercase.
+        assert_eq!(deglue("appliedPrevious"), "applied Previous");
+        // letter → digit (both cases).
+        assert_eq!(deglue("Refunded15"), "Refunded 15");
+        assert_eq!(deglue("total19"), "total 19");
+        // punctuation → uppercase.
+        assert_eq!(deglue("Street.Total"), "Street. Total");
+        assert_eq!(deglue("applied.To"), "applied. To");
+        assert_eq!(
+            deglue("one,Two!Three?Four;Five:Six"),
+            "one, Two! Three? Four; Five: Six"
+        );
+    }
+
+    #[test]
+    fn deglue_leaves_ambiguous_pairs_alone() {
+        // digit → lowercase: times like "3pm" must stay intact.
+        assert_eq!(deglue("at 3pm today"), "at 3pm today");
+        // digit → digit: "202620:44" (the "2026"/"20:44" seam) is ambiguous
+        // and must stay as-is.
+        assert_eq!(deglue("15 Jul 202620:44"), "15 Jul 202620:44");
+        // punctuation → lowercase: domains survive.
+        assert_eq!(deglue("visit example.com now"), "visit example.com now");
+        // uppercase → uppercase: acronyms survive.
+        assert_eq!(deglue("HTML and PDF"), "HTML and PDF");
+        // Already-spaced text is untouched.
+        assert_eq!(deglue("Refunded 15 Jul"), "Refunded 15 Jul");
+    }
+
+    // --- Issue #11: tightened BODYSTRUCTURE attachment heuristic -----------
+
+    fn ct(
+        ty: &'static str,
+        subtype: &'static str,
+        params: Option<Vec<(&'static str, &'static str)>>,
+    ) -> ContentType<'static> {
+        ContentType {
+            ty: Cow::Borrowed(ty),
+            subtype: Cow::Borrowed(subtype),
+            params: params.map(|v| {
+                v.into_iter()
+                    .map(|(k, val)| (Cow::Borrowed(k), Cow::Borrowed(val)))
+                    .collect()
+            }),
+        }
+    }
+
+    fn disp(
+        ty: &'static str,
+        params: Option<Vec<(&'static str, &'static str)>>,
+    ) -> ContentDisposition<'static> {
+        ContentDisposition {
+            ty: Cow::Borrowed(ty),
+            params: params.map(|v| {
+                v.into_iter()
+                    .map(|(k, val)| (Cow::Borrowed(k), Cow::Borrowed(val)))
+                    .collect()
+            }),
+        }
+    }
+
+    fn single_part(content_id: Option<&'static str>) -> BodyContentSinglePart<'static> {
+        BodyContentSinglePart {
+            id: content_id.map(Cow::Borrowed),
+            md5: None,
+            description: None,
+            transfer_encoding: ContentEncoding::Base64,
+            octets: 100,
+        }
+    }
+
+    fn basic_part(
+        ty: &'static str,
+        subtype: &'static str,
+        disposition: Option<ContentDisposition<'static>>,
+        ct_params: Option<Vec<(&'static str, &'static str)>>,
+        content_id: Option<&'static str>,
+    ) -> BodyStructure<'static> {
+        BodyStructure::Basic {
+            common: BodyContentCommon {
+                ty: ct(ty, subtype, ct_params),
+                disposition,
+                language: None,
+                location: None,
+            },
+            other: single_part(content_id),
+            extension: None,
+        }
+    }
+
+    fn text_part(subtype: &'static str) -> BodyStructure<'static> {
+        BodyStructure::Text {
+            common: BodyContentCommon {
+                ty: ct("text", subtype, None),
+                disposition: None,
+                language: None,
+                location: None,
+            },
+            other: single_part(None),
+            lines: 10,
+            extension: None,
+        }
+    }
+
+    fn multipart(
+        subtype: &'static str,
+        bodies: Vec<BodyStructure<'static>>,
+    ) -> BodyStructure<'static> {
+        BodyStructure::Multipart {
+            common: BodyContentCommon {
+                ty: ct("multipart", subtype, None),
+                disposition: None,
+                language: None,
+                location: None,
+            },
+            bodies,
+            extension: None,
+        }
+    }
+
+    #[test]
+    fn bodystructure_flags_a_real_listed_attachment() {
+        let bs = multipart(
+            "mixed",
+            vec![
+                text_part("plain"),
+                basic_part(
+                    "application",
+                    "pdf",
+                    Some(disp("attachment", Some(vec![("filename", "report.pdf")]))),
+                    None,
+                    None,
+                ),
+            ],
+        );
+        assert!(body_structure_has_real_attachment(&bs));
+    }
+
+    #[test]
+    fn bodystructure_ignores_multipart_related_inline_image() {
+        // No explicit disposition, just a Content-ID referenced by the HTML
+        // body via cid: — the classic multipart/related embedded image.
+        let no_disposition = multipart(
+            "related",
+            vec![
+                text_part("html"),
+                basic_part("image", "png", None, None, Some("img1@example.com")),
+            ],
+        );
+        assert!(!body_structure_has_real_attachment(&no_disposition));
+
+        // Explicit `inline` disposition with a filename param must also be
+        // excluded (some senders still attach a name to inline images).
+        let explicit_inline = multipart(
+            "related",
+            vec![
+                text_part("html"),
+                basic_part(
+                    "image",
+                    "png",
+                    Some(disp("inline", Some(vec![("filename", "image001.png")]))),
+                    None,
+                    Some("img1@example.com"),
+                ),
+            ],
+        );
+        assert!(!body_structure_has_real_attachment(&explicit_inline));
+    }
+
+    #[test]
+    fn bodystructure_ignores_pgp_and_smime_signature_parts() {
+        let pgp_signed = multipart(
+            "signed",
+            vec![
+                text_part("plain"),
+                // Even with an explicit attachment disposition + filename,
+                // a signature part is never a real user-facing attachment.
+                basic_part(
+                    "application",
+                    "pgp-signature",
+                    Some(disp(
+                        "attachment",
+                        Some(vec![("filename", "signature.asc")]),
+                    )),
+                    None,
+                    None,
+                ),
+            ],
+        );
+        assert!(!body_structure_has_real_attachment(&pgp_signed));
+
+        let smime_signed = multipart(
+            "signed",
+            vec![
+                text_part("plain"),
+                basic_part("application", "pkcs7-signature", None, None, None),
+            ],
+        );
+        assert!(!body_structure_has_real_attachment(&smime_signed));
+    }
+
+    #[test]
+    fn bodystructure_flags_attachment_missing_content_disposition() {
+        // Some senders omit Content-Disposition entirely; a filename/name
+        // param with no Content-ID is still a strong real-attachment signal.
+        let bs = multipart(
+            "mixed",
+            vec![
+                text_part("plain"),
+                basic_part(
+                    "application",
+                    "zip",
+                    None,
+                    Some(vec![("name", "archive.zip")]),
+                    None,
+                ),
+            ],
+        );
+        assert!(body_structure_has_real_attachment(&bs));
+    }
+
+    #[test]
+    fn bodystructure_plain_text_and_html_body_alone_is_not_an_attachment() {
+        let bs = multipart("alternative", vec![text_part("plain"), text_part("html")]);
+        assert!(!body_structure_has_real_attachment(&bs));
     }
 }

@@ -858,6 +858,58 @@ pub fn replace_attachments(
     Ok(())
 }
 
+/// Recompute the preview snippet of every message with a cached body and
+/// update the rows whose snippet actually changes. Returns how many changed.
+///
+/// Snippet cleanup logic evolves (entity padding, URL soup, glued-text
+/// fallback, …), but a cached body is never re-fetched, so rows snippeted by
+/// an older version of the logic would otherwise stay wrong forever. This
+/// pass runs once at every startup: the cached-body population is small
+/// (bounded by the body prefetch/foreground-read paths), recomputing is pure
+/// string work, and self-healing on each launch avoids any snippet-version
+/// bookkeeping. Only rows whose recomputed snippet differs are UPDATEd —
+/// the `messages_fts` AFTER UPDATE trigger fires on snippet writes, so
+/// skipping no-op rows keeps the pass cheap. A `None` recompute result
+/// (nothing usable in either body part) leaves the stored snippet untouched,
+/// matching `set_body`'s COALESCE behavior.
+pub fn heal_cached_snippets<F>(conn: &Connection, recompute: F) -> Result<usize>
+where
+    F: Fn(Option<&str>, Option<&str>) -> Option<String>,
+{
+    let mut stmt = conn
+        .prepare("SELECT id, snippet, body_text, body_html FROM messages WHERE body_cached = 1")
+        .context("preparing snippet healing query")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .context("querying cached bodies for snippet healing")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("collecting cached bodies for snippet healing")?;
+
+    let mut changed = 0;
+    for (id, current, text, html) in rows {
+        let Some(fresh) = recompute(text.as_deref(), html.as_deref()) else {
+            continue;
+        };
+        if fresh == current {
+            continue;
+        }
+        conn.execute(
+            "UPDATE messages SET snippet = ?1 WHERE id = ?2",
+            params![fresh, id],
+        )
+        .context("updating healed snippet")?;
+        changed += 1;
+    }
+    Ok(changed)
+}
+
 /// List an attachment metadata rows for a message, ordered by parse position.
 pub fn list_attachments(conn: &Connection, message_id: i64) -> Result<Vec<AttachmentRow>> {
     let mut stmt = conn.prepare(
@@ -974,6 +1026,77 @@ pub fn set_flagged(conn: &Connection, message_id: i64, flagged: bool) -> Result<
         )
         .context("setting flagged")?;
     Ok(changed > 0)
+}
+
+/// Read the RFC 5322 Message-ID header cached for a message row, if any.
+pub fn message_id_header(conn: &Connection, message_id: i64) -> Result<Option<String>> {
+    let value: Option<Option<String>> = conn
+        .query_row(
+            "SELECT message_id FROM messages WHERE id = ?1",
+            params![message_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .context("reading message-id header")?;
+    Ok(value.flatten())
+}
+
+/// Update the seen flag on every other cached copy of a message sharing the
+/// same RFC 5322 Message-ID within an account, adjusting each affected
+/// folder's unread count. Used for Gmail, where the same physical message is
+/// exposed under multiple folders (labels): marking it seen in one folder
+/// should not leave stale unread copies in the others until their next sync.
+///
+/// `exclude_message_row_id` is the row already updated by the caller (so it
+/// is not touched again here). Rows whose cached `seen` value already
+/// matches `seen` are left untouched. Returns the distinct folder ids that
+/// were changed, so the caller can emit update events for them.
+pub fn mark_seen_for_message_id_siblings(
+    conn: &Connection,
+    account_id: &str,
+    message_id_header: &str,
+    exclude_message_row_id: i64,
+    seen: bool,
+) -> Result<Vec<i64>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.id, m.folder_id, m.seen \
+             FROM messages m JOIN folders f ON f.id = m.folder_id \
+             WHERE f.account_id = ?1 AND m.message_id = ?2 AND m.id != ?3",
+        )
+        .context("preparing sibling lookup")?;
+    let rows = stmt
+        .query_map(
+            params![account_id, message_id_header, exclude_message_row_id],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                ))
+            },
+        )
+        .context("querying sibling messages")?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("collecting sibling messages")?;
+
+    let mut changed_folders = Vec::new();
+    for (row_id, folder_id, was_seen) in rows {
+        if was_seen == seen {
+            continue;
+        }
+        conn.execute(
+            "UPDATE messages SET seen = ?1 WHERE id = ?2",
+            params![seen as i64, row_id],
+        )
+        .context("updating sibling seen state")?;
+        let delta = if seen { -1 } else { 1 };
+        adjust_folder_unread_count(conn, folder_id, delta)?;
+        if !changed_folders.contains(&folder_id) {
+            changed_folders.push(folder_id);
+        }
+    }
+    Ok(changed_folders)
 }
 
 /// Remove a message row from the local cache and adjust its source folder's
@@ -1395,6 +1518,266 @@ mod tests {
             .expect("folder exists");
         assert_eq!(folder.total_count, 0);
         assert_eq!(folder.unread_count, 0);
+    }
+
+    #[test]
+    fn mark_seen_for_message_id_siblings_updates_other_folders_only() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_schema(&conn).expect("initialize schema");
+        let (inbox_id, _) =
+            upsert_folder(&conn, "acct", "INBOX", FolderRole::Inbox, 1).expect("inbox");
+        let (archive_id, _) =
+            upsert_folder(&conn, "acct", "All Mail", FolderRole::Archive, 1).expect("archive");
+        let (other_acct_folder, _) =
+            upsert_folder(&conn, "other-acct", "INBOX", FolderRole::Inbox, 1).expect("other acct");
+        set_folder_counts(&conn, inbox_id, 5, 2).expect("set inbox counts");
+        set_folder_counts(&conn, archive_id, 5, 2).expect("set archive counts");
+        set_folder_counts(&conn, other_acct_folder, 5, 2).expect("set other acct counts");
+
+        let shared_message_id = "<gmail-shared@example.com>";
+        let make = |folder_id: i64, uid: u32, account: &str| {
+            upsert_message(
+                &conn,
+                &MessageUpsert {
+                    folder_id,
+                    uid,
+                    message_id: Some(shared_message_id.into()),
+                    subject: "s".into(),
+                    from_name: String::new(),
+                    from_addr: "a@b.com".into(),
+                    to_addrs: Vec::new(),
+                    cc_addrs: Vec::new(),
+                    date: format!("2026-07-14T00:00:{uid:02}Z"),
+                    snippet: String::new(),
+                    seen: false,
+                    flagged: false,
+                    has_attachments: false,
+                    rfc822_size: 100,
+                },
+            )
+            .unwrap_or_else(|_| panic!("insert message for {account}"))
+        };
+
+        let inbox_row = make(inbox_id, 1, "acct");
+        let archive_row = make(archive_id, 1, "acct");
+        // Same Message-ID under a *different* account must never be touched.
+        let other_acct_row = make(other_acct_folder, 1, "other-acct");
+
+        // A distinct message in the archive folder (different Message-ID)
+        // must never be touched either.
+        let unrelated_row = upsert_message(
+            &conn,
+            &MessageUpsert {
+                folder_id: archive_id,
+                uid: 2,
+                message_id: Some("<unrelated@example.com>".into()),
+                subject: "s".into(),
+                from_name: String::new(),
+                from_addr: "a@b.com".into(),
+                to_addrs: Vec::new(),
+                cc_addrs: Vec::new(),
+                date: "2026-07-14T00:00:02Z".into(),
+                snippet: String::new(),
+                seen: false,
+                flagged: false,
+                has_attachments: false,
+                rfc822_size: 100,
+            },
+        )
+        .expect("insert unrelated message");
+
+        // Mark the inbox copy seen (as `mark_read` already did for the row
+        // itself), then propagate to siblings sharing the Message-ID.
+        assert!(mark_seen(&conn, inbox_row, true).expect("mark inbox copy seen"));
+        let changed =
+            mark_seen_for_message_id_siblings(&conn, "acct", shared_message_id, inbox_row, true)
+                .expect("propagate to siblings");
+
+        assert_eq!(changed, vec![archive_id]);
+
+        let read_seen = |id: i64| -> bool {
+            conn.query_row(
+                "SELECT seen FROM messages WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, i64>(0),
+            )
+            .expect("read seen")
+                != 0
+        };
+        assert!(read_seen(archive_row), "archive sibling marked seen");
+        assert!(
+            !read_seen(other_acct_row),
+            "other account's copy must be untouched"
+        );
+        assert!(
+            !read_seen(unrelated_row),
+            "message with a different Message-ID must be untouched"
+        );
+
+        // Unread counts: archive folder drops by one; other account/folder
+        // and the (already updated by the caller) inbox folder are
+        // untouched by this call.
+        let archive = get_folder(&conn, archive_id).unwrap().unwrap();
+        assert_eq!(archive.unread_count, 1);
+        let other = get_folder(&conn, other_acct_folder).unwrap().unwrap();
+        assert_eq!(other.unread_count, 2);
+
+        // Calling again is a no-op: both rows already match `seen = true`.
+        let changed_again =
+            mark_seen_for_message_id_siblings(&conn, "acct", shared_message_id, inbox_row, true)
+                .expect("second propagate is a no-op");
+        assert!(changed_again.is_empty());
+    }
+
+    #[test]
+    fn heal_cached_snippets_recomputes_stale_rows_and_skips_current_ones() {
+        use crate::sync::imap::snippet_for_body;
+
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_schema(&conn).expect("initialize schema");
+        let (folder_id, _) =
+            upsert_folder(&conn, "acct", "INBOX", FolderRole::Inbox, 1).expect("insert folder");
+        let read_snippet = |id: i64| -> String {
+            conn.query_row(
+                "SELECT snippet FROM messages WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .expect("read snippet")
+        };
+
+        // A cached body whose stored snippet predates the entity-padding
+        // cleanup: literal &zwnj; padding survived into the snippet.
+        let entity_text = "A Message From Our Team &zwnj; &zwnj; &zwnj; Real update here";
+        let stale_id = insert_searchable(
+            &conn,
+            folder_id,
+            1,
+            "Wilson",
+            "Team",
+            "team@example.com",
+            "",
+        );
+        set_body(
+            &conn,
+            stale_id,
+            Some(entity_text),
+            None,
+            &[],
+            &[],
+            // Simulate the old logic having stored a padded snippet. The
+            // "staletoken" marker lets the FTS assertion below prove the
+            // snippet column was re-indexed without colliding with the
+            // body_text column (which legitimately keeps the raw entities).
+            Some("staletoken A Message From Our Team &zwnj; &zwnj; Real update here"),
+        )
+        .expect("cache body with stale snippet");
+
+        // A cached body whose snippet already matches the current logic.
+        let fresh_text = "Hi team, quick update on the roadmap for next week.";
+        let fresh_id =
+            insert_searchable(&conn, folder_id, 2, "Roadmap", "PM", "pm@example.com", "");
+        set_body(
+            &conn,
+            fresh_id,
+            Some(fresh_text),
+            None,
+            &[],
+            &[],
+            snippet_for_body(Some(fresh_text), None).as_deref(),
+        )
+        .expect("cache body with current snippet");
+
+        // An envelope-only row (no cached body) must never be touched.
+        let uncached_id = insert_searchable(
+            &conn,
+            folder_id,
+            3,
+            "Envelope",
+            "S",
+            "s@example.com",
+            "envelope snippet &zwnj; stays",
+        );
+
+        let changed = heal_cached_snippets(&conn, snippet_for_body).expect("heal");
+        assert_eq!(changed, 1, "only the stale cached row is rewritten");
+        assert_eq!(
+            read_snippet(stale_id),
+            "A Message From Our Team Real update here"
+        );
+        assert_eq!(read_snippet(fresh_id), fresh_text);
+        assert_eq!(read_snippet(uncached_id), "envelope snippet &zwnj; stays");
+
+        // The healed snippet is re-indexed (the FTS AFTER UPDATE trigger
+        // fired): the old snippet's marker token no longer matches anything.
+        assert!(
+            search_messages(&conn, "staletoken", None, 0, 50)
+                .expect("search")
+                .is_empty(),
+            "the stale snippet must be gone from the FTS index"
+        );
+
+        // Second run is a no-op: everything already matches current logic.
+        let changed_again = heal_cached_snippets(&conn, snippet_for_body).expect("heal again");
+        assert_eq!(changed_again, 0);
+    }
+
+    #[test]
+    fn message_id_header_reads_null_and_present_values() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_schema(&conn).expect("initialize schema");
+        let (folder_id, _) =
+            upsert_folder(&conn, "acct", "INBOX", FolderRole::Inbox, 1).expect("folder");
+        let with_id = upsert_message(
+            &conn,
+            &MessageUpsert {
+                folder_id,
+                uid: 1,
+                message_id: Some("<a@b.com>".into()),
+                subject: String::new(),
+                from_name: String::new(),
+                from_addr: "a@b.com".into(),
+                to_addrs: Vec::new(),
+                cc_addrs: Vec::new(),
+                date: "2026-07-14T00:00:00Z".into(),
+                snippet: String::new(),
+                seen: true,
+                flagged: false,
+                has_attachments: false,
+                rfc822_size: 0,
+            },
+        )
+        .expect("insert with id");
+        let without_id = upsert_message(
+            &conn,
+            &MessageUpsert {
+                folder_id,
+                uid: 2,
+                message_id: None,
+                subject: String::new(),
+                from_name: String::new(),
+                from_addr: "a@b.com".into(),
+                to_addrs: Vec::new(),
+                cc_addrs: Vec::new(),
+                date: "2026-07-14T00:00:01Z".into(),
+                snippet: String::new(),
+                seen: true,
+                flagged: false,
+                has_attachments: false,
+                rfc822_size: 0,
+            },
+        )
+        .expect("insert without id");
+
+        assert_eq!(
+            message_id_header(&conn, with_id).expect("read"),
+            Some("<a@b.com>".to_string())
+        );
+        assert_eq!(message_id_header(&conn, without_id).expect("read"), None);
+        assert_eq!(
+            message_id_header(&conn, 999_999).expect("read missing"),
+            None
+        );
     }
 
     #[test]

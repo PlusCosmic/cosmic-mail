@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { mail } from "$lib/stores/mail.svelte";
-	import { roleGlyph } from "$lib/format";
+	import { roleGlyph, displayFolderName } from "$lib/format";
 	import type { Folder } from "$lib/types";
 
 	function selectFolder(f: Folder) {
@@ -27,7 +27,7 @@
 						onclick={() => selectFolder(folder)}
 					>
 						<span class="glyph">{roleGlyph(folder.role)}</span>
-						<span class="fname">{folder.name}</span>
+						<span class="fname">{displayFolderName(folder.name)}</span>
 						{#if folder.unreadCount > 0}
 							<span class="badge">{folder.unreadCount}</span>
 						{/if}

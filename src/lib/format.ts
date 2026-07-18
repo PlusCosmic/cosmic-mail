@@ -93,6 +93,17 @@ export function formatBytes(bytes: number): string {
 	return `${text} ${units[exp]}`;
 }
 
+/**
+ * Gmail nests its system mailboxes under a literal "[Gmail]/" IMAP path
+ * (e.g. "[Gmail]/Sent Mail", "[Gmail]/Drafts"). Strip that prefix for
+ * display only — every command, key, and lookup keeps using the real
+ * `Folder.name` path returned by the backend.
+ */
+export function displayFolderName(name: string): string {
+	const prefix = "[Gmail]/";
+	return name.startsWith(prefix) ? name.slice(prefix.length) : name;
+}
+
 /** Full timestamp for the reader header. */
 export function fullDate(iso: string): string {
 	const d = new Date(iso);

@@ -1,11 +1,12 @@
 <script lang="ts">
 	import { mail } from "$lib/stores/mail.svelte";
+	import { displayFolderName } from "$lib/format";
 
 	let { searchEl = $bindable() }: { searchEl?: HTMLInputElement } = $props();
 
 	const title = $derived.by(() => {
 		if (mail.unified) return "Unified Inbox";
-		if (mail.selectedFolder) return mail.selectedFolder.name;
+		if (mail.selectedFolder) return displayFolderName(mail.selectedFolder.name);
 		if (mail.selectedAccountId) {
 			const acc = mail.accounts.find((a) => a.id === mail.selectedAccountId);
 			return acc ? acc.email : "No folder";

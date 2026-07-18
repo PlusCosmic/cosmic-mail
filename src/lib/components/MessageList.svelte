@@ -130,7 +130,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
-		padding: 8px 14px;
+		padding: 8px 26px 8px 14px;
 		background: var(--panel);
 		border-bottom: 1px solid var(--border);
 		font-size: 11px;
@@ -181,7 +181,7 @@
 		display: grid;
 		grid-template-columns: 9px 26px 1fr auto;
 		gap: 3px 10px;
-		padding: 9px 14px 9px 12px;
+		padding: 9px 26px 9px 12px;
 		border-bottom: 1px solid var(--border-soft);
 		cursor: pointer;
 		align-items: start;

@@ -58,6 +58,20 @@ pub fn run() {
         .setup(|app| {
             // Open the database and build shared state.
             let conn = store::open()?;
+
+            // Heal preview snippets of already-cached bodies with the current
+            // snippet logic. Cached bodies are never re-fetched, so rows
+            // snippeted by an older cleanup version would stay wrong forever
+            // without this. Runs synchronously here — before any sync task
+            // (it must heal even when sync can't run, e.g. no OAuth token)
+            // and before the webview fetches its first message pages, so no
+            // update events are needed.
+            match store::heal_cached_snippets(&conn, sync::imap::snippet_for_body) {
+                Ok(0) => {}
+                Ok(count) => tracing::info!(count, "healed stale message snippets"),
+                Err(err) => tracing::warn!(error = %err, "snippet healing failed"),
+            }
+
             let app_state = AppState::new(conn);
             let db = app_state.db.clone();
 
