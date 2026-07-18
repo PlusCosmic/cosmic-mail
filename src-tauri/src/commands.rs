@@ -120,6 +120,48 @@ pub async fn start_gmail_oauth(app: AppHandle) -> AppResult<accounts::AccountPub
     Ok(account.public())
 }
 
+/// Re-run the interactive Gmail OAuth consent for an existing account.
+///
+/// Recovers from dead credentials (e.g. the 7-day refresh-token expiry of a
+/// "Testing"-status Google OAuth client) in place: the account, its folders,
+/// and its cached mail are untouched — only the keyring refresh token is
+/// replaced. Errors without storing anything if the completed consent belongs
+/// to a different Google account than the one being reconnected.
+#[tauri::command]
+pub async fn reauth_gmail_account(
+    app: AppHandle,
+    account_id: String,
+) -> AppResult<accounts::AccountPublic> {
+    let account = load_account(&account_id)?;
+    if account.kind != AccountKind::Gmail {
+        return Err(AppError::msg(
+            "Only Gmail accounts use OAuth re-authentication",
+        ));
+    }
+
+    let outcome = crate::auth::oauth::run_oauth_flow(&app)
+        .await
+        .map_err(AppError::from)?;
+
+    if !outcome.email.eq_ignore_ascii_case(&account.email) {
+        return Err(AppError::msg(format!(
+            "You signed in as {}, but this account is {}. Sign in with the matching Google account.",
+            outcome.email, account.email
+        )));
+    }
+
+    accounts::set_oauth_refresh_token(&account.id, &outcome.refresh_token)
+        .map_err(AppError::from)?;
+    crate::auth::oauth::cache_token(&account.id, &outcome.access_token, outcome.expires_in);
+
+    let state = app.state::<AppState>();
+    state
+        .sync
+        .start(app.clone(), state.db.clone(), account.clone());
+
+    Ok(account.public())
+}
+
 /// Remove an account, its cached data, secrets, and running sync task.
 #[tauri::command]
 pub fn remove_account(app: AppHandle, account_id: String) -> AppResult<()> {
@@ -378,6 +420,7 @@ pub async fn mark_read(app: AppHandle, message_id: i64, seen: bool) -> AppResult
         .map_err(AppError::from)?;
     let _ = session.logout().await;
 
+    let mut sibling_folders = Vec::new();
     {
         let conn = state
             .db
@@ -436,7 +479,6 @@ pub async fn mark_flagged(app: AppHandle, message_id: i64, flagged: bool) -> App
         .map_err(AppError::from)?;
     let _ = session.logout().await;
 
-    let mut sibling_folders = Vec::new();
     {
         let conn = state
             .db

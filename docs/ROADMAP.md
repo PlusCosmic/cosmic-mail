@@ -110,9 +110,20 @@ Last updated: 2026-07-15 (known limitations migrated to GitHub issues).
   required WebKitGTK/GTK runtimes.
 - Shakedown fixes landed: WebKit DMA-BUF/Wayland crash, rustls dual-backend panic,
   XOAUTH2 double-encoding, theme-watcher feedback loop (see GOTCHAS.md).
+- **Gmail in-place re-auth (2026-07-18)**: dead Gmail credentials (7-day "Testing"-status
+  refresh-token expiry, revoked access, vanished keyring entry) are classified with an
+  `AuthExpired` marker in `auth/oauth.rs`; sync emits `needsReauth: true` on
+  `mail:sync-state`, the store toasts once (not per backoff retry) and flags the account,
+  and Settings offers a per-Gmail-account **Reconnect** button (`reauth_gmail_account`)
+  that re-runs consent, verifies the same address was chosen, and swaps the keyring
+  refresh token without touching the account or its cached mail.
 
 ## Not yet verified (built, needs live confirmation)
 
+- **Gmail re-auth round trip**: with the currently-expired test account, confirm the expired
+  toast + Settings "sign-in expired" flag appear, then click Reconnect, complete consent in
+  the browser, and confirm sync resumes and the flag clears (needs a human at the consent
+  screen — the flow blocks on Google's page).
 - **System tray interactions**: confirm the icon and its three-item menu appear under Waybar from
   both normal and `--background` startup; verify Open focuses the existing window, Sync now
   restarts every account without another process, and Quit leaves the promoted service inactive.

@@ -40,6 +40,10 @@ export function startGmailOauth(): Promise<Account> {
 	return invoke("start_gmail_oauth");
 }
 
+export function reauthGmailAccount(accountId: string): Promise<Account> {
+	return invoke("reauth_gmail_account", { accountId });
+}
+
 export function removeAccount(accountId: string): Promise<void> {
 	return invoke("remove_account", { accountId });
 }

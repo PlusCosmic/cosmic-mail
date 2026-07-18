@@ -13,6 +13,7 @@ import type {
 	SendMessageInput,
 	Settings,
 	SyncState,
+	SyncStateEvent,
 } from "$lib/types";
 import type { UnlistenFn } from "$lib/api";
 import { nextSelectionId } from "$lib/selection";
@@ -33,6 +34,8 @@ export class MailStore {
 	/** folderId lists keyed by accountId. */
 	foldersByAccount = $state<Record<string, Folder[]>>({});
 	syncStates = $state<Record<string, SyncState>>({});
+	/** Accounts whose Gmail credentials are dead — Reconnect (not retry) is the fix. */
+	reauthRequired = $state<Record<string, boolean>>({});
 
 	/** When true the list shows all inbox folders across all accounts. */
 	unified = $state(true);
@@ -235,6 +238,20 @@ export class MailStore {
 		await this.loadAccounts();
 		this.toast(`Added ${acc.email}`);
 		return acc;
+	}
+
+	/**
+	 * Re-run the Gmail OAuth consent for an existing account in place.
+	 * Blocks until the user completes (or abandons) the browser consent.
+	 */
+	async reauthAccount(accountId: string): Promise<void> {
+		try {
+			const acc = await api.reauthGmailAccount(accountId);
+			this.reauthRequired = { ...this.reauthRequired, [accountId]: false };
+			this.toast(`Reconnected ${acc.email}`);
+		} catch (e) {
+			this.#error("Failed to reconnect account", e);
+		}
 	}
 
 	async removeAccount(accountId: string): Promise<void> {
@@ -702,14 +719,24 @@ export class MailStore {
 		if (acc) void this.loadFolders(acc);
 	}
 
-	#onSyncState(p: {
-		accountId: string;
-		state: SyncState;
-		error: string | null;
-	}): void {
+	#onSyncState(p: SyncStateEvent): void {
 		this.syncStates = { ...this.syncStates, [p.accountId]: p.state };
-		if (p.state === "error" && p.error) {
+		if (p.state === "error" && p.needsReauth) {
+			// Dead credentials fail every backoff retry identically — flag the
+			// account and toast once on the transition, not per retry.
+			if (!this.reauthRequired[p.accountId]) {
+				this.reauthRequired = { ...this.reauthRequired, [p.accountId]: true };
+				const email = this.accounts.find((a) => a.id === p.accountId)?.email;
+				this.toast(
+					`Gmail sign-in expired for ${email ?? "an account"} — reconnect it from Settings`,
+					"error",
+				);
+			}
+		} else if (p.state === "error" && p.error) {
 			this.#error("Sync error", p.error);
+		} else if (p.state !== "error" && this.reauthRequired[p.accountId]) {
+			// Sync is running again (e.g. after a reconnect) — clear the flag.
+			this.reauthRequired = { ...this.reauthRequired, [p.accountId]: false };
 		}
 		// When a sync settles, refresh folder counts.
 		if (p.state === "idle") void this.loadFolders(p.accountId);

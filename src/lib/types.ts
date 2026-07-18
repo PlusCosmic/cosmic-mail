@@ -127,4 +127,6 @@ export interface SyncStateEvent {
 	accountId: string;
 	state: SyncState;
 	error: string | null;
+	/** True only when the failure is dead Gmail credentials (retry can't help; offer Reconnect). */
+	needsReauth: boolean;
 }

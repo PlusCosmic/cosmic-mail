@@ -122,6 +122,7 @@ pub fn run() {
             commands::list_accounts,
             commands::add_imap_account,
             commands::start_gmail_oauth,
+            commands::reauth_gmail_account,
             commands::remove_account,
             commands::list_folders,
             commands::list_messages,

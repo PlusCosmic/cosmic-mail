@@ -31,6 +31,14 @@ related area. When you learn a new one, add it.
   `Invalid SASL argument` (its own test suite proves the encoding: `"foo"` → `Zm9v`).
 - Gmail `AUTHENTICATE` failing *after* a token was obtained = wire-format problem;
   failing at "obtaining Gmail access token" = missing client-id env or keyring issue.
+- **Google OAuth clients in "Testing" publishing status expire refresh tokens after 7
+  days.** The failure surfaces as `invalid_grant` on the *refresh exchange*, never at
+  IMAP `AUTHENTICATE`. `auth/oauth.rs` tags exactly that case (plus a missing keyring
+  entry) with the `AuthExpired` marker so sync emits `needsReauth: true` and Settings
+  offers in-place **Reconnect** (`reauth_gmail_account`). Never tell users to remove and
+  re-add the account for expired auth — that wipes their local mail cache for nothing.
+  Don't broaden the classification: network/server/keyring-outage failures must stay
+  plain retryable errors or a flaky network starts demanding pointless re-consents.
 
 ## Platform / desktop
 

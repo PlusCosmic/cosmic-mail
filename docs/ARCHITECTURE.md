@@ -145,6 +145,7 @@ interface Settings {                    // settings.rs::Settings — global pref
 | `list_accounts` | — | `Account[]` |
 | `add_imap_account` | `input: ImapAccountInput` | `Account` (validates by connecting first) |
 | `start_gmail_oauth` | — | `Account` (opens browser, blocks until redirect or 5 min timeout) |
+| `reauth_gmail_account` | `accountId: string` | `Account` (re-runs the same interactive consent for an **existing** Gmail account, in place — cache/folders/settings untouched; errors without storing anything if the completed consent belongs to a different address than the account's) |
 | `remove_account` | `accountId: string` | `void` |
 | `list_folders` | `accountId: string` | `Folder[]` |
 | `list_messages` | `folderId: number, offset: number, limit: number` | `MessageSummary[]` (date DESC) |
@@ -174,7 +175,7 @@ Errors: commands return `Result<T, String>` — human-readable message, frontend
 | `omarchy:theme-changed` | `OmarchyTheme` |
 | `mail:new-messages` | `{ accountId: string, folderId: number, messages: MessageSummary[] }` |
 | `mail:messages-updated` | `{ folderId: number }` (flags changed / deletions — frontend refetches page) |
-| `mail:sync-state` | `{ accountId: string, state: SyncState, error: string | null }` |
+| `mail:sync-state` | `{ accountId: string, state: SyncState, error: string | null, needsReauth: boolean }` (`needsReauth` is `true` only when the failure is classified `AuthExpired` — see the Gmail section — meaning retrying cannot help and the UI should offer Reconnect) |
 
 ## SQLite schema (store.rs; db at `$XDG_DATA_HOME/cosmic-mail/mail.db`)
 
@@ -366,6 +367,16 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   Google verification (CASA security assessment); that, not credential plumbing, is the
   real gate on public packaging.
 - Store refresh token in keyring; access tokens cached in memory with expiry, refreshed on demand.
+- Dead credentials are classified, not just reported: `access_token` tags exactly two failures
+  with the `AuthExpired` marker — a missing keyring entry, and a refresh exchange rejected with
+  OAuth `invalid_grant` (what Google returns when a "Testing"-status client's 7-day refresh token
+  lapses, or the user revoked access). The sync loop downcasts for the marker and emits
+  `mail:sync-state` with `needsReauth: true`; every other failure (network, keyring outage,
+  server 5xx) keeps `needsReauth: false` and remains a plain retryable sync error.
+  `reauth_gmail_account` is the recovery path: same consent flow, then verify the authenticated
+  email matches the account (case-insensitive — a mismatch errors without storing anything),
+  store the new refresh token under the same account id, seed the token cache, restart sync.
+  Removing/re-adding the account (which wipes its local cache) is never required for expired auth.
 - IMAP/SMTP auth: SASL `AUTHENTICATE XOAUTH2` with the raw string
   `"user=" + email + "\x01auth=Bearer " + access_token + "\x01\x01"`.
   NOTE: async-imap base64-encodes the authenticator's response itself —

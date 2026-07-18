@@ -34,6 +34,19 @@ struct CachedToken {
 static TOKEN_CACHE: LazyLock<Mutex<HashMap<String, CachedToken>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Marker error: the stored Gmail credentials can no longer mint access
+/// tokens, and retrying cannot help — only a new interactive consent
+/// (`reauth_gmail_account`) fixes it. Attached via `.context(AuthExpired)` so
+/// the sync loop can `downcast_ref` for it anywhere in the chain.
+#[derive(Debug, thiserror::Error)]
+#[error("Gmail sign-in expired")]
+pub struct AuthExpired;
+
+/// Whether an error chain contains the [`AuthExpired`] marker.
+pub fn is_auth_expired(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<AuthExpired>().is_some()
+}
+
 /// Result of a completed OAuth flow.
 pub struct OAuthOutcome {
     pub email: String,
@@ -336,8 +349,23 @@ pub async fn access_token(account_id: &str) -> Result<String> {
         }
     }
 
-    let refresh = accounts::get_oauth_refresh_token(account_id)
-        .context("no stored refresh token for account")?;
+    let refresh = match accounts::get_oauth_refresh_token(account_id) {
+        Ok(token) => token,
+        Err(err) => {
+            // A vanished keyring entry can only be fixed by a new consent;
+            // other keyring failures (locked/unavailable Secret Service) are
+            // transient and stay plain retryable errors.
+            let missing = err
+                .downcast_ref::<keyring::Error>()
+                .is_some_and(|e| matches!(e, keyring::Error::NoEntry));
+            let err = err.context("no stored refresh token for account");
+            return Err(if missing {
+                err.context(AuthExpired)
+            } else {
+                err
+            });
+        }
+    };
 
     let (id, secret) = credentials()?;
     let mut client = BasicClient::new(id)
@@ -348,11 +376,26 @@ pub async fn access_token(account_id: &str) -> Result<String> {
     }
 
     let http = http_client()?;
-    let token = client
+    let token = match client
         .exchange_refresh_token(&RefreshToken::new(refresh))
         .request_async(&http)
         .await
-        .context("refreshing access token")?;
+    {
+        Ok(token) => token,
+        Err(err) => {
+            // `invalid_grant` means the refresh token itself is dead (expired
+            // 7-day "Testing"-status token, or revoked access) — retrying is
+            // pointless. Network/server failures stay plain retryable errors.
+            let dead_grant = matches!(&err, oauth2::RequestTokenError::ServerResponse(resp)
+                if matches!(resp.error(), oauth2::basic::BasicErrorResponseType::InvalidGrant));
+            let err = anyhow::Error::new(err).context("refreshing access token");
+            return Err(if dead_grant {
+                err.context(AuthExpired)
+            } else {
+                err
+            });
+        }
+    };
 
     let access = token.access_token().secret().to_string();
     let expires_in = token.expires_in().unwrap_or(Duration::from_secs(3600));

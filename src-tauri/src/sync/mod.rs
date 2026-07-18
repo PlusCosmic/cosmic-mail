@@ -56,6 +56,9 @@ struct SyncStatePayload<'a> {
     account_id: &'a str,
     state: &'a str,
     error: Option<String>,
+    /// True only when the failure is a classified `AuthExpired` (dead Gmail
+    /// credentials) — retrying cannot help; the UI should offer Reconnect.
+    needs_reauth: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -99,13 +102,20 @@ impl SyncManager {
 }
 
 /// Emit `mail:sync-state`.
-fn emit_state(app: &AppHandle, account_id: &str, state: SyncState, error: Option<String>) {
+fn emit_state(
+    app: &AppHandle,
+    account_id: &str,
+    state: SyncState,
+    error: Option<String>,
+    needs_reauth: bool,
+) {
     let _ = app.emit(
         "mail:sync-state",
         SyncStatePayload {
             account_id,
             state: state.as_str(),
             error,
+            needs_reauth,
         },
     );
 }
@@ -128,7 +138,14 @@ async fn account_loop(app: AppHandle, db: Db, account: Account) {
             }
             Err(err) => {
                 tracing::warn!(error = %err, "sync cycle failed");
-                emit_state(&app, &account.id, SyncState::Error, Some(err.to_string()));
+                let needs_reauth = crate::auth::oauth::is_auth_expired(&err);
+                emit_state(
+                    &app,
+                    &account.id,
+                    SyncState::Error,
+                    Some(err.to_string()),
+                    needs_reauth,
+                );
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(BACKOFF_MAX);
             }
@@ -142,7 +159,7 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
     // Real work is about to start: connect, discover folders, fetch/upsert
     // envelopes, prefetch bodies. Report Syncing for exactly this span, not for
     // the IDLE wait that follows (see Idle emissions below).
-    emit_state(app, &account.id, SyncState::Syncing, None);
+    emit_state(app, &account.id, SyncState::Syncing, None, false);
 
     let mut session = imap::connect(account).await?;
 
@@ -186,7 +203,7 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         None => {
             // No inbox: nothing left to do this cycle; settle to Idle before
             // waiting for the next one.
-            emit_state(app, &account.id, SyncState::Idle, None);
+            emit_state(app, &account.id, SyncState::Idle, None, false);
             tokio::time::sleep(POLL_INTERVAL).await;
             let _ = session.logout().await;
             return Ok(());
@@ -196,7 +213,7 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
     imap::select(&mut session, &inbox).await?;
     // Work is done; settle to Idle before entering IDLE (or the polling
     // fallback inside idle_wait), which can last up to 25 minutes.
-    emit_state(app, &account.id, SyncState::Idle, None);
+    emit_state(app, &account.id, SyncState::Idle, None, false);
     idle_wait(session).await?;
     Ok(())
 }
@@ -480,6 +497,7 @@ mod tests {
             account_id: "acct-1",
             state: SyncState::Syncing.as_str(),
             error: None,
+            needs_reauth: false,
         };
         let json = serde_json::to_value(&payload).expect("serialize payload");
         assert_eq!(
@@ -488,6 +506,7 @@ mod tests {
                 "accountId": "acct-1",
                 "state": "syncing",
                 "error": null,
+                "needsReauth": false,
             })
         );
     }
@@ -498,10 +517,28 @@ mod tests {
             account_id: "acct-1",
             state: SyncState::Error.as_str(),
             error: Some("connection refused".to_string()),
+            needs_reauth: false,
         };
         let json = serde_json::to_value(&payload).expect("serialize payload");
         assert_eq!(json["state"], "error");
         assert_eq!(json["error"], "connection refused");
+        assert_eq!(json["needsReauth"], false);
+    }
+
+    #[test]
+    fn auth_expired_marker_is_detectable_through_context_chain() {
+        // The marker is attached as *context* mid-chain (see oauth::access_token)
+        // and the sync loop downcasts through however many contexts the connect
+        // path stacked on top; it must be found regardless of position.
+        let err = anyhow::anyhow!("Server returned error response: invalid_grant")
+            .context("refreshing access token")
+            .context(crate::auth::oauth::AuthExpired)
+            .context("obtaining Gmail access token")
+            .context("connecting IMAP");
+        assert!(crate::auth::oauth::is_auth_expired(&err));
+
+        let plain = anyhow::anyhow!("connection refused").context("connecting IMAP");
+        assert!(!crate::auth::oauth::is_auth_expired(&plain));
     }
 
     #[test]
