@@ -1,11 +1,18 @@
 //! Sync engine: one background task per account.
 //!
 //! Each task connects, lists folders, performs an initial sync (newest 200
-//! envelopes per folder), then enters an INBOX IDLE loop that re-syncs on
-//! wakeup or every 25 minutes. A small inbox working set is prefetched without
-//! changing `\Seen`; other bodies remain lazy. Errors trigger exponential
-//! backoff (30s → 5 min). Notifications fire only for new inbox messages above
-//! the folder's `last_seen_uid`, and never during the initial sync.
+//! envelopes per folder), then holds the connection in an INBOX idle loop:
+//! re-sync INBOX → IDLE → wakeup → re-sync INBOX → IDLE … until the 25-minute
+//! full-resync deadline, when the cycle ends and the caller reconnects for a
+//! full folder sweep. Re-syncing on the live connection keeps new-mail
+//! notification latency at one STATUS+FETCH round trip, and because a re-sync
+//! precedes *every* IDLE, mail that arrived while the sweep was busy (and
+//! whose untagged EXISTS the pre-IDLE SELECT would swallow) is caught
+//! immediately instead of waiting out the deadline. A small inbox working set
+//! is prefetched without changing `\Seen`; other bodies remain lazy. Errors
+//! trigger exponential backoff (30s → 5 min). Notifications fire only for new
+//! inbox messages above the folder's `last_seen_uid`, and never during the
+//! initial sweep.
 
 pub mod imap;
 
@@ -14,6 +21,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use async_imap::extensions::idle::IdleResponse;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -26,7 +34,7 @@ const INITIAL_SYNC_LIMIT: u32 = 200;
 const BODY_PREFETCH_WORKING_SET: u32 = 20;
 const BODY_PREFETCH_LIMIT: u32 = 5;
 const BODY_PREFETCH_MAX_BYTES: u32 = 1024 * 1024;
-const IDLE_TIMEOUT: Duration = Duration::from_secs(25 * 60);
+const FULL_RESYNC_INTERVAL: Duration = Duration::from_secs(25 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const BACKOFF_MIN: Duration = Duration::from_secs(30);
 const BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
@@ -153,19 +161,21 @@ async fn account_loop(app: AppHandle, db: Db, account: Account) {
     }
 }
 
-/// One connect → sync → IDLE cycle. Returns after an IDLE wakeup/timeout so the
-/// caller re-runs (reconnecting fresh each cycle for robustness).
+/// One connect → full folder sweep → INBOX idle-loop cycle. The idle loop
+/// alternates "re-sync INBOX" and "IDLE" on the same connection until the
+/// full-resync deadline (or a dead connection) ends the cycle, so the caller
+/// reconnects fresh and sweeps every folder again.
 async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) -> Result<()> {
     // Real work is about to start: connect, discover folders, fetch/upsert
     // envelopes, prefetch bodies. Report Syncing for exactly this span, not for
-    // the IDLE wait that follows (see Idle emissions below).
+    // the IDLE waits that follow (see Idle emissions below).
     emit_state(app, &account.id, SyncState::Syncing, None, false);
 
     let mut session = imap::connect(account).await?;
 
     // Discover folders and reconcile with the DB.
     let remote = imap::list_folders_with_roles(&mut session).await?;
-    let mut inbox_name: Option<String> = None;
+    let mut inbox: Option<String> = None;
     for folder in &remote {
         let status = imap::status(&mut session, &folder.name).await?;
         let (folder_id, _wiped) = {
@@ -181,7 +191,7 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
             result
         };
         if folder.role == FolderRole::Inbox {
-            inbox_name = Some(folder.name.clone());
+            inbox = Some(folder.name.clone());
         }
         sync_folder_uids(
             app,
@@ -197,24 +207,77 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         .await?;
     }
 
-    // IDLE on INBOX (fallback to polling if unavailable).
-    let inbox = match inbox_name {
-        Some(name) => name,
-        None => {
-            // No inbox: nothing left to do this cycle; settle to Idle before
-            // waiting for the next one.
-            emit_state(app, &account.id, SyncState::Idle, None, false);
-            tokio::time::sleep(POLL_INTERVAL).await;
-            let _ = session.logout().await;
-            return Ok(());
-        }
+    let Some(inbox_name) = inbox else {
+        // No inbox: nothing left to do this cycle; settle to Idle before
+        // waiting for the next one.
+        emit_state(app, &account.id, SyncState::Idle, None, false);
+        tokio::time::sleep(POLL_INTERVAL).await;
+        let _ = session.logout().await;
+        return Ok(());
     };
 
-    imap::select(&mut session, &inbox).await?;
-    // Work is done; settle to Idle before entering IDLE (or the polling
-    // fallback inside idle_wait), which can last up to 25 minutes.
-    emit_state(app, &account.id, SyncState::Idle, None, false);
-    idle_wait(session).await?;
+    // Idle loop: re-sync INBOX on the live connection, then IDLE until the
+    // server announces changes or the deadline passes. The first re-sync runs
+    // straight after the sweep and catches mail that arrived while other
+    // folders were syncing — arrivals whose untagged EXISTS would otherwise be
+    // swallowed by the pre-IDLE SELECT and sit unnoticed until the deadline.
+    // Later iterations are IDLE wakeups: one STATUS+FETCH round trip from
+    // wakeup to notification, no reconnect.
+    let deadline = std::time::Instant::now() + FULL_RESYNC_INTERVAL;
+    loop {
+        // STATUS first (and write the counts) so the refresh events emitted by
+        // sync_folder_uids find server-authoritative folder badges in the DB.
+        let status = imap::status(&mut session, &inbox_name).await?;
+        let inbox_id = {
+            let conn = db.lock().expect("db poisoned");
+            let (folder_id, _wiped) = store::upsert_folder(
+                &conn,
+                &account.id,
+                &inbox_name,
+                FolderRole::Inbox,
+                status.uidvalidity,
+            )?;
+            store::set_folder_counts(&conn, folder_id, status.exists, status.unseen)?;
+            folder_id
+        };
+        // Never `initial` here: the sweep above already established the
+        // `last_seen_uid` baseline, so anything newer deserves a notification
+        // even during the account's first connection.
+        sync_folder_uids(
+            app,
+            db,
+            account,
+            inbox_id,
+            &inbox_name,
+            FolderRole::Inbox,
+            false,
+            status.exists,
+            &mut session,
+        )
+        .await?;
+
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+
+        // Work is done; settle to Idle before entering IDLE (or the polling
+        // fallback inside idle_wait), which can last up to the deadline.
+        emit_state(app, &account.id, SyncState::Idle, None, false);
+        match idle_wait(session, deadline - now).await? {
+            IdleOutcome::NewData(live) => {
+                session = live;
+                emit_state(app, &account.id, SyncState::Syncing, None, false);
+            }
+            IdleOutcome::Timeout(live) => {
+                session = live;
+                break;
+            }
+            IdleOutcome::SessionGone => return Ok(()),
+        }
+    }
+
+    let _ = session.logout().await;
     Ok(())
 }
 
@@ -407,12 +470,26 @@ async fn prefetch_message_bodies(db: &Db, folder_id: i64, session: &mut imap::Im
     }
 }
 
-/// Enter IDLE on the currently-selected mailbox and wait for a server wakeup or
-/// the 25-minute timeout, then return so the caller reconnects and re-syncs.
+/// Outcome of one IDLE wait on the selected inbox.
+enum IdleOutcome {
+    /// The server announced changes; the recovered session is live for an
+    /// immediate re-sync on the same connection.
+    NewData(imap::ImapSession),
+    /// The wait timed out (full-resync deadline, or an IDLE-less server's poll
+    /// sleep); the caller should end the cycle so the next one sweeps fresh.
+    Timeout(imap::ImapSession),
+    /// The wakeup was routine but the connection died while closing IDLE; the
+    /// caller should end the cycle and reconnect.
+    SessionGone,
+}
+
+/// Enter IDLE on the currently-selected mailbox and wait for a server wakeup
+/// or `timeout`, recovering the session so the caller can keep using the
+/// connection.
 ///
 /// If the server does not support IDLE, `init()` fails and we fall back to a
 /// single poll sleep, per the contract.
-async fn idle_wait(session: imap::ImapSession) -> Result<()> {
+async fn idle_wait(session: imap::ImapSession, timeout: Duration) -> Result<IdleOutcome> {
     let mut handle = session.idle();
 
     if let Err(err) = handle.init().await {
@@ -424,40 +501,45 @@ async fn idle_wait(session: imap::ImapSession) -> Result<()> {
             .done()
             .await
             .context("closing IDLE handle after failed init")?;
-        tokio::time::sleep(POLL_INTERVAL).await;
+        tokio::time::sleep(POLL_INTERVAL.min(timeout)).await;
         let _ = session.noop().await;
-        let _ = session.logout().await;
-        return Ok(());
+        return Ok(IdleOutcome::Timeout(session));
     }
 
-    let (fut, _stop) = handle.wait_with_timeout(IDLE_TIMEOUT);
-    // NewData / Timeout / ManualInterrupt are all routine wakeups (the
-    // ~25-minute timeout is a *deliberate* re-issue per RFC 2177, not a
-    // failure). Only an `Err` here — a genuine IO/protocol failure while
+    let (fut, _stop) = handle.wait_with_timeout(timeout);
+    // async-imap's timeout is an *inactivity* timeout — any server response,
+    // including "* OK Still here" keepalives, resets it — so `timeout` is also
+    // enforced as a hard wall-clock bound here. Otherwise a server with chatty
+    // keepalives (Dovecot pings every ~2 min) would postpone the full-resync
+    // deadline indefinitely. NewData / Timeout / ManualInterrupt are all
+    // routine wakeups; only an `Err` — a genuine IO/protocol failure while
     // idling — is worth surfacing as a sync failure.
-    fut.await.context("IDLE wait failed")?;
+    let response = match tokio::time::timeout(timeout, fut).await {
+        Ok(woke) => woke.context("IDLE wait failed")?,
+        Err(_elapsed) => IdleResponse::Timeout,
+    };
 
-    // Best-effort: send DONE to end IDLE cleanly. The wakeup itself already
-    // succeeded, and every cycle reconnects fresh regardless of how this
-    // cycle ends (see module docs), so a failure here — e.g. the server or an
-    // intervening NAT/firewall silently dropped the connection during a
-    // long, uneventful IDLE, which routinely coincides with the ~25-minute
-    // re-issue interval — must not be reported as a sync failure. A
-    // genuinely dead connection is still caught for real by the next cycle's
+    // Send DONE to end IDLE cleanly and recover the session. The wakeup itself
+    // already succeeded, and every cycle reconnects fresh regardless of how it
+    // ends (see module docs), so a failure here — e.g. the server or an
+    // intervening NAT/firewall silently dropped the connection during a long,
+    // uneventful IDLE — must not be reported as a sync failure. A genuinely
+    // dead connection is still caught for real by the next cycle's
     // `imap::connect`.
     match handle.done().await {
-        Ok(mut session) => {
-            let _ = session.logout().await;
-        }
+        Ok(session) => Ok(match response {
+            IdleResponse::NewData(_) => IdleOutcome::NewData(session),
+            IdleResponse::Timeout | IdleResponse::ManualInterrupt => IdleOutcome::Timeout(session),
+        }),
         Err(err) if is_benign_after_routine_wakeup(&err) => {
             tracing::debug!(
                 error = %err,
                 "IDLE session close failed after routine wakeup; reconnecting next cycle"
             );
+            Ok(IdleOutcome::SessionGone)
         }
-        Err(err) => return Err(err).context("closing IDLE handle"),
+        Err(err) => Err(err).context("closing IDLE handle"),
     }
-    Ok(())
 }
 
 /// Whether a failure to close an IDLE handle, occurring right after a

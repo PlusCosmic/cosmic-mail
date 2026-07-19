@@ -467,9 +467,14 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 - One tokio task per account (`SyncManager` holds JoinHandles; aborted on account removal).
 - Loop: connect → LIST folders (RFC 6154 SPECIAL-USE for roles) → `STATUS` each folder for
   authoritative `MESSAGES`, `UNSEEN`, `UIDNEXT`, and `UIDVALIDITY` → UIDVALIDITY check
-  (mismatch ⇒ wipe folder cache) → fetch/upsert envelopes → emit events/notify. Then IDLE on
-  INBOX; on IDLE wakeup or 25-min timeout, re-sync. On error: emit sync-state error, retry with
-  backoff (30s → 5 min cap).
+  (mismatch ⇒ wipe folder cache) → fetch/upsert envelopes → emit events/notify. Then hold the
+  connection in an INBOX idle loop: re-sync INBOX (STATUS counts + incremental fetch + notify)
+  → IDLE → on wakeup, re-sync INBOX on the same connection and IDLE again — until the 25-min
+  full-resync deadline ends the cycle and the loop reconnects for a fresh full sweep. A re-sync
+  precedes *every* IDLE, so mail arriving while the sweep was busy (whose untagged EXISTS the
+  SELECT swallows and IDLE will not re-announce) is caught immediately, and the deadline is a
+  hard wall-clock bound (async-imap's IDLE timeout is inactivity-based; server keepalives reset
+  it). On error: emit sync-state error, retry with backoff (30s → 5 min cap).
 - Initial sync: use message sequence numbers from `STATUS MESSAGES` to `FETCH` exactly the
   newest 200 existing messages per folder (or all when fewer than 200), including `UID` in the
   response. Do not `UID FETCH 1:*` and trim afterward.
