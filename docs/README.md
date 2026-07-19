@@ -13,7 +13,7 @@ Documentation for agents and humans picking up this project without prior contex
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build/run/test commands, verification workflow, local state paths, how to test each subsystem |
 | [RELEASING.md](RELEASING.md) | manually promote an immutable local daily build into the Omarchy launcher |
 | [GOTCHAS.md](GOTCHAS.md) | Hard-won, non-obvious lessons (each one cost real debugging time — read before touching deps, TLS, SASL, or file watchers) |
-| [ROADMAP.md](ROADMAP.md) | What's done and verified vs. what's next (small bugs/limitations live in GitHub issues) |
+| [ROADMAP.md](ROADMAP.md) | Done-and-verified history (all open work — features, verifications, bugs — lives in GitHub issues) |
 
 ## What this project is
 
@@ -56,7 +56,9 @@ prototypes/         3 static HTML design mockups (open in browser; 03-hybrid is 
   `AppError` at command boundaries, `tracing` for logs.
 - `npm run tauri dev` auto-rebuilds on Rust and frontend changes. Keep intermediate
   changes buildable when another developer may have the dev process running.
-- Feature-sized work and status live in [ROADMAP.md](ROADMAP.md) (markdown is the only
-  roadmap — there is no external tracker for it). Small bugs and UX quirks are filed as
-  GitHub issues labelled `papercut` and tracked on the
-  [Cosmic Mail Papercuts board](https://github.com/users/PlusCosmic/projects/2).
+- Open work lives in GitHub issues: feature-sized work is labelled `roadmap`,
+  built-but-unconfirmed work is labelled `verification`, and small bugs / UX quirks are
+  labelled `papercut` (tracked on the
+  [Cosmic Mail Papercuts board](https://github.com/users/PlusCosmic/projects/2)).
+  [ROADMAP.md](ROADMAP.md) records what's done and verified; update it when closing a
+  `roadmap` or `verification` issue.

@@ -1,6 +1,23 @@
 # Roadmap & status
 
-Last updated: 2026-07-15 (known limitations migrated to GitHub issues).
+Last updated: 2026-07-20 (open roadmap items migrated to GitHub issues; this file is
+now the **done-and-verified history** only).
+
+## Where planned work lives now
+
+- **Feature-sized planned work**: GitHub issues labelled
+  [`roadmap`](https://github.com/PlusCosmic/cosmic-mail/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap),
+  collected with `verification` issues on the
+  [Cosmic Mail Roadmap board](https://github.com/users/PlusCosmic/projects/3).
+- **Built but needs live confirmation**: issues labelled
+  [`verification`](https://github.com/PlusCosmic/cosmic-mail/issues?q=is%3Aissue+is%3Aopen+label%3Averification).
+- **Small bugs / UX quirks**: issues labelled
+  [`papercut`](https://github.com/PlusCosmic/cosmic-mail/issues?q=is%3Aissue+is%3Aopen+label%3Apapercut)
+  on the [Papercuts board](https://github.com/users/PlusCosmic/projects/2).
+
+When feature work ships, record it under "Done and verified" below (move the summary
+here from the issue when closing it); when a `verification` issue is confirmed live,
+fold the result into the same entry.
 
 ## Done and verified
 
@@ -118,44 +135,11 @@ Last updated: 2026-07-15 (known limitations migrated to GitHub issues).
   that re-runs consent, verifies the same address was chosen, and swaps the keyring
   refresh token without touching the account or its cached mail.
 
-## Not yet verified (built, needs live confirmation)
+## Migration notes
 
-- **Gmail re-auth round trip**: with the currently-expired test account, confirm the expired
-  toast + Settings "sign-in expired" flag appear, then click Reconnect, complete consent in
-  the browser, and confirm sync resumes and the flag clears (needs a human at the consent
-  screen — the flow blocks on Google's page).
-- **System tray interactions**: confirm the icon and its three-item menu appear under Waybar from
-  both normal and `--background` startup; verify Open focuses the existing window, Sync now
-  restarts every account without another process, and Quit leaves the promoted service inactive.
-- **New-mail notification path** (IDLE wakeup → mako toast → click-to-focus): send a
-  mail to a synced account while the app runs, expect notification within seconds.
-- **Inline `cid:` images (live)**: confirm an inline `cid:` image renders in the reader body
-  (rewritten to a `data:` URI) and that an over-cap inline image renders blank rather than
-  fetching. The rewrite logic has unit coverage; no cached message with inline cid parts was
-  available during the 2026-07-14 driven session.
-- **Message actions on Gmail**: the full flag/archive/delete/move matrix was live-verified on the
-  password-IMAP (Purelymail) account on 2026-07-14 (see Done), but not yet on Gmail. Verify there:
-  flag star round-trips; archive lands in All Mail (`\All`) and leaves the inbox; delete moves to
-  Trash; **permanent delete from Trash** (untested on either account — it destroys mail, pick a
-  disposable message); move to an arbitrary label reappears after sync. Gmail advertises `MOVE`,
-  so this also confirms the capability detection; the Purelymail run exercised whichever path its
-  capabilities selected — the `UID COPY`+`\Deleted`+`UID EXPUNGE` fallback has no confirmed live
-  exercise if both servers advertise `MOVE`.
-
-## Next up (rough priority)
-
-1. **Server-side search** — IMAP SEARCH to reach beyond the local cache (local FTS5 search over
-   cached envelopes/bodies already landed; see above). Until then, search covers only the newest
-   ~200 envelopes/folder plus cached bodies — mail that was never synced is unreachable.
-
-## Small bugs & UX papercuts → GitHub issues
-
-Small bugs and UX quirks (anything that isn't a roadmap-sized feature) are tracked as
-GitHub issues labelled [`papercut`](https://github.com/PlusCosmic/cosmic-mail/issues?q=is%3Aissue+is%3Aopen+label%3Apapercut)
-and collected on the [Cosmic Mail Papercuts board](https://github.com/users/PlusCosmic/projects/2).
-File new friction there rather than growing this document; this roadmap stays the
-source of truth for feature-sized work and status.
-
-The known-limitations list that used to live here was migrated to GitHub issues
-[#11–#19](https://github.com/PlusCosmic/cosmic-mail/issues) on 2026-07-15
-(papercuts where they fit, `enhancement`/`bug` otherwise).
+- The known-limitations list that used to live here was migrated to GitHub issues
+  [#11–#19](https://github.com/PlusCosmic/cosmic-mail/issues) on 2026-07-15
+  (papercuts where they fit, `enhancement`/`bug` otherwise).
+- The "Not yet verified" and "Next up" sections were migrated to GitHub issues
+  [#25–#30](https://github.com/PlusCosmic/cosmic-mail/issues) on 2026-07-20
+  (`roadmap` for planned features, `verification` for live-confirmation tasks).
