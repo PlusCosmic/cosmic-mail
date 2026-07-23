@@ -1,9 +1,34 @@
 ---
 name: verify
-description: Launch and drive Cosmic Mail on the live Hyprland session to verify changes end-to-end (screenshots via grim, keyboard via wtype).
+description: Verify Cosmic Mail changes end-to-end. Prefer the scripted automation bridge (e2e/) for DOM find/click/assert; fall back to wtype/grim on the live Hyprland session for visual or real keyboard-focus checks.
 ---
 
 # Verifying Cosmic Mail changes in the running app
+
+## Prefer the scripted bridge (default)
+
+For anything you can assert on — element presence, text, clicking, list/reader/
+shipment state — use the **debug-only automation bridge** (`src-tauri/src/automation.rs`,
+compiled into debug builds only) and the `e2e/` harness. It finds DOM elements, clicks
+them, and reads text back — deterministic and far less fragile than wtype/grim, and it
+works headless. See `e2e/README.md`.
+
+- **Hermetic run (no real mailbox):** `npm run e2e:env:up` (GreenMail fixture + seed),
+  launch a debug build against the isolated profile with the env block from the README,
+  `npm run e2e`, then `npm run e2e:env:down`. This is what CI does.
+- **Ad-hoc against the real mailbox:** `npm run tauri dev`, then drive it with
+  `e2e/client.mjs`'s `Bridge` (`await bridge.eval("return …")`, `.click(sel)`, `.waitFor…`).
+  Stay read-mostly and restore side effects (see the real-mailbox caveat below).
+- Async UI waits are **client-side poll loops** (`bridge.waitFor`) — WebKitGTK evaluates
+  each snippet synchronously and does not await a returned Promise.
+
+## When to fall back to wtype/grim (below)
+
+Reserve the live-Hyprland keyboard/screenshot flow for what the bridge can't do:
+**pixel/visual confirmation** (theming, layout, focus-ring rendering) and **genuine
+keyboard focus / Tab-order behavior** — `Tab` is native focus movement the bridge's DOM
+`eval` can't dispatch. Known focus quirks are tracked in papercuts #35 (Escape clears
+search) and #36 (message-list listbox focus); confirm against those before filing new ones.
 
 ## Before launching
 
