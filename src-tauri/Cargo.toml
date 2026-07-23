@@ -27,6 +27,8 @@ tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "net", "i
 async-imap = { version = "0.11.2", default-features = false, features = ["runtime-tokio"] }
 tokio-rustls = "0.26.4"
 rustls-native-certs = "0.8.4"
+# Used only by the debug-only COSMIC_MAIL_EXTRA_CA hook in sync/imap.rs (E2E tests).
+rustls-pemfile = "2"
 mail-parser = "0.11.5"
 toml = "1.1.2"
 dirs = "6.0.0"

@@ -23,6 +23,9 @@ theming.
 - Don't run git commits unless asked; the session owner supervises commits.
 
 Dev commands, local state paths, and per-subsystem test recipes: `docs/DEVELOPMENT.md`.
-Status and what to build next: `docs/ROADMAP.md`. Small bugs / UX quirks are GitHub
-issues labelled `papercut` (board: <https://github.com/users/PlusCosmic/projects/2>);
-file new ones there, not in the roadmap.
+What to build next: GitHub issues — `roadmap` (features) and `verification` (built,
+needs live confirmation) on the [Roadmap board](https://github.com/users/PlusCosmic/projects/3);
+`papercut` (small bugs / UX quirks) on the
+[Papercuts board](https://github.com/users/PlusCosmic/projects/2). Closed issues are the
+done history — close them with a short completion comment; don't maintain `docs/ROADMAP.md`
+(frozen archive, pre-dates the move to issues).

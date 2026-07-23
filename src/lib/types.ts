@@ -60,6 +60,17 @@ export interface MessageBody {
 	attachments: AttachmentInfo[]; // empty until the body is cached/parsed
 }
 
+export type ShipmentCarrier = "ups" | "fedex" | "usps" | "dhl" | "royal_mail" | "amazon";
+
+export interface Shipment {
+	id: number; // shipments.id rowid
+	carrier: ShipmentCarrier; // stable code; see carrierLabel()/carrierGlyph() in format.ts
+	trackingNumber: string | null;
+	trackingUrl: string | null; // captured from the email, or a synthesized carrier tracking page
+	orderId: string | null; // Amazon order id when the email carried one
+	detectedAt: string; // RFC 3339
+}
+
 export interface OmarchyTheme {
 	name: string; // e.g. "kanagawa"
 	accent: string;

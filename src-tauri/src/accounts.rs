@@ -138,7 +138,19 @@ pub fn set_imap_password(account_id: &str, password: &str) -> Result<()> {
 }
 
 /// Fetch the IMAP password for the given account.
+///
+/// Debug builds only: if `COSMIC_MAIL_TEST_IMAP_PASSWORD` is set, return it
+/// without touching the keyring, so E2E tests can run against a fixture IMAP
+/// server on a headless machine with no Secret Service. Never compiled into
+/// releases; the keyring path below is unchanged for real accounts.
 pub fn get_imap_password(account_id: &str) -> Result<String> {
+    #[cfg(debug_assertions)]
+    if let Some(password) = std::env::var_os("COSMIC_MAIL_TEST_IMAP_PASSWORD") {
+        return password
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("COSMIC_MAIL_TEST_IMAP_PASSWORD is not valid UTF-8"));
+    }
+
     entry(&imap_password_key(account_id))?
         .get_password()
         .context("reading IMAP password from keyring")

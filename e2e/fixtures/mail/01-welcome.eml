@@ -1,0 +1,14 @@
+From: Cosmic Mail Team <hello@example.com>
+To: test@localhost
+Subject: Welcome to Cosmic Mail
+Date: Mon, 12 Jan 2026 09:15:00 +0000
+Message-ID: <fixture-welcome-0001@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Hi there,
+
+Thanks for trying Cosmic Mail. This is a fixture message used by the
+end-to-end test suite. Its subject and body are fixed so tests can assert
+on them deterministically.
+
+— The Cosmic Mail Team

@@ -23,6 +23,7 @@ src-tauri/src/
   accounts.rs       # Account model, accounts.json persistence, keyring secrets
   omarchy.rs        # theme reader + file watcher -> "omarchy:theme-changed" event
   notifications.rs  # notify-rust wrapper (mako-aware)
+  automation.rs     # DEBUG BUILDS ONLY: loopback E2E bridge (see section below)
   sync/
     mod.rs          # SyncManager: per-account background task, IDLE loop
     imap.rs         # async-imap + tokio-rustls connector, LOGIN + XOAUTH2
@@ -95,6 +96,19 @@ interface MessageBody {
   attachments: AttachmentInfo[];  // parsed from the body; empty until the body is cached
 }
 
+type ShipmentCarrier = "ups" | "fedex" | "usps" | "dhl" | "royal_mail" | "amazon";
+
+interface Shipment {          // shipments.rs::Carrier + store.rs::ShipmentRow projection
+  id: number;                 // shipments.id rowid
+  carrier: ShipmentCarrier;   // stable lowercase code; frontend maps to a display label/glyph
+  trackingNumber: string | null;
+  trackingUrl: string | null; // captured from the email, or a synthesized carrier tracking-page
+                              // URL from trackingNumber (never synthesized for Amazon — no
+                              // generic public tracking template exists)
+  orderId: string | null;     // Amazon order id (\d{3}-\d{7}-\d{7}) when the email carried one
+  detectedAt: string;         // RFC 3339, when this row was (re)detected
+}
+
 interface OmarchyTheme {
   name: string;               // e.g. "kanagawa" (~/.config/omarchy/current/theme.name)
   accent: string; foreground: string; background: string; cursor: string;
@@ -152,6 +166,7 @@ interface Settings {                    // settings.rs::Settings — global pref
 | `list_unified_messages` | `offset: number, limit: number` | `MessageSummary[]` (date DESC across all folders with role 'inbox', all accounts) |
 | `search_messages` | `query: string, accountId: string \| null, offset: number, limit: number` | `MessageSummary[]` (relevance-ranked; local FTS5 over cached envelopes/bodies. `accountId` null = all accounts, else scoped to that account; all folder roles; empty/whitespace query ⇒ `[]`) |
 | `get_message_body` | `messageId: number` | `MessageBody` (fetches from server if not cached) |
+| `list_shipments_for_message` | `messageId: number` | `Shipment[]` (empty until the body has been cached, or if none were detected; see "Shipment detection" below) |
 | `save_attachment` | `attachmentId: number` | `string` (absolute path of the saved file; refetches raw RFC822 from the server — see below — since it is never cached, re-parses, decodes the part, and writes it to the downloads directory with a sanitized, collision-suffixed name) |
 | `mark_read` | `messageId: number, seen: boolean` | `void` (updates server flag + db) |
 | `mark_flagged` | `messageId: number, flagged: boolean` | `void` (server `\Flagged` flag + db; emits `mail:messages-updated`) |
@@ -232,6 +247,26 @@ CREATE TABLE IF NOT EXISTS attachments (
 -- `messages.has_attachments` starts as a BODYSTRUCTURE heuristic (envelope-only
 -- rows) and is corrected to the real count of non-inline attachments once a body
 -- is parsed, in the same transaction that replaces attachment rows.
+
+-- Shipments detected by local heuristic parsing of a cached message body
+-- (shipments.rs::extract_shipments), populated at the same body-parse hook as
+-- `attachments` (foreground cache miss in `get_message_body`, or background
+-- prefetch). `carrier` is a stable lowercase code (see the `ShipmentCarrier`
+-- wire type above), not a display label. Nullable columns reflect what the
+-- heuristic actually found — e.g. Amazon shipment emails often carry only a
+-- login-gated tracking link and an order id, no raw tracking number. Rows are
+-- replaced wholesale per message on every parse (mirrors `replace_attachments`),
+-- so re-parsing a message cannot accumulate duplicate rows.
+CREATE TABLE IF NOT EXISTS shipments (
+  id INTEGER PRIMARY KEY,
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  carrier TEXT NOT NULL,
+  tracking_number TEXT,
+  tracking_url TEXT,
+  order_id TEXT,
+  detected_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shipments_message ON shipments(message_id);
 
 -- Local full-text search index (SQLite FTS5, external-content over `messages`).
 -- Searches the local cache only — never the server. Created once, guarded on
@@ -490,6 +525,48 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   network resources. Foreground cache misses use the same non-marking fetch.
 - rustls: `tokio_rustls` with `rustls_native_certs` root store.
 
+## Shipment detection (shipments.rs)
+
+- Pure, dependency-free heuristic parsing over a message's cached `text`/`html` body — no
+  network calls, no new crates. Runs at the same body-parse hook as attachment extraction, in
+  both places a body is cached: the foreground cache miss in `get_message_body` and the
+  background prefetch loop in `sync/mod.rs`. Each call replaces that message's `shipments` rows
+  wholesale (`store::replace_shipments`, mirroring `replace_attachments`), so re-parsing cannot
+  accumulate duplicates. Bodies already cached before this feature shipped are not retroactively
+  backfilled — there is no startup healing pass for shipments (unlike snippets); a shipment
+  surfaces once that message's body is (re)fetched.
+- Carriers and tracking-number shapes: UPS (`1Z` + 16 alphanumeric, Mod-10 check digit); FedEx
+  (12/15/20-digit numeric, no checksum); USPS (20/22-digit numeric IMpb with its own Mod-10
+  variant, and the 13-character UPU S10 international format, `XX` + 9 digits + `US`); DHL
+  (10-digit numeric, no checksum); Royal Mail (UPU S10, `XX` + 9 digits + `GB`); Amazon (no raw
+  tracking number — a login-gated tracking link and/or an order id `\d{3}-\d{7}-\d{7}`).
+- Checksums are implemented for every format that defines one (UPS Mod-10 and the UPU S10
+  standard shared by Royal Mail and USPS's 13-char format); a format-shaped number whose
+  checksum fails is dropped outright, never downgraded to a guess. A 20/22-digit numeric USPS
+  IMpb token is treated as deterministic only when its Mod-10 checksum validates *and* it starts
+  with `9`, matching every real USPS service-type prefix (92/93/94/95/96/…) — a checksum alone
+  passes about 1 in 10 random numbers of that length, and reference numbers of that length (bank
+  references, account numbers, GUID-ish ids) do turn up in emails, so the checksum by itself is
+  not enough evidence. Formats with no published checksum (FedEx, DHL, and a 20/22-digit number
+  that fails the checksum-plus-prefix test above) are only kept when a shipping keyword, or the
+  carrier's own name, appears within 120 characters of the match — bare numbers of these lengths
+  are common false positives (phone numbers, invoice/order numbers). A 20/22-digit numeric token
+  is shape-ambiguous between USPS and FedEx; short of the checksum-plus-prefix case, it requires
+  the carrier's own name nearby (a generic "shipped" nearby is not enough to pick between the
+  two). Context-gated guesses are suppressed entirely once the message already produced at least
+  one checksum-verified shipment — a real shipping email is saturated with generic shipping
+  keywords, so a second, weaker, co-occurring number-shaped token (an order id, a transaction or
+  reference number, ...) is nearly always noise from the same email rather than a second shipment.
+- Tracking links found in the body (`ups.com/track`, `fedex.com` track URLs,
+  `tools.usps.com/go/TrackConfirmAction`, `dhl.com` tracking URLs, `royalmail.com/track-your-item`,
+  Amazon tracking/progress-tracker links) disambiguate the carrier for free and are preferred
+  over a guessed (unchecksummed) carrier when both are present in the same message; they never
+  override a checksum-verified or carrier-name-confirmed match.
+- `Shipment.trackingUrl` is resolved once, at extraction time: the link captured from the email
+  when present, otherwise a synthesized public carrier tracking-page URL built from
+  `trackingNumber` (never synthesized for Amazon, which has no generic public tracking template
+  — its card is a dead end without a captured link).
+
 ## Reader remote-content policy
 
 - HTML message bodies are sanitized with DOMPurify and rendered in a sandboxed `srcdoc` iframe.
@@ -537,6 +614,57 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   here). Gmail OAuth's own consent-URL open (`auth/oauth.rs`) calls the Rust `OpenerExt::open_url`
   API directly and is unaffected by this capability, since ACL scoping only gates the JS-invoked
   command.
+
+## Automation bridge (debug builds only — `automation.rs`)
+
+Scripted end-to-end tests drive the real webview through an in-app bridge. Arch/CachyOS
+`webkit2gtk-4.1` ships no `WebKitWebDriver`, so the standard `tauri-driver` route is
+unavailable; the bridge replaces it. **It exists only in `debug_assertions` builds** —
+`lib.rs` gates both `mod automation;` and the `automation::spawn` call on `cfg`, so it is
+compiled out of every release/promoted binary. It never appears in the invoke handler and
+adds no wire types or events.
+
+- **Transport.** A raw loopback HTTP/1.1 listener on `127.0.0.1:4127` (override with
+  `COSMIC_MAIL_AUTOMATION_PORT`), on tokio (no new crates). Binds loopback only; one
+  request per `Connection: close`. Bind failure is logged and non-fatal. Never handles
+  secrets.
+- **`GET /health`** → `200 {"ok":true}` once the main webview exists; `503` otherwise. A
+  client's readiness wait gates on this, so it means "UI drivable", not just "socket up".
+- **`POST /eval`**, body = a JS **function body** → runs it in the main webview via
+  `WebviewWindow::eval_with_callback` (WebKitGTK `run_javascript` → `js_value().to_json`)
+  and returns the value. The snippet is wrapped in a try/catch IIFE, so:
+  - success → `{"ok":true,"value":<the JSON value; undefined coerced to null>}`
+  - a throw → `{"ok":false,"error":"<message>"}`
+  Only JSON-serializable return values survive (strings, numbers, booleans, arrays, plain
+  objects) — return element *text*/counts, not DOM nodes.
+- **No promise awaiting.** WebKitGTK evaluates each snippet synchronously and does not
+  await a returned Promise. Waiting for async UI (a click that renders a pane) is the
+  client's job, done by polling `/eval` until a condition holds — never by returning a
+  Promise from the snippet.
+- **Client + tests** live in `e2e/` (`client.mjs` `Bridge`, `*.test.mjs` on `node --test`,
+  `npm run e2e`). See `e2e/README.md` for the run recipe and the single-instance/port
+  constraints.
+
+### Hermetic test fixture (debug-only env hooks)
+
+Tests run against a **disposable GreenMail IMAPS server** (`e2e/docker-compose.yml`) seeded
+with fixed fixture emails (`e2e/fixtures/mail/`), not a real mailbox. The app is launched
+against an **isolated XDG profile** — `XDG_CONFIG_HOME`/`XDG_DATA_HOME` pointed at a
+throwaway dir with `e2e/profile/accounts.json` — so a run never touches real accounts or the
+mail DB (both resolve via `dirs::config_dir`/`dirs::data_dir`). Two **`debug_assertions`-only,
+env-gated** hooks bridge the app to the fixture; both are compiled out of release and inert
+unless their env var is set:
+
+- **`COSMIC_MAIL_EXTRA_CA`** (`sync/imap.rs::tls_config`) — path to a PEM whose certs are
+  added to the rustls trust store, so the app accepts the fixture's committed self-signed
+  `localhost` cert (`e2e/fixtures/tls/ca.pem`). The strict-TLS production path is unchanged.
+- **`COSMIC_MAIL_TEST_IMAP_PASSWORD`** (`accounts.rs::get_imap_password`) — returned as the
+  IMAP password instead of the keyring, so tests need no Secret Service (e.g. headless CI).
+
+Also: **tray setup is non-fatal** (`lib.rs`) — a missing StatusNotifier host (headless CI
+under Xvfb) logs a warning instead of aborting startup before the webview/bridge come up. CI
+(`.github/workflows/e2e.yml`) builds a debug binary (`tauri build --debug --no-bundle`) and
+runs it under `dbus-run-session -- xvfb-run` via `e2e/ci-run.sh`.
 
 ## Conventions
 

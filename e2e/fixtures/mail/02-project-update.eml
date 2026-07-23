@@ -1,0 +1,11 @@
+From: Project Bot <updates@example.com>
+To: test@localhost
+Subject: Weekly project update
+Date: Tue, 13 Jan 2026 14:30:00 +0000
+Message-ID: <fixture-update-0002@example.com>
+Content-Type: text/plain; charset=utf-8
+
+This week: shipped the automation bridge, wrote the E2E harness, and set up
+a hermetic GreenMail fixture so these tests no longer touch a real mailbox.
+
+No tracking numbers here — just a plain message for list assertions.

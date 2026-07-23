@@ -64,10 +64,40 @@ fn tls_config() -> Result<Arc<ClientConfig>> {
     if roots.is_empty() {
         bail!("no native root certificates available for TLS");
     }
+    // Debug builds only: trust an extra CA from `COSMIC_MAIL_EXTRA_CA` so E2E
+    // tests can point the app at a local IMAPS fixture (GreenMail) serving a
+    // committed self-signed `localhost` cert. Never compiled into releases.
+    #[cfg(debug_assertions)]
+    add_extra_ca(&mut roots);
+
     let config = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
     Ok(Arc::new(config))
+}
+
+/// Add certificates from the PEM file named by `COSMIC_MAIL_EXTRA_CA`, if set,
+/// to the trust store. Failures are logged and ignored — this is a debug-only
+/// testing affordance, never required for the app to run.
+#[cfg(debug_assertions)]
+fn add_extra_ca(roots: &mut RootCertStore) {
+    let Some(path) = std::env::var_os("COSMIC_MAIL_EXTRA_CA") else {
+        return;
+    };
+    let pem = match std::fs::read(&path) {
+        Ok(pem) => pem,
+        Err(err) => {
+            tracing::warn!(error = %err, "COSMIC_MAIL_EXTRA_CA unreadable");
+            return;
+        }
+    };
+    let mut added = 0usize;
+    for cert in rustls_pemfile::certs(&mut pem.as_slice()).flatten() {
+        if roots.add(cert).is_ok() {
+            added += 1;
+        }
+    }
+    tracing::warn!(added, "trusting extra CA certificates (debug build)");
 }
 
 /// Open a TLS connection to `host:port` and return an unauthenticated client.

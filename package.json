@@ -11,6 +11,9 @@
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "node --test tests/*.test.mjs",
+    "e2e": "node --test e2e/*.test.mjs",
+    "e2e:env:up": "docker compose -f e2e/docker-compose.yml up -d && node e2e/seed.mjs",
+    "e2e:env:down": "docker compose -f e2e/docker-compose.yml down -v",
     "promote:local": "bash scripts/promote-local.sh",
     "tauri": "tauri"
   },

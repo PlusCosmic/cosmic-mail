@@ -4,6 +4,8 @@ mod accounts;
 mod attachments;
 mod auth;
 mod autoconfig;
+#[cfg(debug_assertions)]
+mod automation;
 mod commands;
 mod desktop;
 mod error;
@@ -11,6 +13,7 @@ mod notifications;
 mod omarchy;
 mod send;
 mod settings;
+mod shipments;
 mod state;
 mod store;
 mod sync;
@@ -78,9 +81,14 @@ pub fn run() {
             app.manage(app_state);
 
             // Keep one tray icon and its menu attached for the lifetime of
-            // the desktop process, including background-only launches.
+            // the desktop process, including background-only launches. A
+            // missing StatusNotifier host (e.g. a headless CI runner under
+            // Xvfb) must not abort startup before the webview comes up, so a
+            // tray failure is logged rather than propagated.
             #[cfg(desktop)]
-            tray::setup(app)?;
+            if let Err(err) = tray::setup(app) {
+                tracing::warn!(error = %err, "tray setup failed; continuing without a tray");
+            }
 
             // The window is configured hidden to avoid a login flash. Only an
             // interactive first launch should reveal it; --background is used
@@ -91,6 +99,11 @@ pub fn run() {
 
             // Spawn the omarchy theme watcher.
             omarchy::spawn_watcher(app.handle().clone());
+
+            // Debug builds expose a loopback automation bridge for scripted
+            // E2E tests (see automation.rs). Never compiled into releases.
+            #[cfg(debug_assertions)]
+            automation::spawn(app.handle().clone());
 
             // Spawn sync tasks for existing accounts.
             match accounts::load_accounts() {
@@ -129,6 +142,7 @@ pub fn run() {
             commands::list_unified_messages,
             commands::search_messages,
             commands::get_message_body,
+            commands::list_shipments_for_message,
             commands::save_attachment,
             commands::mark_read,
             commands::mark_flagged,

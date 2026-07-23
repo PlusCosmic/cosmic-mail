@@ -1,0 +1,26 @@
+# Disposable GreenMail mail server for hermetic E2E tests.
+#
+# Serves IMAPS on localhost:3993 with our committed `localhost` cert (see
+# fixtures/tls/), pre-creates the `test` user, and accepts fixture mail over
+# plaintext SMTP on 3025. Everything here is throwaway — `down -v` wipes it.
+services:
+  greenmail:
+    image: greenmail/standalone:2.1.11
+    # Bind to loopback only; this is a test server, never exposed off-box.
+    ports:
+      - "127.0.0.1:3025:3025" # SMTP (fixture delivery)
+      - "127.0.0.1:3993:3993" # IMAPS (the app connects here)
+      - "127.0.0.1:8080:8080" # management API (readiness/debug)
+    environment:
+      # greenmail.hostname=0.0.0.0 so the published ports are reachable from the
+      # host; serve our own keystore so the cert's SAN is `localhost` (rustls
+      # validates the hostname). Password matches fixtures/tls/generate.sh.
+      GREENMAIL_OPTS: >-
+        -Dgreenmail.setup.test.all
+        -Dgreenmail.hostname=0.0.0.0
+        -Dgreenmail.users=test:test-pass@localhost
+        -Dgreenmail.tls.keystore.file=/certs/localhost.p12
+        -Dgreenmail.tls.keystore.password=changeit
+        -Dgreenmail.tls.key.password=changeit
+    volumes:
+      - ./fixtures/tls:/certs:ro

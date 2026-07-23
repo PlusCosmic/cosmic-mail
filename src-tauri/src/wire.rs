@@ -5,7 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::{AttachmentRow, FolderRow, MessageRow};
+use crate::shipments::Carrier;
+use crate::store::{AttachmentRow, FolderRow, MessageRow, ShipmentRow};
 
 /// A mail folder projection.
 #[derive(Debug, Clone, Serialize)]
@@ -89,6 +90,43 @@ impl From<AttachmentRow> for AttachmentInfo {
             mime_type: r.mime_type,
             size_bytes: r.size_bytes,
             is_inline: r.is_inline,
+        }
+    }
+}
+
+/// A shipment detected in a message body by local heuristic parsing.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Shipment {
+    pub id: i64,
+    /// Stable lowercase carrier code (see `shipments::Carrier::as_str`), e.g.
+    /// "ups", "royal_mail". The frontend maps this to a display label/glyph,
+    /// mirroring how `Folder.role` is handled.
+    pub carrier: String,
+    pub tracking_number: Option<String>,
+    /// The link captured from the email, or (when the email carried none) a
+    /// synthesized carrier tracking-page URL — already resolved by
+    /// `shipments::extract_shipments` before this row was stored.
+    pub tracking_url: Option<String>,
+    pub order_id: Option<String>,
+    pub detected_at: String,
+}
+
+impl From<ShipmentRow> for Shipment {
+    fn from(r: ShipmentRow) -> Self {
+        // Round-trip through `Carrier` only to normalize an unrecognized
+        // stored code defensively; the DB only ever holds values this
+        // process itself wrote via `Carrier::as_str`.
+        let carrier = Carrier::from_db_str(&r.carrier)
+            .map(|c| c.as_str().to_string())
+            .unwrap_or(r.carrier);
+        Shipment {
+            id: r.id,
+            carrier,
+            tracking_number: r.tracking_number,
+            tracking_url: r.tracking_url,
+            order_id: r.order_id,
+            detected_at: r.detected_at,
         }
     }
 }

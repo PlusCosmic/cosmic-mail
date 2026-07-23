@@ -26,7 +26,9 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 use crate::accounts::Account;
+use crate::commands::shipment_insert;
 use crate::notifications::{self, NewMail};
+use crate::shipments;
 use crate::state::Db;
 use crate::store::{self, FolderRole, MessageUpsert};
 
@@ -466,6 +468,13 @@ async fn prefetch_message_bodies(db: &Db, folder_id: i64, session: &mut imap::Im
         }
         if let Err(err) = store::replace_attachments(&conn, candidate.id, &body.attachments) {
             tracing::warn!(message_id = candidate.id, error = %err, "could not cache prefetched attachments");
+        }
+
+        let detected = shipments::extract_shipments(body.text.as_deref(), body.html.as_deref());
+        let inserts: Vec<store::ShipmentInsert> =
+            detected.into_iter().map(shipment_insert).collect();
+        if let Err(err) = store::replace_shipments(&conn, candidate.id, &inserts) {
+            tracing::warn!(message_id = candidate.id, error = %err, "could not cache prefetched shipments");
         }
     }
 }

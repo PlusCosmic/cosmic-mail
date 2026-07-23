@@ -32,6 +32,10 @@ pnpm-debug.log*
 *.pfx
 *.jks
 *.keystore
+# Exception: the committed, throwaway E2E TLS fixture (test-only localhost
+# cert/keystore, trusted only by a debug build via COSMIC_MAIL_EXTRA_CA).
+!e2e/fixtures/tls/ca.pem
+!e2e/fixtures/tls/localhost.p12
 
 # Tool-generated temporary files
 vite.config.js.timestamp-*
