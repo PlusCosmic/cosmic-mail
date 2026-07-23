@@ -1,0 +1,13 @@
+[
+  {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "email": "test@localhost",
+    "displayName": "E2E Test",
+    "kind": "imap",
+    "imapHost": "localhost",
+    "imapPort": 3993,
+    "smtpHost": "localhost",
+    "smtpPort": 3025,
+    "username": "test"
+  }
+]

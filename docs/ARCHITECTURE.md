@@ -23,6 +23,7 @@ src-tauri/src/
   accounts.rs       # Account model, accounts.json persistence, keyring secrets
   omarchy.rs        # theme reader + file watcher -> "omarchy:theme-changed" event
   notifications.rs  # notify-rust wrapper (mako-aware)
+  automation.rs     # DEBUG BUILDS ONLY: loopback E2E bridge (see section below)
   sync/
     mod.rs          # SyncManager: per-account background task, IDLE loop
     imap.rs         # async-imap + tokio-rustls connector, LOGIN + XOAUTH2
@@ -613,6 +614,57 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   here). Gmail OAuth's own consent-URL open (`auth/oauth.rs`) calls the Rust `OpenerExt::open_url`
   API directly and is unaffected by this capability, since ACL scoping only gates the JS-invoked
   command.
+
+## Automation bridge (debug builds only — `automation.rs`)
+
+Scripted end-to-end tests drive the real webview through an in-app bridge. Arch/CachyOS
+`webkit2gtk-4.1` ships no `WebKitWebDriver`, so the standard `tauri-driver` route is
+unavailable; the bridge replaces it. **It exists only in `debug_assertions` builds** —
+`lib.rs` gates both `mod automation;` and the `automation::spawn` call on `cfg`, so it is
+compiled out of every release/promoted binary. It never appears in the invoke handler and
+adds no wire types or events.
+
+- **Transport.** A raw loopback HTTP/1.1 listener on `127.0.0.1:4127` (override with
+  `COSMIC_MAIL_AUTOMATION_PORT`), on tokio (no new crates). Binds loopback only; one
+  request per `Connection: close`. Bind failure is logged and non-fatal. Never handles
+  secrets.
+- **`GET /health`** → `200 {"ok":true}` once the main webview exists; `503` otherwise. A
+  client's readiness wait gates on this, so it means "UI drivable", not just "socket up".
+- **`POST /eval`**, body = a JS **function body** → runs it in the main webview via
+  `WebviewWindow::eval_with_callback` (WebKitGTK `run_javascript` → `js_value().to_json`)
+  and returns the value. The snippet is wrapped in a try/catch IIFE, so:
+  - success → `{"ok":true,"value":<the JSON value; undefined coerced to null>}`
+  - a throw → `{"ok":false,"error":"<message>"}`
+  Only JSON-serializable return values survive (strings, numbers, booleans, arrays, plain
+  objects) — return element *text*/counts, not DOM nodes.
+- **No promise awaiting.** WebKitGTK evaluates each snippet synchronously and does not
+  await a returned Promise. Waiting for async UI (a click that renders a pane) is the
+  client's job, done by polling `/eval` until a condition holds — never by returning a
+  Promise from the snippet.
+- **Client + tests** live in `e2e/` (`client.mjs` `Bridge`, `*.test.mjs` on `node --test`,
+  `npm run e2e`). See `e2e/README.md` for the run recipe and the single-instance/port
+  constraints.
+
+### Hermetic test fixture (debug-only env hooks)
+
+Tests run against a **disposable GreenMail IMAPS server** (`e2e/docker-compose.yml`) seeded
+with fixed fixture emails (`e2e/fixtures/mail/`), not a real mailbox. The app is launched
+against an **isolated XDG profile** — `XDG_CONFIG_HOME`/`XDG_DATA_HOME` pointed at a
+throwaway dir with `e2e/profile/accounts.json` — so a run never touches real accounts or the
+mail DB (both resolve via `dirs::config_dir`/`dirs::data_dir`). Two **`debug_assertions`-only,
+env-gated** hooks bridge the app to the fixture; both are compiled out of release and inert
+unless their env var is set:
+
+- **`COSMIC_MAIL_EXTRA_CA`** (`sync/imap.rs::tls_config`) — path to a PEM whose certs are
+  added to the rustls trust store, so the app accepts the fixture's committed self-signed
+  `localhost` cert (`e2e/fixtures/tls/ca.pem`). The strict-TLS production path is unchanged.
+- **`COSMIC_MAIL_TEST_IMAP_PASSWORD`** (`accounts.rs::get_imap_password`) — returned as the
+  IMAP password instead of the keyring, so tests need no Secret Service (e.g. headless CI).
+
+Also: **tray setup is non-fatal** (`lib.rs`) — a missing StatusNotifier host (headless CI
+under Xvfb) logs a warning instead of aborting startup before the webview/bridge come up. CI
+(`.github/workflows/e2e.yml`) builds a debug binary (`tauri build --debug --no-bundle`) and
+runs it under `dbus-run-session -- xvfb-run` via `e2e/ci-run.sh`.
 
 ## Conventions
 

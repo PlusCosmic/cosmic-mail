@@ -1,0 +1,14 @@
+# gitleaks configuration.
+#
+# Allowlist the committed, throwaway E2E TLS fixture under e2e/fixtures/tls/.
+# Those credentials are test-only: they serve a local `localhost` GreenMail IMAPS
+# fixture and are trusted only when a DEBUG build is explicitly pointed at them
+# via COSMIC_MAIL_EXTRA_CA. They protect nothing real. See e2e/README.md.
+[extend]
+useDefault = true
+
+[[allowlist]]
+description = "E2E test-only TLS fixture (localhost cert + keystore)"
+paths = [
+  '''e2e/fixtures/tls/.*''',
+]

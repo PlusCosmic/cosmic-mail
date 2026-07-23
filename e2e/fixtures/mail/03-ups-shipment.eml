@@ -1,0 +1,16 @@
+From: Shipping <ship@example.com>
+To: test@localhost
+Subject: Your order has shipped
+Date: Wed, 14 Jan 2026 08:00:00 +0000
+Message-ID: <fixture-shipment-0003@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Good news — your order is on its way!
+
+Carrier: UPS
+Tracking number: 1Z999AA10123456784
+
+Track your shipment:
+https://www.ups.com/track?trackingNumber=1Z999AA10123456784
+
+Thanks for your order.
