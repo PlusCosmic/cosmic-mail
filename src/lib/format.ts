@@ -1,6 +1,6 @@
 // Small formatting helpers (no deps).
 
-import type { FolderRole } from "./types";
+import type { FolderRole, ShipmentCarrier } from "./types";
 
 /** 1–2 uppercase chars from display name, fallback to addr local part. */
 export function initials(name: string, addr: string): string {
@@ -49,6 +49,34 @@ export function roleGlyph(role: FolderRole): string {
 			return "⚠"; // ⚠
 		default:
 			return "\u{1F4C1}"; // 📁
+	}
+}
+
+/** Display label per shipment carrier. */
+export function carrierLabel(carrier: ShipmentCarrier): string {
+	switch (carrier) {
+		case "ups":
+			return "UPS";
+		case "fedex":
+			return "FedEx";
+		case "usps":
+			return "USPS";
+		case "dhl":
+			return "DHL";
+		case "royal_mail":
+			return "Royal Mail";
+		case "amazon":
+			return "Amazon";
+	}
+}
+
+/** Unicode glyph per shipment carrier. Deliberately no icon library. */
+export function carrierGlyph(carrier: ShipmentCarrier): string {
+	switch (carrier) {
+		case "amazon":
+			return "\u{1F6D2}"; // 🛒
+		default:
+			return "\u{1F4E6}"; // 📦
 	}
 }
 

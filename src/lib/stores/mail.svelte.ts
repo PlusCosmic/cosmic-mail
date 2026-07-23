@@ -12,6 +12,7 @@ import type {
 	MessageSummary,
 	SendMessageInput,
 	Settings,
+	Shipment,
 	SyncState,
 	SyncStateEvent,
 } from "$lib/types";
@@ -51,6 +52,8 @@ export class MailStore {
 	selectedMessageId = $state<number | null>(null);
 	body = $state<MessageBody | null>(null);
 	loadingBody = $state(false);
+	/** Shipments detected in the currently-loaded body, if any. */
+	shipments = $state<Shipment[]>([]);
 
 	toasts = $state<Toast[]>([]);
 
@@ -263,6 +266,7 @@ export class MailStore {
 				this.messages = [];
 				this.selectedMessageId = null;
 				this.body = null;
+				this.shipments = [];
 				this.unified = true;
 			}
 			await this.loadAccounts();
@@ -281,6 +285,7 @@ export class MailStore {
 		this.selectedFolderId = null;
 		this.selectedMessageId = null;
 		this.body = null;
+		this.shipments = [];
 		this.offset = 0;
 		this.messages = [];
 		this.filter = "all";
@@ -297,6 +302,7 @@ export class MailStore {
 		this.selectedFolderId = folder.id;
 		this.selectedMessageId = null;
 		this.body = null;
+		this.shipments = [];
 		this.offset = 0;
 		this.messages = [];
 		this.filter = "all";
@@ -319,6 +325,7 @@ export class MailStore {
 			this.selectedFolderId = null;
 			this.selectedMessageId = null;
 			this.body = null;
+			this.shipments = [];
 			this.messages = [];
 			this.searchActive = false;
 			this.searchQuery = "";
@@ -340,6 +347,7 @@ export class MailStore {
 		this.query = "";
 		this.selectedMessageId = null;
 		this.body = null;
+		this.shipments = [];
 		this.offset = 0;
 		this.messages = [];
 		await this.#fetchPage(false);
@@ -352,6 +360,7 @@ export class MailStore {
 		this.searchQuery = "";
 		this.selectedMessageId = null;
 		this.body = null;
+		this.shipments = [];
 		this.offset = 0;
 		this.messages = [];
 		await this.#fetchPage(false);
@@ -450,6 +459,7 @@ export class MailStore {
 	async selectMessage(msg: MessageSummary): Promise<void> {
 		this.selectedMessageId = msg.id;
 		this.body = null;
+		this.shipments = [];
 		this.loadingBody = true;
 		try {
 			const body = await api.getMessageBody(msg.id);
@@ -458,6 +468,14 @@ export class MailStore {
 			if (this.selectedMessageId === msg.id) this.#error("Failed to load message", e);
 		} finally {
 			if (this.selectedMessageId === msg.id) this.loadingBody = false;
+		}
+		// Shipment detection runs as part of body caching backend-side, so this
+		// is safe to fetch right after the body call resolves either way.
+		try {
+			const shipments = await api.listShipmentsForMessage(msg.id);
+			if (this.selectedMessageId === msg.id) this.shipments = shipments;
+		} catch {
+			/* silent — the shipment card is a non-essential enhancement */
 		}
 		// Opening a message marks it read.
 		if (!msg.seen) await this.setSeen(msg, true);
@@ -583,6 +601,7 @@ export class MailStore {
 		if (wasSelected) {
 			this.selectedMessageId = nextId;
 			this.body = null;
+			this.shipments = [];
 			const next = nextId === null ? null : this.messages.find((m) => m.id === nextId);
 			if (next) void this.selectMessage(next);
 		}

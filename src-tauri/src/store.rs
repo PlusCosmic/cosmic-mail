@@ -109,6 +109,26 @@ CREATE TABLE IF NOT EXISTS attachments (
   UNIQUE(message_id, part_index)
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
+
+-- Shipments detected by local heuristic parsing of a cached message body
+-- (see `shipments::extract_shipments`), populated at the same body-parse
+-- hook as `attachments`. `carrier` is a stable lowercase code (see
+-- `shipments::Carrier::as_str`), not a display label. Nullable columns
+-- reflect what the heuristic actually found: e.g. Amazon shipment emails
+-- often carry only a login-gated tracking link and an order id, no raw
+-- tracking number. Rows are replaced wholesale per message on every parse
+-- (see `replace_shipments`), so re-parsing the same message cannot
+-- accumulate duplicates.
+CREATE TABLE IF NOT EXISTS shipments (
+  id INTEGER PRIMARY KEY,
+  message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  carrier TEXT NOT NULL,
+  tracking_number TEXT,
+  tracking_url TEXT,
+  order_id TEXT,
+  detected_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shipments_message ON shipments(message_id);
 "#,
     )
     .context("creating schema")?;
@@ -277,6 +297,28 @@ pub struct AttachmentMeta {
     pub is_inline: bool,
     /// Content-ID normalized without angle brackets, when present.
     pub content_id: Option<String>,
+}
+
+/// A shipment detected by local body parsing, ready to persist. Mirrors
+/// `shipments::ExtractedShipment` with the carrier already reduced to its
+/// stable DB code (`shipments::Carrier::as_str`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShipmentInsert {
+    pub carrier: String,
+    pub tracking_number: Option<String>,
+    pub tracking_url: Option<String>,
+    pub order_id: Option<String>,
+}
+
+/// A shipment row as returned to the frontend.
+#[derive(Debug, Clone)]
+pub struct ShipmentRow {
+    pub id: i64,
+    pub carrier: String,
+    pub tracking_number: Option<String>,
+    pub tracking_url: Option<String>,
+    pub order_id: Option<String>,
+    pub detected_at: String,
 }
 
 /// An attachment row projected for the reader (non-secret, no bytes).
@@ -858,6 +900,74 @@ pub fn replace_attachments(
     Ok(())
 }
 
+/// Replace all shipment rows detected for a message.
+///
+/// Called at the same body-parse hook as `replace_attachments`, and follows
+/// the identical wholesale delete-then-insert-in-one-transaction shape: the
+/// previous rows are cleared and the freshly extracted set is inserted, so
+/// re-parsing a message (which only happens on a foreground cache miss or
+/// background prefetch — a cached body is never re-fetched) cannot
+/// accumulate duplicate rows.
+pub fn replace_shipments(
+    conn: &Connection,
+    message_id: i64,
+    shipments: &[ShipmentInsert],
+) -> Result<()> {
+    let tx = conn
+        .unchecked_transaction()
+        .context("beginning shipment transaction")?;
+    tx.execute(
+        "DELETE FROM shipments WHERE message_id = ?1",
+        params![message_id],
+    )
+    .context("clearing old shipments")?;
+    if !shipments.is_empty() {
+        let detected_at = chrono::Utc::now().to_rfc3339();
+        let mut stmt = tx
+            .prepare(
+                "INSERT INTO shipments \
+                   (message_id, carrier, tracking_number, tracking_url, order_id, detected_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .context("preparing shipment insert")?;
+        for s in shipments {
+            stmt.execute(params![
+                message_id,
+                s.carrier,
+                s.tracking_number,
+                s.tracking_url,
+                s.order_id,
+                detected_at,
+            ])
+            .context("inserting shipment")?;
+        }
+    }
+    tx.commit().context("committing shipment transaction")?;
+    Ok(())
+}
+
+/// List shipments detected for a message, in detection order.
+pub fn list_shipments(conn: &Connection, message_id: i64) -> Result<Vec<ShipmentRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, carrier, tracking_number, tracking_url, order_id, detected_at \
+         FROM shipments WHERE message_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map(params![message_id], |r| {
+            Ok(ShipmentRow {
+                id: r.get(0)?,
+                carrier: r.get(1)?,
+                tracking_number: r.get(2)?,
+                tracking_url: r.get(3)?,
+                order_id: r.get(4)?,
+                detected_at: r.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("collecting shipments")?;
+    Ok(rows)
+}
+
 /// Recompute the preview snippet of every message with a cached body and
 /// update the rows whose snippet actually changes. Returns how many changed.
 ///
@@ -1407,6 +1517,73 @@ mod tests {
         assert!(list_attachments(&conn, message_id)
             .expect("list")
             .is_empty());
+    }
+
+    #[test]
+    fn replace_shipments_dedupes_on_reparse_and_cascades_on_delete() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_schema(&conn).expect("initialize schema");
+        let (folder_id, _) =
+            upsert_folder(&conn, "acct", "INBOX", FolderRole::Inbox, 1).expect("insert folder");
+        let message_id = upsert_message(
+            &conn,
+            &MessageUpsert {
+                folder_id,
+                uid: 9,
+                message_id: None,
+                subject: "Your package has shipped".into(),
+                from_name: String::new(),
+                from_addr: "shipping@example.com".into(),
+                to_addrs: Vec::new(),
+                cc_addrs: Vec::new(),
+                date: "2026-07-14T00:00:00Z".into(),
+                snippet: String::new(),
+                seen: true,
+                flagged: false,
+                has_attachments: false,
+                rfc822_size: 100,
+            },
+        )
+        .expect("insert message");
+
+        let shipments = vec![
+            ShipmentInsert {
+                carrier: "ups".into(),
+                tracking_number: Some("1Z999AA10123456784".into()),
+                tracking_url: Some("https://www.ups.com/track?tracknum=1Z999AA10123456784".into()),
+                order_id: None,
+            },
+            ShipmentInsert {
+                carrier: "amazon".into(),
+                tracking_number: None,
+                tracking_url: None,
+                order_id: Some("123-4567890-1234567".into()),
+            },
+        ];
+        replace_shipments(&conn, message_id, &shipments).expect("store shipments");
+        replace_shipments(&conn, message_id, &shipments).expect("re-store same shipments");
+
+        // Re-parsing the same message (same extraction result) must not
+        // accumulate duplicate rows.
+        let listed = list_shipments(&conn, message_id).expect("list shipments");
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].carrier, "ups");
+        assert_eq!(
+            listed[0].tracking_number.as_deref(),
+            Some("1Z999AA10123456784")
+        );
+        assert_eq!(listed[1].carrier, "amazon");
+        assert_eq!(listed[1].order_id.as_deref(), Some("123-4567890-1234567"));
+        assert!(!listed[0].detected_at.is_empty());
+
+        // A re-parse that finds fewer shipments drops the stale ones.
+        replace_shipments(&conn, message_id, &shipments[..1]).expect("replace with fewer");
+        assert_eq!(list_shipments(&conn, message_id).expect("list").len(), 1);
+
+        // Deleting the message cascades to its shipment rows.
+        conn.execute("DELETE FROM messages WHERE id = ?1", params![message_id])
+            .expect("delete message");
+        assert!(list_shipments(&conn, message_id).expect("list").is_empty());
     }
 
     /// Pins the capability the search feature depends on: the bundled SQLite must

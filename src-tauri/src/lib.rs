@@ -11,6 +11,7 @@ mod notifications;
 mod omarchy;
 mod send;
 mod settings;
+mod shipments;
 mod state;
 mod store;
 mod sync;
@@ -129,6 +130,7 @@ pub fn run() {
             commands::list_unified_messages,
             commands::search_messages,
             commands::get_message_body,
+            commands::list_shipments_for_message,
             commands::save_attachment,
             commands::mark_read,
             commands::mark_flagged,

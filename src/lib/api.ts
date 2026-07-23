@@ -19,6 +19,7 @@ import type {
 	OmarchyTheme,
 	SendMessageInput,
 	Settings,
+	Shipment,
 	SyncStateEvent,
 } from "./types";
 
@@ -78,6 +79,10 @@ export function searchMessages(
 
 export function getMessageBody(messageId: number): Promise<MessageBody> {
 	return invoke("get_message_body", { messageId });
+}
+
+export function listShipmentsForMessage(messageId: number): Promise<Shipment[]> {
+	return invoke("list_shipments_for_message", { messageId });
 }
 
 export function saveAttachment(attachmentId: number): Promise<string> {

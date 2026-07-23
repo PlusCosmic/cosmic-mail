@@ -2,7 +2,7 @@
 	import DOMPurify from "dompurify";
 	import { openUrl } from "@tauri-apps/plugin-opener";
 	import { mail } from "$lib/stores/mail.svelte";
-	import { fullDate, initials, avatarColor, formatBytes } from "$lib/format";
+	import { fullDate, initials, avatarColor, formatBytes, carrierLabel, carrierGlyph } from "$lib/format";
 	import {
 		messageFrameDocument,
 		resolveOpenableLinkUrl,
@@ -105,6 +105,14 @@
 			: [],
 	);
 
+	// Shipments detected for the currently-loaded body; `mail.shipments` is
+	// reset to [] on every message change so no id-matching guard is needed.
+	const shipments = $derived(mail.shipments);
+
+	function openShipmentLink(url: string) {
+		void openUrl(url);
+	}
+
 	const senderIni = $derived(msg ? initials(msg.fromName, msg.fromAddr) : "");
 	const senderColor = $derived(msg ? avatarColor(msg.fromAddr || msg.fromName) : "var(--muted)");
 
@@ -187,6 +195,34 @@
 							<span class="ic" aria-hidden="true">📎</span>
 							<span class="name">{att.filename || "attachment"}</span>
 							<span class="size">{formatBytes(att.sizeBytes)}</span>
+						</button>
+					{/each}
+				</div>
+			{/if}
+
+			{#if shipments.length}
+				<div class="r-ships" aria-label="Shipments">
+					{#each shipments as shipment (shipment.id)}
+						<button
+							type="button"
+							class="r-ship"
+							disabled={!shipment.trackingUrl}
+							title={shipment.trackingUrl ? `Track on ${carrierLabel(shipment.carrier)}` : undefined}
+							onclick={() => shipment.trackingUrl && openShipmentLink(shipment.trackingUrl)}
+						>
+							<span class="ic" aria-hidden="true">{carrierGlyph(shipment.carrier)}</span>
+							<span class="ship-info">
+								<span class="carrier">{carrierLabel(shipment.carrier)}</span>
+								{#if shipment.trackingNumber}
+									<span class="num">{shipment.trackingNumber}</span>
+								{/if}
+								{#if shipment.orderId}
+									<span class="num">Order {shipment.orderId}</span>
+								{/if}
+							</span>
+							{#if shipment.trackingUrl}
+								<span class="go" aria-hidden="true">↗</span>
+							{/if}
 						</button>
 					{/each}
 				</div>
@@ -382,6 +418,69 @@
 	.r-att .size {
 		color: var(--muted);
 		font-size: 11px;
+		flex-shrink: 0;
+	}
+
+	.r-ships {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-top: 12px;
+	}
+
+	.r-ship {
+		display: inline-flex;
+		align-items: center;
+		gap: 9px;
+		max-width: 100%;
+		padding: 6px 12px;
+		border: 1px solid var(--border);
+		border-radius: 4px;
+		background: var(--surface);
+		color: var(--fg);
+		font: inherit;
+		font-size: 12px;
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.r-ship:not(:disabled):hover {
+		background: var(--hover);
+		border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+	}
+
+	.r-ship:disabled {
+		cursor: default;
+	}
+
+	.r-ship:focus-visible {
+		outline: none;
+		box-shadow: 0 0 0 1px var(--accent);
+	}
+
+	.r-ship .ship-info {
+		display: flex;
+		flex-direction: column;
+		gap: 1px;
+		min-width: 0;
+	}
+
+	.r-ship .carrier {
+		font-weight: 700;
+	}
+
+	.r-ship .num {
+		color: var(--muted);
+		font-family: var(--mono);
+		font-size: 11px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 260px;
+	}
+
+	.r-ship .go {
+		color: var(--accent);
 		flex-shrink: 0;
 	}
 

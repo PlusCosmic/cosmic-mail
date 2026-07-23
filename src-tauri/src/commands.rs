@@ -10,11 +10,13 @@ use crate::accounts::{self, Account, AccountKind};
 use crate::error::{AppError, AppResult};
 use crate::omarchy::{self, OmarchyTheme};
 use crate::settings::{self, Settings};
+use crate::shipments;
 use crate::state::AppState;
 use crate::store;
 use crate::sync::imap as sync_imap;
 use crate::wire::{
     AttachmentInfo, Folder, ImapAccountInput, MessageBody, MessageSummary, SendMessageInput,
+    Shipment,
 };
 
 /// Read the active omarchy theme.
@@ -329,6 +331,12 @@ pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<Mess
         )
         .map_err(AppError::from)?;
         store::replace_attachments(&conn, message_id, &body.attachments).map_err(AppError::from)?;
+
+        let detected = shipments::extract_shipments(body.text.as_deref(), body.html.as_deref());
+        let inserts: Vec<store::ShipmentInsert> =
+            detected.into_iter().map(shipment_insert).collect();
+        store::replace_shipments(&conn, message_id, &inserts).map_err(AppError::from)?;
+
         store::list_attachments(&conn, message_id)
             .map_err(AppError::from)?
             .into_iter()
@@ -344,6 +352,30 @@ pub async fn get_message_body(app: AppHandle, message_id: i64) -> AppResult<Mess
         cc_addrs: body.cc_addrs,
         attachments,
     })
+}
+
+/// Map a heuristic-detected shipment to its stored form (carrier reduced to
+/// its stable DB code). Shared with the background prefetch hook in `sync::mod`.
+pub(crate) fn shipment_insert(s: shipments::ExtractedShipment) -> store::ShipmentInsert {
+    store::ShipmentInsert {
+        carrier: s.carrier.as_str().to_string(),
+        tracking_number: s.tracking_number,
+        tracking_url: s.tracking_url,
+        order_id: s.order_id,
+    }
+}
+
+/// List shipments detected in a message's cached body (empty until the body
+/// has been fetched, or if none were detected).
+#[tauri::command]
+pub fn list_shipments_for_message(app: AppHandle, message_id: i64) -> AppResult<Vec<Shipment>> {
+    let state = app.state::<AppState>();
+    let conn = state
+        .db
+        .lock()
+        .map_err(|_| AppError::msg("db lock poisoned"))?;
+    let rows = store::list_shipments(&conn, message_id).map_err(AppError::from)?;
+    Ok(rows.into_iter().map(Shipment::from).collect())
 }
 
 /// Save an attachment to the user's downloads directory, returning its path.
