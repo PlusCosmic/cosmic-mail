@@ -32,7 +32,8 @@ function request(path, method, body) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class Bridge {
-  /** Wait until the bridge answers /health (app up + webview reachable). */
+  /** Wait until the bridge answers /health (an eval round-trip succeeds, so
+   *  the page has committed and the webview is actually scriptable). */
   async waitForReady({ timeout = 30000, interval = 250 } = {}) {
     const deadline = Date.now() + timeout;
     for (;;) {

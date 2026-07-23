@@ -13,7 +13,8 @@
 //!
 //! ## Contract
 //!
-//! - `GET  /health` → `{"ok":true}` once the webview is reachable.
+//! - `GET  /health` → `{"ok":true}` once an eval round-trip through the webview
+//!   succeeds, i.e. the page has committed and scripts get results back.
 //! - `POST /eval`, body = raw JS → `{"ok":true,"value":<json>}` on success, or
 //!   `{"ok":false,"error":"<message>"}` if the snippet throws. The snippet is
 //!   wrapped in an IIFE, so `return <expr>;` yields the assertion value.
@@ -93,15 +94,20 @@ async fn handle_connection(mut stream: TcpStream, app: &AppHandle) -> anyhow::Re
     };
 
     let (status, body) = match (request.method.as_str(), request.path.as_str()) {
-        // Ready means the webview exists and can be driven, not merely that the
-        // socket is up — so a client's readiness wait actually gates on the UI.
+        // Ready means an eval round-trip succeeds, not merely that the window
+        // exists: before the first page commit, wry queues scripts and drops
+        // their callbacks (webkitgtk `pending_scripts`), so a client that
+        // started on window-exists would see every eval fail.
         ("GET", "/health") => {
-            if app.get_webview_window(MAIN_WINDOW).is_some() {
+            if eval(app, "return true;".to_string())
+                .await
+                .is_ok_and(|json| json.contains(r#""ok":true"#))
+            {
                 ("200 OK", r#"{"ok":true}"#.to_string())
             } else {
                 (
                     "503 Service Unavailable",
-                    error_envelope("webview not ready"),
+                    error_envelope("webview not scriptable yet"),
                 )
             }
         }
