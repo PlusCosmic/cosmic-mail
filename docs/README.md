@@ -13,7 +13,7 @@ Documentation for agents and humans picking up this project without prior contex
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build/run/test commands, verification workflow, local state paths, how to test each subsystem |
 | [RELEASING.md](RELEASING.md) | manually promote an immutable local daily build into the Omarchy launcher |
 | [GOTCHAS.md](GOTCHAS.md) | Hard-won, non-obvious lessons (each one cost real debugging time — read before touching deps, TLS, SASL, or file watchers) |
-| [ROADMAP.md](ROADMAP.md) | Done-and-verified history (all open work — features, verifications, bugs — lives in GitHub issues) |
+| [ROADMAP.md](ROADMAP.md) | Frozen archive of pre-issues history (all work tracking — open and done — lives in GitHub issues) |
 
 ## What this project is
 
@@ -60,5 +60,6 @@ prototypes/         3 static HTML design mockups (open in browser; 03-hybrid is 
   built-but-unconfirmed work is labelled `verification`, and small bugs / UX quirks are
   labelled `papercut` (tracked on the
   [Cosmic Mail Papercuts board](https://github.com/users/PlusCosmic/projects/2)).
-  [ROADMAP.md](ROADMAP.md) records what's done and verified; update it when closing a
-  `roadmap` or `verification` issue.
+  Closed issues are the done history — close them with a short completion comment.
+  [ROADMAP.md](ROADMAP.md) is a frozen archive from before the move to issues; don't
+  update it.

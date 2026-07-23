@@ -1,7 +1,8 @@
-# Roadmap & status
+# Roadmap & status (frozen archive)
 
-Last updated: 2026-07-20 (open roadmap items migrated to GitHub issues; this file is
-now the **done-and-verified history** only).
+Frozen 2026-07-23: all work tracking — open **and** done — now lives in GitHub issues
+(closed issues are the done history). This file is a historical archive from before the
+move to issues and is no longer updated.
 
 ## Where planned work lives now
 

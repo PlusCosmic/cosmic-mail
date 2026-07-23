@@ -26,5 +26,6 @@ Dev commands, local state paths, and per-subsystem test recipes: `docs/DEVELOPME
 What to build next: GitHub issues — `roadmap` (features) and `verification` (built,
 needs live confirmation) on the [Roadmap board](https://github.com/users/PlusCosmic/projects/3);
 `papercut` (small bugs / UX quirks) on the
-[Papercuts board](https://github.com/users/PlusCosmic/projects/2). `docs/ROADMAP.md` is
-the done-and-verified history; update it when closing `roadmap`/`verification` issues.
+[Papercuts board](https://github.com/users/PlusCosmic/projects/2). Closed issues are the
+done history — close them with a short completion comment; don't maintain `docs/ROADMAP.md`
+(frozen archive, pre-dates the move to issues).
