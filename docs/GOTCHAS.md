@@ -60,6 +60,13 @@ related area. When you learn a new one, add it.
   fixed-argument (no shell) `hyprctl dispatch focuswindow class:^(cosmic-mail)$` fallback when
   `HYPRLAND_INSTANCE_SIGNATURE` is present. Test actions on a currently-live notification:
   restored mako history belongs to the old listener and cannot validate the callback.
+- **wry queues `eval` scripts and silently drops their callbacks until the webview's
+  first `LoadEvent::Committed`** (`wry-0.55.1/src/webkitgtk/mod.rs`, `pending_scripts`;
+  the queued scripts later run with a no-op callback, so the results are gone). Through
+  the automation bridge this surfaces as `evaluation callback dropped` on every eval —
+  which is how the whole e2e suite flaked out in 273ms on a slow CI runner. "Window
+  exists" ≠ "webview is scriptable": the bridge's `/health` gates on a real eval
+  round-trip for exactly this reason; never weaken it back to a window-existence check.
 - **WebKitGTK never exposes a sandboxed `srcdoc` iframe's document to its parent** — even
   with `sandbox="allow-same-origin"`, `contentDocument` goes null once the real document
   loads (and the frame fires `load` more than once). Chromium happily allows it, so the
@@ -101,3 +108,9 @@ related area. When you learn a new one, add it.
   When adding an event, grep the frontend type in `src/lib/types.ts` and match it.
 - Tauri converts JS camelCase invoke args to Rust snake_case params automatically;
   frontend calls `invoke("add_imap_account", { input })` ↔ Rust `input: ImapAccountInput`.
+- **A plain `cargo build` binary is a dev-mode app, not a standalone debug app.** Without
+  the `custom-protocol` feature (which `npm run tauri build -- --debug` enables), the
+  binary loads `devUrl` instead of embedded assets — and with no Vite server running, the
+  webview sits silently on `about:blank` (bridge evals "work" but see an empty document).
+  Anything that runs a locally built binary (e2e, manual testing) needs the tauri-CLI
+  build, e.g. `npm run tauri build -- --debug --no-bundle`.

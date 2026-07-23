@@ -34,7 +34,23 @@ affordances below are compiled out of release builds entirely.
 
 ## Running locally
 
-Prerequisite: Docker. The promoted daily owns the app's D-Bus name, so stop it first.
+Prerequisite: Docker. Easiest path — the CI one-shot against a prebuilt binary
+(`npm run tauri build -- --debug --no-bundle`; a plain `cargo build` produces a
+dev-mode binary that expects a Vite server — see GOTCHAS.md):
+
+```sh
+npm run e2e:env:up
+dbus-run-session -- e2e/ci-run.sh    # isolated bus: no clash with the daily
+npm run e2e:env:down
+```
+
+`dbus-run-session` matters: the promoted daily owns the app's single-instance
+D-Bus name, and a second instance defers to it by **exiting 0 silently** — the
+harness reports "app process exited during startup". An isolated bus avoids
+stopping your real mail client.
+
+For an interactive dev-server session instead (hot reload, real terminal logs),
+stop the daily and drive it manually:
 
 ```sh
 systemctl --user stop cosmic-mail.service        # release the single-instance name
@@ -59,8 +75,8 @@ npm run e2e:env:down
 systemctl --user start cosmic-mail.service
 ```
 
-`e2e/ci-run.sh` automates steps 2–3 in one shot against a prebuilt debug binary —
-that's what CI uses (see `.github/workflows/e2e.yml`).
+CI runs the same one-shot under `dbus-run-session -- xvfb-run` — see
+`.github/workflows/e2e.yml`.
 
 ## Notes
 
