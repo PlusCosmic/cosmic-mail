@@ -700,7 +700,18 @@ export class MailStore {
 		if (this.unified) {
 			// In unified mode, prepend if the event's folder is an inbox.
 			const folder = this.#folderById(p.folderId);
-			if (folder?.role === "inbox") {
+			if (folder === null) {
+				// Folder not classified yet — this is the first sync of a freshly
+				// loaded account, where new-message events can arrive before
+				// loadFolders has recorded the INBOX. Learn the folders, then
+				// refresh so inbox mail appears live instead of only after a
+				// manual reselect.
+				void this.loadFolders(p.accountId).then(() => {
+					if (this.unified && this.#folderById(p.folderId)?.role === "inbox") {
+						void this.refreshCurrentPage();
+					}
+				});
+			} else if (folder.role === "inbox") {
 				const existing = new Set(this.messages.map((m) => m.id));
 				const fresh = p.messages.filter((m) => !existing.has(m.id));
 				if (fresh.length) this.messages = [...fresh, ...this.messages];
