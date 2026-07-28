@@ -638,11 +638,26 @@ async fn idle_wait(session: imap::ImapSession, timeout: Duration) -> Result<Idle
     // IDLE immediately and report it exactly like a real wakeup rather than
     // waiting out `timeout` on a mailbox we already know has moved on.
     if drain_mailbox_changed(&unsolicited) {
-        let session = handle
-            .done()
-            .await
-            .context("closing IDLE handle after pre-wait drain")?;
-        return Ok(IdleOutcome::NewData(session));
+        // Closing here is subject to exactly the same routine-disconnect
+        // caveat as the post-wait `done()` below, so it gets the same
+        // treatment: the drain already told us the mailbox moved on, so a
+        // connection that dies while we send DONE is not new information.
+        // Reporting it as a sync failure would be actively harmful here —
+        // `account_loop` would emit an error state and sleep out the 30s
+        // backoff before reconnecting, delaying the very message this branch
+        // exists to surface. `SessionGone` instead ends the cycle cleanly so
+        // the caller reconnects immediately and re-syncs.
+        return match handle.done().await {
+            Ok(session) => Ok(IdleOutcome::NewData(session)),
+            Err(err) if is_benign_after_routine_wakeup(&err) => {
+                tracing::debug!(
+                    error = %err,
+                    "IDLE session close failed after pre-wait drain; reconnecting next cycle"
+                );
+                Ok(IdleOutcome::SessionGone)
+            }
+            Err(err) => Err(err).context("closing IDLE handle after pre-wait drain"),
+        };
     }
 
     let (fut, _stop) = handle.wait_with_timeout(timeout);
