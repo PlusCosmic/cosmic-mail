@@ -6,6 +6,7 @@
 //! - SASL `AUTHENTICATE XOAUTH2` (Gmail), via [`async_imap::Authenticator`].
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use async_imap::types::{Fetch, Name};
@@ -14,6 +15,7 @@ use base64::Engine;
 use futures::StreamExt;
 use mail_parser::decoders::html::html_to_text;
 use mail_parser::{Message, MessageParser, MessagePart, MimeHeaders};
+use socket2::{SockRef, TcpKeepalive};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
@@ -29,6 +31,27 @@ const BODY_FETCH_QUERY: &str = "(BODY.PEEK[])";
 const INLINE_IMAGE_MAX_BYTES: usize = 512 * 1024;
 /// Per-message total budget for inlined `cid:` image payloads.
 const INLINE_IMAGE_TOTAL_BUDGET: usize = 2 * 1024 * 1024;
+
+/// TCP keepalive settings for the IMAP socket (issue #41).
+///
+/// Without these, a socket that dies silently — laptop suspend/resume, wifi
+/// roam, VPN flap, NAT idle-timeout, a server that drops the connection
+/// without a FIN/RST — leaves the app sitting in a dead IDLE receiving
+/// nothing, which is byte-for-byte indistinguishable from "no mail has
+/// arrived" until the (much longer) full-resync deadline in `sync/mod.rs`
+/// eventually fires. With keepalive probes enabled, the kernel itself detects
+/// the dead peer and the next socket read/write fails with an IO error in
+/// roughly `KEEPALIVE_IDLE + KEEPALIVE_INTERVAL * KEEPALIVE_RETRIES` (~90s),
+/// which propagates up through `async-imap` and is handled by the ordinary
+/// reconnect-with-backoff path.
+///
+/// ~60s before the first probe (an idling IMAP connection is expected to sit
+/// quiet for long stretches — much shorter would fire probes during normal
+/// server-side think time), ~10s between probes, 3 probes before the kernel
+/// gives up on the connection.
+const TCP_KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+const TCP_KEEPALIVE_RETRIES: u32 = 3;
 
 /// An authenticated IMAP session over a TLS stream.
 pub type ImapSession = Session<TlsStream<TcpStream>>;
@@ -110,6 +133,20 @@ async fn tls_client(host: &str, port: u16) -> Result<async_imap::Client<TlsStrea
     let tcp = TcpStream::connect((host, port))
         .await
         .with_context(|| format!("connecting to {host}:{port}"))?;
+
+    // Set TCP keepalive before the TLS handshake so it covers the connection
+    // for its entire lifetime, including the handshake itself. `SockRef`
+    // borrows the raw fd for the duration of this call only — it does not
+    // take ownership of `tcp`, so the stream is unaffected afterwards (see
+    // the vendored `socket2::SockRef` docs).
+    let keepalive = TcpKeepalive::new()
+        .with_time(TCP_KEEPALIVE_IDLE)
+        .with_interval(TCP_KEEPALIVE_INTERVAL)
+        .with_retries(TCP_KEEPALIVE_RETRIES);
+    SockRef::from(&tcp)
+        .set_tcp_keepalive(&keepalive)
+        .with_context(|| format!("setting TCP keepalive for {host}:{port}"))?;
+
     let tls = connector
         .connect(server_name, tcp)
         .await

@@ -16,6 +16,13 @@ related area. When you learn a new one, add it.
   only enables the backend dep without that API.
 - **`cargo add ... | tail` masks failures** — the pipeline exit code is `tail`'s. Two
   deps silently didn't get added this way once. Check `Cargo.toml` after batched adds.
+- **socket2 0.6's `TcpKeepalive` setters are per-platform cfg-gated**, not just
+  no-ops on unsupported targets: `with_retries` (`TCP_KEEPCNT`) additionally requires the
+  crate's `all` feature to even exist, and `with_interval`/`with_retries` are absent
+  entirely on some `target_os`es (see the `#[cfg(...)]` lists in the vendored
+  `socket2-0.6.4/src/lib.rs`). Enable `features = ["all"]` on the `socket2` dep, or
+  `.with_retries(...)` won't compile — this project only targets Linux, where all three
+  setters (`with_time`/`with_interval`/`with_retries`) are available.
 
 ## TLS / auth
 
@@ -85,6 +92,28 @@ related area. When you learn a new one, add it.
 - Folder `total_count` / `unread_count` are authoritative server `STATUS MESSAGES` / `UNSEEN`
   values, not counts of locally cached rows. A successful local `\\Seen` change adjusts unread
   by one; the next STATUS reconciles it. Never recompute these columns from the capped cache.
+- **A plain `TcpStream` with no keepalive makes a dead socket byte-for-byte indistinguishable
+  from a quiet mailbox — for as long as whatever wall-clock deadline eventually forces a
+  reconnect.** (Issue #41.) Laptop suspend/resume, wifi roam, VPN flap, NAT idle-timeout, and a
+  server dropping the connection without a FIN/RST all leave the client sitting in `IDLE`
+  receiving nothing, and nothing about the TCP/TLS/IMAP layers tells it the peer is gone — the
+  socket just looks idle. Before this fix the only bound was `FULL_RESYNC_INTERVAL` (25 min), so
+  every laptop resume bought up to a 25-minute window of "notifications have silently stopped."
+  This is exactly the class of invisible transport assumption this file exists for: nothing in
+  the type signatures (`TcpStream::connect`, `Session::idle()`) hints that the connection can go
+  silently dark without an error, so it is easy to ship a sync loop that is provably correct
+  about *protocol* handling (drain-checks, UID ranges, etc. — see the entries above and issue
+  #39/#40) while still being blind to *transport* death. The fix has two independent layers, on
+  purpose — neither alone closes the window: `SO_KEEPALIVE` on the socket (`socket2::SockRef`
+  applied to the `tokio::net::TcpStream` in `sync::imap::tls_client`, before the TLS handshake —
+  60s idle / 10s interval / 3 probes, so a dead peer surfaces as an IO error in ~90s) catches a
+  transport that is *dead*; splitting the IDLE re-issue cadence (5 min) from the full-resync
+  deadline (25 min, previously the same constant) bounds how long any single command sits
+  unexercised even when keepalive doesn't fire for some reason (e.g. a middlebox that eats
+  keepalive probes but still passes data). Re-issuing IDLE without also draining
+  `unsolicited_responses` first would reopen the exact race issue #39 closed — a `DONE`/`IDLE`
+  round trip is itself a window an `EXISTS` can land in — so this had to land after #39, and the
+  re-issue path reuses the same drain-check as every other path into IDLE.
 
 ## Autoconfig discovery
 

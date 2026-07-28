@@ -7,6 +7,20 @@
 //! reconnects for a full folder sweep. Re-syncing on the live connection keeps
 //! new-mail notification latency at one STATUS+FETCH round trip.
 //!
+//! A single IDLE command is not held open for the full 25 minutes, though
+//! (issue #41): it is capped at the shorter [`IDLE_REISSUE_INTERVAL`] (~5
+//! min), and hitting *that* cap alone loops back for another re-sync +
+//! drain-check + IDLE on the *same* connection rather than ending the cycle —
+//! only hitting the full [`FULL_RESYNC_INTERVAL`] deadline does that. See
+//! [`idle_wait_budget`] (which timeout to hand the next `idle_wait` call) and
+//! [`idle_timeout_action`] (what a `Timeout` outcome means once it comes
+//! back) for the pure decision logic, and their call sites in `run_once` for
+//! the ordering. This is on top of, and independent of, TCP keepalive on the
+//! socket itself (`sync::imap::tls_client`): keepalive detects a transport
+//! that is silently *dead*; the re-issue cadence detects one that is
+//! merely idle for a while and gives new-mail latency a shorter worst case
+//! even when nothing is transport-wise wrong.
+//!
 //! The drain-check closes a race that a re-sync-before-every-IDLE alone does
 //! not: an IMAP server announces new mail by piggy-backing an untagged
 //! `* N EXISTS` onto whatever command response happens to be in flight, and
@@ -66,6 +80,16 @@ const BODY_PREFETCH_WORKING_SET: u32 = 20;
 const BODY_PREFETCH_LIMIT: u32 = 5;
 const BODY_PREFETCH_MAX_BYTES: u32 = 1024 * 1024;
 const FULL_RESYNC_INTERVAL: Duration = Duration::from_secs(25 * 60);
+/// How long a single IDLE command is allowed to wait before we `DONE` and
+/// re-issue it on the same connection (issue #41). This used to be conflated
+/// with `FULL_RESYNC_INTERVAL`, so a connection could sit un-exercised for up
+/// to 25 minutes; RFC 2177 explicitly anticipates clients re-issuing IDLE
+/// periodically, and doing so regularly gives a dead/dropped connection a
+/// chance to surface (via the STATUS/SELECT/FETCH re-sync that follows every
+/// `DONE`) long before the keepalive settings in `sync::imap` would time it
+/// out anyway. Re-issuing is cheap — one `DONE`/`IDLE` round trip — so this
+/// can be short without meaningfully increasing IMAP traffic.
+const IDLE_REISSUE_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const BACKOFF_MIN: Duration = Duration::from_secs(30);
 const BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
@@ -203,7 +227,8 @@ async fn account_loop(app: AppHandle, db: Db, account: Account) {
 }
 
 /// One connect → full folder sweep → INBOX idle-loop cycle. The idle loop
-/// alternates "re-sync INBOX" and "IDLE" on the same connection until the
+/// alternates "re-sync INBOX" and "IDLE" on the same connection, re-issuing
+/// IDLE every [`IDLE_REISSUE_INTERVAL`] without ending the cycle, until the
 /// full-resync deadline (or a dead connection) ends the cycle, so the caller
 /// reconnects fresh and sweeps every folder again.
 async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) -> Result<()> {
@@ -265,13 +290,16 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
     // one step later with the right mailbox selected.
 
     // Idle loop: re-sync INBOX on the live connection, then IDLE until the
-    // server announces changes or the deadline passes. The first re-sync runs
+    // server announces changes, the re-issue cadence elapses, or the
+    // full-resync deadline passes (issue #41 — see `idle_wait_budget` /
+    // `idle_timeout_action` below for which of the latter two actually
+    // happened and what each means for the loop). The first re-sync runs
     // straight after the sweep and catches mail that arrived while other
     // folders were syncing — arrivals whose untagged EXISTS would otherwise be
     // swallowed by the pre-IDLE SELECT and sit unnoticed until the deadline.
-    // Later iterations are IDLE wakeups: one STATUS+FETCH round trip from
-    // wakeup to notification, no reconnect. Body prefetch (issue #40) is
-    // deliberately *not* part of this per-iteration re-sync any more — see
+    // Later iterations are IDLE wakeups (or re-issues): one STATUS+FETCH round
+    // trip from wakeup to notification, no reconnect. Body prefetch (issue
+    // #40) is deliberately *not* part of this per-iteration re-sync any more — see
     // the `prefetch_message_bodies` call after `IdleOutcome::NewData` below
     // for where it moved and why.
     let deadline = std::time::Instant::now() + FULL_RESYNC_INTERVAL;
@@ -340,6 +368,7 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         if now >= deadline {
             break;
         }
+        let remaining_until_deadline = deadline.saturating_duration_since(now);
 
         // Atomicity requirement (issue #39): the decision to IDLE must be made
         // from a check that cannot go stale before we actually call
@@ -369,9 +398,14 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         }
 
         // Work is done; settle to Idle before entering IDLE (or the polling
-        // fallback inside idle_wait), which can last up to the deadline.
+        // fallback inside idle_wait). Cap the wait at the shorter of the IDLE
+        // re-issue cadence and whatever is left until the full-resync
+        // deadline (issue #41: `idle_wait_budget`) — never the full remaining
+        // time, or the connection could sit un-exercised for up to 25
+        // minutes, exactly the blind window this fix exists to shrink.
+        let wait_budget = idle_wait_budget(remaining_until_deadline, IDLE_REISSUE_INTERVAL);
         emit_state(app, &account.id, SyncState::Idle, None, false);
-        match idle_wait(session, deadline - now).await? {
+        match idle_wait(session, wait_budget).await? {
             IdleOutcome::NewData(live) => {
                 session = live;
                 emit_state(app, &account.id, SyncState::Syncing, None, false);
@@ -382,7 +416,29 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
             }
             IdleOutcome::Timeout(live) => {
                 session = live;
-                break;
+                // A `Timeout` here is ambiguous by itself: it fires both when
+                // the (short) IDLE re-issue cadence elapses on a perfectly
+                // healthy connection, and when `wait_budget` was capped by
+                // the full-resync deadline instead. Only the latter should
+                // tear the connection down; the former must loop back and
+                // re-issue IDLE on the *same* connection, or splitting the
+                // two intervals would just reconnect 5x more often than the
+                // old 25-minute cadence instead of fixing anything. See
+                // `idle_timeout_action` for the (tested) decision.
+                match idle_timeout_action(remaining_until_deadline, wait_budget) {
+                    IdleTimeoutAction::Reissue => {
+                        // The last state emitted was Idle, just before the
+                        // wait. Looping back runs a real STATUS/SELECT/FETCH
+                        // pass and prefetch, so report Syncing for it exactly
+                        // as the NewData arm does — otherwise every healthy
+                        // account would periodically do real network and
+                        // cache work while the UI still says "synced", for as
+                        // long as that pass takes.
+                        emit_state(app, &account.id, SyncState::Syncing, None, false);
+                        continue;
+                    }
+                    IdleTimeoutAction::EndCycle => break,
+                }
             }
             IdleOutcome::SessionGone => return Ok(()),
         }
@@ -672,13 +728,80 @@ fn drain_action(mailbox_changed_since_last_check: bool, consecutive_resyncs: u32
     }
 }
 
+/// Duration to pass as the next `idle_wait` timeout (issue #41): whichever is
+/// shorter, the IDLE re-issue cadence or however long is actually left until
+/// the full-resync deadline. Capping at the deadline (rather than always
+/// waiting a full `idle_reissue_interval`) is what guarantees the idle loop
+/// never overruns `FULL_RESYNC_INTERVAL` — without it, a wait that started
+/// with e.g. 4 minutes left on the deadline but was handed the full 5-minute
+/// cadence would blow past the deadline before `idle_wait` ever returns.
+fn idle_wait_budget(
+    remaining_until_deadline: Duration,
+    idle_reissue_interval: Duration,
+) -> Duration {
+    remaining_until_deadline.min(idle_reissue_interval)
+}
+
+/// What the idle loop should do after an [`IdleOutcome::Timeout`]: loop back
+/// and re-issue IDLE on the same connection, or end the cycle so the caller
+/// reconnects and does a fresh full sweep.
+///
+/// This is the crux of issue #41's second half. Before this fix,
+/// `IdleOutcome::Timeout` meant exactly one thing — the 25-minute
+/// `FULL_RESYNC_INTERVAL` deadline had been reached — because that was the
+/// only timeout `idle_wait` was ever given. Splitting the IDLE re-issue
+/// cadence out from the full-resync deadline means `idle_wait` can now also
+/// time out simply because the (much shorter) re-issue interval elapsed on a
+/// perfectly healthy connection, and that case must *not* tear the
+/// connection down — doing so would reconnect roughly 5x more often than
+/// before and make the exact problem #41 reports (dead time invisible to the
+/// user) *worse*, not better, by spending more of it reconnecting instead of
+/// idling.
+#[derive(Debug, PartialEq, Eq)]
+enum IdleTimeoutAction {
+    /// The re-issue cadence elapsed but the full-resync deadline has not been
+    /// reached; loop back, re-sync INBOX, drain-check, and re-enter IDLE on
+    /// the same connection.
+    Reissue,
+    /// The wait was capped by the full-resync deadline rather than the
+    /// re-issue cadence, and that deadline is now reached; end the cycle so
+    /// the caller reconnects and re-sweeps every folder.
+    EndCycle,
+}
+
+/// Decide [`IdleTimeoutAction`] from the same two durations that produced the
+/// `wait_budget` handed to `idle_wait` ([`idle_wait_budget`]). Because
+/// `idle_wait` is given exactly `wait_budget` as its timeout, a `Timeout`
+/// outcome after that wait corresponds deterministically to whichever value
+/// `idle_wait_budget` picked: if the budget was *not* capped by the deadline
+/// (`wait_budget < remaining_until_deadline`), the timeout must have been the
+/// re-issue cadence firing early, so there is time left and the loop should
+/// re-issue. Otherwise — including the exact boundary where the re-issue
+/// interval would overrun the deadline, i.e. `remaining_until_deadline <=
+/// idle_reissue_interval` — the budget was clamped to the deadline, so timing
+/// out means the deadline itself has (just) arrived.
+fn idle_timeout_action(
+    remaining_until_deadline: Duration,
+    wait_budget: Duration,
+) -> IdleTimeoutAction {
+    if wait_budget >= remaining_until_deadline {
+        IdleTimeoutAction::EndCycle
+    } else {
+        IdleTimeoutAction::Reissue
+    }
+}
+
 /// Outcome of one IDLE wait on the selected inbox.
 enum IdleOutcome {
     /// The server announced changes; the recovered session is live for an
     /// immediate re-sync on the same connection.
     NewData(imap::ImapSession),
-    /// The wait timed out (full-resync deadline, or an IDLE-less server's poll
-    /// sleep); the caller should end the cycle so the next one sweeps fresh.
+    /// The wait timed out — either the IDLE re-issue cadence elapsed on a
+    /// healthy connection, the full-resync deadline was reached, or an
+    /// IDLE-less server's poll-fallback sleep elapsed. The recovered session
+    /// is live either way; the caller decides which of those it was via
+    /// [`idle_timeout_action`] and either loops back onto the same connection
+    /// or ends the cycle accordingly.
     Timeout(imap::ImapSession),
     /// The wakeup was routine but the connection died while closing IDLE; the
     /// caller should end the cycle and reconnect.
@@ -1010,6 +1133,70 @@ mod tests {
         assert_eq!(
             drain_action(true, MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE + 10),
             DrainAction::EndCycle
+        );
+    }
+
+    #[test]
+    fn idle_wait_budget_prefers_the_reissue_interval_when_deadline_is_far_off() {
+        // Plenty of time left until the full-resync deadline: the wait should
+        // be capped at the (shorter) re-issue cadence, not the whole
+        // remaining budget.
+        let remaining = Duration::from_secs(20 * 60);
+        let reissue = Duration::from_secs(5 * 60);
+        assert_eq!(idle_wait_budget(remaining, reissue), reissue);
+    }
+
+    #[test]
+    fn idle_wait_budget_clamps_to_the_deadline_when_it_is_the_closer_bound() {
+        // Less time left until the deadline than a full re-issue interval: the
+        // wait must be clamped so it cannot overrun the deadline.
+        let remaining = Duration::from_secs(90);
+        let reissue = Duration::from_secs(5 * 60);
+        assert_eq!(idle_wait_budget(remaining, reissue), remaining);
+    }
+
+    #[test]
+    fn idle_wait_budget_boundary_when_remaining_exactly_equals_the_reissue_interval() {
+        let interval = Duration::from_secs(5 * 60);
+        assert_eq!(idle_wait_budget(interval, interval), interval);
+    }
+
+    #[test]
+    fn idle_timeout_action_reissues_when_the_budget_was_not_clamped_by_the_deadline() {
+        // wait_budget < remaining_until_deadline means idle_wait_budget picked
+        // the re-issue interval, not the deadline, so the connection is fine
+        // and there is time left: loop back onto the same connection.
+        let remaining = Duration::from_secs(20 * 60);
+        let budget = Duration::from_secs(5 * 60);
+        assert_eq!(
+            idle_timeout_action(remaining, budget),
+            IdleTimeoutAction::Reissue
+        );
+    }
+
+    #[test]
+    fn idle_timeout_action_ends_the_cycle_when_the_budget_was_clamped_by_the_deadline() {
+        let remaining = Duration::from_secs(90);
+        let budget = Duration::from_secs(90);
+        assert_eq!(
+            idle_timeout_action(remaining, budget),
+            IdleTimeoutAction::EndCycle
+        );
+    }
+
+    #[test]
+    fn idle_timeout_action_boundary_where_the_reissue_interval_would_overrun_the_deadline() {
+        // Exactly the boundary called out in issue #41: remaining time equals
+        // the re-issue interval, so idle_wait_budget clamps (arbitrarily,
+        // since both sides agree) to that shared value, and the timeout must
+        // be treated as the deadline arriving, not a routine re-issue — an
+        // extra iteration here would (marginally) overrun the full-resync
+        // deadline.
+        let interval = Duration::from_secs(5 * 60);
+        let budget = idle_wait_budget(interval, interval);
+        assert_eq!(
+            idle_timeout_action(interval, budget),
+            IdleTimeoutAction::EndCycle
         );
     }
 }
