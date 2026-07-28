@@ -56,6 +56,12 @@ futures = "0.3"
 rustls = { version = "0.23.41", features = ["ring"] }
 roxmltree = "0.21.1"
 hickory-resolver = "0.26.1"
+# TCP keepalive on the IMAP socket (issue #41): applied to the `tokio::net::TcpStream`
+# before the TLS handshake in `sync::imap::tls_client`. `feature = "all"` is required
+# for `TcpKeepalive::with_retries` (TCP_KEEPCNT) — see the vendored source for which
+# setters are gated per-platform; this project only targets Linux, where all three
+# (time/interval/retries) are available.
+socket2 = { version = "0.6.4", features = ["all"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

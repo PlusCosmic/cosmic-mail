@@ -509,6 +509,24 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   25-min full-resync deadline ends the cycle and the loop reconnects for a fresh full sweep. The
   deadline is a hard wall-clock bound (async-imap's IDLE timeout is inactivity-based; server
   keepalives reset it). On error: emit sync-state error, retry with backoff (30s → 5 min cap).
+- **Dead-connection detection (issue #41):** two independent layers, because each one alone leaves
+  a window a laptop resume/wifi-roam/VPN-flap/NAT-timeout can fall into (see `docs/GOTCHAS.md`).
+  First, TCP keepalive on the socket itself (`sync::imap::tls_client`, via `socket2::SockRef`
+  applied to the `tokio::net::TcpStream` before the TLS handshake): `TCP_KEEPALIVE_IDLE` = 60s,
+  `TCP_KEEPALIVE_INTERVAL` = 10s, `TCP_KEEPALIVE_RETRIES` = 3, so a genuinely dead peer surfaces as
+  an IO error in roughly 90s instead of sitting silent until the full-resync deadline. Second, the
+  IDLE re-issue cadence: a single IDLE command is capped at `IDLE_REISSUE_INTERVAL` (5 min) rather
+  than the full `FULL_RESYNC_INTERVAL` (25 min) — those two were previously the same constant.
+  Hitting the 5-minute cap alone does **not** end the cycle: the loop re-syncs INBOX,
+  drain-checks, and re-issues IDLE on the *same* connection (`IdleTimeoutAction::Reissue`); only
+  actually reaching the 25-minute deadline tears the connection down and reconnects fresh
+  (`IdleTimeoutAction::EndCycle`). Each `idle_wait` call is capped at
+  `min(IDLE_REISSUE_INTERVAL, time_remaining_until_full_resync_deadline)`
+  (`sync::idle_wait_budget`), and which of the two a `Timeout` outcome actually was is decided by
+  `sync::idle_timeout_action` — both are pure functions over `Duration`s, unit-tested including the
+  boundary where the re-issue interval would overrun the deadline. The re-issue path still goes
+  through the same drain-check as every other path into IDLE (a `DONE`/`IDLE` round trip is itself
+  a window an `EXISTS` can land in — see issue #39 below).
 - **Drain-check, and why it exists (issue #39):** an IMAP server announces new mail by
   piggy-backing an untagged `* N EXISTS` onto whatever command response is in flight, and never
   repeats that announcement later. `async-imap` routes any such response that lands outside of
@@ -557,8 +575,11 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   which is why it runs immediately after `sync_folder_uids` has selected INBOX and never straight
   after the full sweep (which leaves whichever folder came last in the LIST response selected).
 - The idle loop's step order is therefore: full sweep (all folders) → loop { STATUS+SELECT+FETCH
-  INBOX (envelopes + notify) → inbox prefetch → drain-check → IDLE }, until the deadline or a
-  dead connection ends the cycle.
+  INBOX (envelopes + notify) → inbox prefetch → drain-check → IDLE (capped at
+  `min(IDLE_REISSUE_INTERVAL, time_remaining_until_deadline)`) }, repeating on a `NewData` wakeup
+  or a re-issue-cadence `Timeout`, and ending the cycle to reconnect fresh on a
+  full-resync-deadline `Timeout`, a dead connection, or a drain-check that hits
+  `MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE`.
 - rustls: `tokio_rustls` with `rustls_native_certs` root store.
 
 ## Shipment detection (shipments.rs)
