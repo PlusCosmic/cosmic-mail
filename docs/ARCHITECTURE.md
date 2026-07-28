@@ -502,10 +502,10 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 - One tokio task per account (`SyncManager` holds JoinHandles; aborted on account removal).
 - Loop: connect → LIST folders (RFC 6154 SPECIAL-USE for roles) → `STATUS` each folder for
   authoritative `MESSAGES`, `UNSEEN`, `UIDNEXT`, and `UIDVALIDITY` → UIDVALIDITY check
-  (mismatch ⇒ wipe folder cache) → fetch/upsert envelopes → emit events/notify → (once, after the
-  sweep) inbox body prefetch. Then hold the connection in an INBOX idle loop: re-sync INBOX
-  (STATUS counts + incremental fetch + notify, no prefetch) → drain-check → IDLE → on wakeup,
-  prefetch, then re-sync INBOX on the same connection and drain-check/IDLE again — until the
+  (mismatch ⇒ wipe folder cache) → fetch/upsert envelopes → emit events/notify. Then hold the
+  connection in an INBOX idle loop: re-sync INBOX (STATUS counts + incremental fetch + notify) →
+  inbox body prefetch → drain-check → IDLE → on wakeup, re-sync INBOX on the same connection and
+  prefetch/drain-check/IDLE again — until the
   25-min full-resync deadline ends the cycle and the loop reconnects for a fresh full sweep. The
   deadline is a hard wall-clock bound (async-imap's IDLE timeout is inactivity-based; server
   keepalives reset it). On error: emit sync-state error, retry with backoff (30s → 5 min cap).
@@ -542,22 +542,23 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   `BODY.PEEK[]`, never `BODY[]`/`RFC822`, so caching cannot set `\Seen`; only the explicit
   `mark_read` command changes that flag. Parsing and caching do not render HTML or load network
   resources. Foreground cache misses use the same non-marking fetch. Prefetch is *not* part of
-  the per-folder re-sync helper (`sync_folder_uids`) and is never run on the pre-IDLE path: it
-  used to run inline right after the inbox's envelope fetch/notify, making it by far the longest
-  stretch of the window the drain-check above exists to protect — on every single re-sync, not
-  just occasionally. It now runs from exactly two call sites in `run_once`, both strictly outside
-  that window: once after the initial full sweep (covering whatever the sweep just synced, before
-  the idle loop's first drain-check/IDLE even runs), and again immediately after each IDLE
-  `NewData` wakeup (before the next STATUS/SELECT/FETCH re-sync and its drain-check/IDLE). Moving
-  it there shrinks the pre-IDLE window on every iteration down to the cheap STATUS/SELECT/FETCH
-  re-sync alone, and any `EXISTS` that piggy-backs on a prefetch FETCH is no longer even a special
-  case: it is simply picked up for free by the next iteration's ordinary UID-range fetch, the same
-  as any other new mail. Do not move prefetch back onto the pre-IDLE path, and do not add an
-  `.await` between the drain-check and `session.idle()` to make room for it.
-- The idle loop's step order is therefore: full sweep (all folders, no prefetch) → one-time inbox
-  prefetch → loop { STATUS+SELECT+FETCH INBOX (envelopes + notify) → drain-check → IDLE → on
-  `NewData` wakeup: prefetch, then repeat }, until the deadline or a dead connection ends the
-  cycle.
+  the per-folder re-sync helper (`sync_folder_uids`) — issue #40 hoisted it into `run_once`'s
+  idle loop, where it runs at exactly one call site, positioned between the re-sync's notify and
+  the drain-check. Both sides of that position are load-bearing. **After the notify**, because
+  prefetch is up to five sequential size+body fetches and putting it ahead of the notify would
+  delay every new-mail toast by exactly the best-effort background work that must stay out of the
+  notification path. **Before the drain-check**, because the drain-check has to be the last thing
+  that happens before `session.idle()` (issue #39) — so an `EXISTS` piggy-backed on one of
+  prefetch's own FETCH commands lands in `unsolicited_responses` and is caught by the drain-check
+  rather than lost. On a single connection this window can be made *safe* but not made to
+  disappear; eliminating it requires prefetch on a second connection (issue #42). Prefetch also
+  requires INBOX to be the selected mailbox — UIDs are mailbox-scoped, and a matching UID in the
+  wrong mailbox would store another folder's body/attachments/shipments against an INBOX message,
+  which is why it runs immediately after `sync_folder_uids` has selected INBOX and never straight
+  after the full sweep (which leaves whichever folder came last in the LIST response selected).
+- The idle loop's step order is therefore: full sweep (all folders) → loop { STATUS+SELECT+FETCH
+  INBOX (envelopes + notify) → inbox prefetch → drain-check → IDLE }, until the deadline or a
+  dead connection ends the cycle.
 - rustls: `tokio_rustls` with `rustls_native_certs` root store.
 
 ## Shipment detection (shipments.rs)
