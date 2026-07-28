@@ -1,0 +1,13 @@
+[Unit]
+Description=Cosmic Mail background sync and notifications
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cosmic-mail --background
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=graphical-session.target

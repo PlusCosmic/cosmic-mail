@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Cosmic Mail
+Comment=Native mail client for Omarchy
+Exec=uwsm-app -- /usr/bin/cosmic-mail
+Icon=cosmic-mail
+Terminal=false
+Categories=Network;Email;
+StartupNotify=true
+StartupWMClass=cosmic-mail
