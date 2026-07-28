@@ -426,7 +426,17 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
                 // old 25-minute cadence instead of fixing anything. See
                 // `idle_timeout_action` for the (tested) decision.
                 match idle_timeout_action(remaining_until_deadline, wait_budget) {
-                    IdleTimeoutAction::Reissue => continue,
+                    IdleTimeoutAction::Reissue => {
+                        // The last state emitted was Idle, just before the
+                        // wait. Looping back runs a real STATUS/SELECT/FETCH
+                        // pass and prefetch, so report Syncing for it exactly
+                        // as the NewData arm does — otherwise every healthy
+                        // account would periodically do real network and
+                        // cache work while the UI still says "synced", for as
+                        // long as that pass takes.
+                        emit_state(app, &account.id, SyncState::Syncing, None, false);
+                        continue;
+                    }
                     IdleTimeoutAction::EndCycle => break,
                 }
             }
