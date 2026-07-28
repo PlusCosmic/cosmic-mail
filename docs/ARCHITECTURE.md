@@ -503,17 +503,17 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 - Loop: connect → LIST folders (RFC 6154 SPECIAL-USE for roles) → `STATUS` each folder for
   authoritative `MESSAGES`, `UNSEEN`, `UIDNEXT`, and `UIDVALIDITY` → UIDVALIDITY check
   (mismatch ⇒ wipe folder cache) → fetch/upsert envelopes → emit events/notify. Then hold the
-  connection in an INBOX idle loop: re-sync INBOX (STATUS counts + incremental fetch + notify)
-  → drain-check → IDLE → on wakeup, re-sync INBOX on the same connection and drain-check/IDLE
-  again — until the 25-min full-resync deadline ends the cycle and the loop reconnects for a
-  fresh full sweep. The deadline is a hard wall-clock bound (async-imap's IDLE timeout is
-  inactivity-based; server keepalives reset it). On error: emit sync-state error, retry with
-  backoff (30s → 5 min cap).
+  connection in an INBOX idle loop: re-sync INBOX (STATUS counts + incremental fetch + notify) →
+  inbox body prefetch → drain-check → IDLE → on wakeup, re-sync INBOX on the same connection and
+  prefetch/drain-check/IDLE again — until the
+  25-min full-resync deadline ends the cycle and the loop reconnects for a fresh full sweep. The
+  deadline is a hard wall-clock bound (async-imap's IDLE timeout is inactivity-based; server
+  keepalives reset it). On error: emit sync-state error, retry with backoff (30s → 5 min cap).
 - **Drain-check, and why it exists (issue #39):** an IMAP server announces new mail by
   piggy-backing an untagged `* N EXISTS` onto whatever command response is in flight, and never
   repeats that announcement later. `async-imap` routes any such response that lands outside of
-  IDLE's own wait — i.e. on the STATUS/SELECT/FETCH/prefetch commands a re-sync issues, or even on
-  the IDLE command's own response before its `+ idling` continuation — onto
+  IDLE's own wait — i.e. on the STATUS/SELECT/FETCH commands a re-sync issues, or even on the IDLE
+  command's own response before its `+ idling` continuation — onto
   `Session::unsolicited_responses`, a `bounded(100)` channel that is otherwise never read. Before
   entering IDLE, and again immediately after `Handle::init()` succeeds, the loop drains that
   channel with `try_recv` (`sync::drain_mailbox_changed`) and treats any `Exists`/`Recent` as
@@ -534,13 +534,31 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 - Incremental sync: `UID FETCH <cached-max-uid+1>:*` and ignore any duplicate boundary item.
   Folder `totalCount`/`unreadCount` stay server-authoritative even when only 200 envelopes are
   cached; successful local flag changes adjust the stored server count until the next STATUS.
-- After each inbox envelope sync, opportunistically cache at most 5 bodies from the newest 20
-  unread and newest 20 overall cached envelopes. Prefetch is sequential and best-effort so an
-  individual body failure does not fail the sync cycle. Skip messages larger than 1 MiB, using
-  a separate `RFC822.SIZE` lookup when a pre-migration envelope has no stored size. Fetch full
-  messages with `BODY.PEEK[]`, never `BODY[]`/`RFC822`, so caching cannot set `\Seen`; only the
-  explicit `mark_read` command changes that flag. Parsing and caching do not render HTML or load
-  network resources. Foreground cache misses use the same non-marking fetch.
+- **Body prefetch timing (issue #40):** opportunistically cache at most 5 bodies from the newest
+  20 unread and newest 20 overall cached inbox envelopes (`BODY_PREFETCH_WORKING_SET` = 20,
+  `BODY_PREFETCH_LIMIT` = 5). Prefetch is sequential and best-effort so an individual body failure
+  does not fail the sync cycle. Skip messages larger than 1 MiB, using a separate `RFC822.SIZE`
+  lookup when a pre-migration envelope has no stored size. Fetch full messages with
+  `BODY.PEEK[]`, never `BODY[]`/`RFC822`, so caching cannot set `\Seen`; only the explicit
+  `mark_read` command changes that flag. Parsing and caching do not render HTML or load network
+  resources. Foreground cache misses use the same non-marking fetch. Prefetch is *not* part of
+  the per-folder re-sync helper (`sync_folder_uids`) — issue #40 hoisted it into `run_once`'s
+  idle loop, where it runs at exactly one call site, positioned between the re-sync's notify and
+  the drain-check. Both sides of that position are load-bearing. **After the notify**, because
+  prefetch is up to five sequential size+body fetches and putting it ahead of the notify would
+  delay every new-mail toast by exactly the best-effort background work that must stay out of the
+  notification path. **Before the drain-check**, because the drain-check has to be the last thing
+  that happens before `session.idle()` (issue #39) — so an `EXISTS` piggy-backed on one of
+  prefetch's own FETCH commands lands in `unsolicited_responses` and is caught by the drain-check
+  rather than lost. On a single connection this window can be made *safe* but not made to
+  disappear; eliminating it requires prefetch on a second connection (issue #42). Prefetch also
+  requires INBOX to be the selected mailbox — UIDs are mailbox-scoped, and a matching UID in the
+  wrong mailbox would store another folder's body/attachments/shipments against an INBOX message,
+  which is why it runs immediately after `sync_folder_uids` has selected INBOX and never straight
+  after the full sweep (which leaves whichever folder came last in the LIST response selected).
+- The idle loop's step order is therefore: full sweep (all folders) → loop { STATUS+SELECT+FETCH
+  INBOX (envelopes + notify) → inbox prefetch → drain-check → IDLE }, until the deadline or a
+  dead connection ends the cycle.
 - rustls: `tokio_rustls` with `rustls_native_certs` root store.
 
 ## Shipment detection (shipments.rs)
