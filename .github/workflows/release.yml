@@ -11,6 +11,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# pkgrel is the packaging repository's run number, so it orders packages by when
+# they were dispatched rather than by when they were committed. Two merges
+# landing within the verify window could otherwise finish out of order and hand
+# the older commit the higher pkgrel, offering it to clients as an upgrade over
+# the newer one. Superseding a run cancels it, so only the newest commit on the
+# branch ever reaches the dispatch.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
