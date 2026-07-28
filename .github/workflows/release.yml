@@ -1,0 +1,82 @@
+name: release
+
+# Runs the definition-of-done suite on every merge to main and, only if it
+# passes, asks PlusCosmic/packages to build and publish an Arch package. This
+# repository never writes to the package bucket: a single repository owns every
+# index update so that concurrent publishes cannot drop entries from the shared
+# database. See docs/RELEASING.md.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libsoup-3.0-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      # The definition of done from CLAUDE.md, in the same order. A change that
+      # compiles but fails these must not reach a client as an upgrade.
+      - run: npm run check
+      - run: npm run build
+
+      - run: cargo check
+        working-directory: src-tauri
+      - run: cargo clippy -- -D warnings
+        working-directory: src-tauri
+      - run: cargo test --lib
+        working-directory: src-tauri
+      - run: cargo fmt --check
+        working-directory: src-tauri
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dispatch to the packaging repository
+        env:
+          # Fine-grained PAT with contents:write on PlusCosmic/packages;
+          # GITHUB_TOKEN cannot dispatch across repositories.
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
+        run: |
+          # tauri.conf.json is the version of record, matching
+          # scripts/promote-local.sh. package.json is still "tauri-app".
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+
+          gh api repos/PlusCosmic/packages/dispatches \
+            -f event_type=publish \
+            -f "client_payload[package]=cosmic-mail" \
+            -f "client_payload[repository]=$GITHUB_REPOSITORY" \
+            -f "client_payload[ref]=$GITHUB_SHA" \
+            -f "client_payload[version]=$version"
+
+          echo "Dispatched cosmic-mail $version at $GITHUB_SHA" \
+            >> "$GITHUB_STEP_SUMMARY"

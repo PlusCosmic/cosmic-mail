@@ -68,54 +68,52 @@ Restart `cosmic-mail.service` when the dev session ends.
 
 ## Hosted Arch repository
 
-`.github/workflows/publish-arch-repo.yml` builds an Arch package on every merge to
-`main` and publishes it to a pacman repository hosted on Backblaze B2. This exists to get
-builds onto machines other than this one; it does not replace local promotion, and
-application self-update stays disabled.
+Every merge to `main` is built as an Arch package and published to a pacman repository
+hosted on Backblaze B2. This exists to get builds onto machines other than this one; it
+does not replace local promotion, and application self-update stays disabled.
 
-The package is built from `git archive HEAD`, so it contains committed source only. It
-installs the same `--no-bundle` binary that promotion does, plus the desktop entry, the
-icons, and the systemd user unit under `/usr/lib/systemd/user/`.
+### How it works
 
-`pkgrel` is the GitHub Actions run number rather than a hand-maintained counter. It
-increases on every merge, so each build is an upgrade to pacman even when
-`src-tauri/tauri.conf.json`'s version has not changed. Bump that version for anything
-users should recognise as a release.
+`.github/workflows/release.yml` runs the definition-of-done suite on every merge to
+`main` — `npm run check`, `npm run build`, and `cargo check`, `clippy`, `test --lib` and
+`fmt --check` in `src-tauri/`. Only if all of that passes does it send a
+`repository_dispatch` to [PlusCosmic/packages], carrying the package name, this
+repository, the merged commit SHA, and the version from `src-tauri/tauri.conf.json`.
 
-### One-time setup
+This repository never writes to the package bucket, and it holds no `PKGBUILD`. Both
+live in the packaging repository, which is the sole publisher. That is deliberate: the
+pacman database is a read-modify-write over shared object storage, and GitHub's
+`concurrency` groups are repository-scoped, so two projects publishing from their own
+repositories could each read the old index and silently drop the other's package.
+Funnelling every update through one repository gives one concurrency group that actually
+serialises them.
 
-The repository lives in the public B2 bucket `pluscosmic-packages-bucket`, under the path
-prefix `bx2fuafngntes`. Backblaze does not allow directory listing on public buckets, so
-that prefix is what keeps the repository unlisted — the bucket name itself is guessable.
-Treat the prefix as the secret and do not shorten it.
+The packaging repository builds from `git archive` of the dispatched SHA, so a package
+can only contain committed source. It installs the same `--no-bundle` binary promotion
+does, plus the desktop entry, the icons, and the systemd user unit under
+`/usr/lib/systemd/user/`.
 
-The bucket is shared by every Cosmic project: one pacman database indexes them all, so a
-new application needs a workflow in its own repository pointing at the same `B2_PATH` and
-no change on any client. Because GitHub's `concurrency` group cannot see the other
-repositories, the publish step re-reads the uploaded index and redoes the merge if a
-concurrent publish dropped its entry.
+`pkgrel` is the packaging repository's Actions run number rather than a hand-maintained
+counter, so each build is an upgrade to pacman even when the `tauri.conf.json` version is
+unchanged. Bump that version for anything users should recognise as a release.
 
-Add the B2 application key to each publishing repository as the `B2_KEY_ID` and
-`B2_APP_KEY` secrets.
+### Setup
 
-On each client, in `/etc/pacman.conf`:
+This repository needs one secret, `PACKAGES_DISPATCH_TOKEN`: a fine-grained PAT with
+`contents: write` on `PlusCosmic/packages`. `GITHUB_TOKEN` cannot dispatch across
+repositories.
 
-```ini
-[cosmic]
-SigLevel = Optional TrustAll
-Server = https://pluscosmic-packages-bucket.s3.eu-central-003.backblazeb2.com/bx2fuafngntes/$arch
-```
+Everything else — the B2 credentials, the bucket path, the client `pacman.conf` line and
+the packaging definitions — lives in [PlusCosmic/packages]. It is private because the
+bucket path prefix is what keeps the package repository unlisted, so that is the only
+place the repository URL is written down.
 
-```sh
-sudo pacman -Sy cosmic-mail    # first install
-sudo pacman -Syu               # every merge after that
-```
+Packages are unsigned, and clients set `SigLevel = Optional TrustAll` scoped to this
+repository so it does not weaken verification for `core` or `extra`. The tradeoff is
+explicit: obscurity hides the URL, but anyone who obtains write access to the bucket can
+ship a package that runs as root on every client.
 
-Packages are unsigned, and `SigLevel` is scoped to this repository so it does not weaken
-verification for `core` or `extra`. The tradeoff is explicit: obscurity hides the URL, but
-anyone who obtains write access to the bucket can ship a package that runs as root on
-every client. Signing is a `--sign` flag on `makepkg` and `repo-add` plus a GPG key in
-Actions secrets if that stops being acceptable.
+[PlusCosmic/packages]: https://github.com/PlusCosmic/packages
 
 ### Interaction with the local daily install
 
@@ -127,7 +125,10 @@ machine that uses the package, remove the daily install rather than running both
 
 ### Rehearsing a packaging change
 
-`packaging/build-local.sh` runs the same staging and `makepkg` invocation the workflow
-does, without publishing. Use it before pushing a `PKGBUILD` change.
+`scripts/build-local.sh` in the packaging repository runs the same staging and `makepkg`
+invocation the workflow does, against a local checkout of this one and without
+publishing:
 
-Nothing prunes old package files from the bucket. Add a cleanup once they accumulate.
+```sh
+scripts/build-local.sh cosmic-mail ~/Projects/Mail
+```
