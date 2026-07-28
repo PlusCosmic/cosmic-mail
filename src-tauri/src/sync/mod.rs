@@ -12,9 +12,9 @@
 //! `* N EXISTS` onto whatever command response happens to be in flight, and
 //! never repeats that announcement later, so it must be caught the instant it
 //! arrives or it is gone until the next full resync. `async-imap` routes any
-//! such response that lands outside of IDLE's own wait — i.e. on the STATUS,
-//! SELECT, FETCH, and prefetch calls a re-sync issues, or even on the IDLE
-//! command's own response before its "+ idling" continuation — onto
+//! such response that lands outside of IDLE's own wait — i.e. on the STATUS
+//! and SELECT/FETCH calls a re-sync issues, or even on the IDLE command's own
+//! response before its "+ idling" continuation — onto
 //! `Session::unsolicited_responses`, a channel nothing else reads. Before
 //! entering IDLE we drain that channel with `try_recv` (see
 //! [`drain_mailbox_changed`]) and, if anything landed there, re-sync again
@@ -26,10 +26,19 @@
 //! between "we checked" and "we committed to IDLE" (see [`drain_action`]
 //! and its call site in `run_once` for the exact ordering, and issue #39 for
 //! why a re-sync-precedes-every-IDLE structure alone, tried once already in
-//! commit 0f1354e, does not close this race by itself). A small inbox working
-//! set is prefetched without changing `\Seen`; other bodies remain lazy.
-//! Errors trigger exponential backoff (30s → 5 min). Notifications fire only
-//! for new inbox messages above the folder's `last_seen_uid`, and never during
+//! commit 0f1354e, does not close this race by itself).
+//!
+//! A small inbox working set is prefetched (without changing `\Seen`; other
+//! bodies remain lazy) but, as of issue #40, never on the pre-IDLE path
+//! described above: prefetch's up-to-5 body downloads used to run inline at
+//! the tail of the per-folder re-sync, making it by far the longest stretch
+//! of exactly the window the drain-check exists to protect, on *every*
+//! iteration. It now runs once after the initial sweep (covering whatever
+//! the sweep just synced) and again after each IDLE wakeup (`NewData`),
+//! i.e. strictly *between* IDLE returning and the next drain-check/IDLE —
+//! see the `prefetch_message_bodies` call sites in `run_once`. Errors
+//! trigger exponential backoff (30s → 5 min). Notifications fire only for
+//! new inbox messages above the folder's `last_seen_uid`, and never during
 //! the initial sweep.
 
 pub mod imap;
@@ -206,7 +215,9 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
 
     // Discover folders and reconcile with the DB.
     let remote = imap::list_folders_with_roles(&mut session).await?;
-    let mut inbox: Option<String> = None;
+    // Name + folder_id together, set in lockstep, so there is no way to end up
+    // with one and not the other (see the destructure below).
+    let mut inbox: Option<(String, i64)> = None;
     for folder in &remote {
         let status = imap::status(&mut session, &folder.name).await?;
         let (folder_id, _wiped) = {
@@ -222,7 +233,7 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
             result
         };
         if folder.role == FolderRole::Inbox {
-            inbox = Some(folder.name.clone());
+            inbox = Some((folder.name.clone(), folder_id));
         }
         sync_folder_uids(
             app,
@@ -238,7 +249,7 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         .await?;
     }
 
-    let Some(inbox_name) = inbox else {
+    let Some((inbox_name, inbox_folder_id)) = inbox else {
         // No inbox: nothing left to do this cycle; settle to Idle before
         // waiting for the next one.
         emit_state(app, &account.id, SyncState::Idle, None, false);
@@ -247,13 +258,28 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         return Ok(());
     };
 
+    // One-time prefetch for whatever the sweep above just synced into the
+    // inbox. `sync_folder_uids` no longer does this itself (see the call
+    // site inside the loop below for why: issue #40 moved prefetch off the
+    // pre-IDLE path, and this is the one place in the whole cycle that runs
+    // before the loop's first drain-check/IDLE even exists to worry about).
+    // Without this call, an account whose inbox is quiet after connecting
+    // would never prefetch at all until its first new-mail wakeup — the
+    // sweep already fetched envelopes for up to 200 messages, and those are
+    // exactly the prefetch candidates, so they should not sit un-prefetched
+    // indefinitely.
+    prefetch_message_bodies(db, inbox_folder_id, &mut session).await;
+
     // Idle loop: re-sync INBOX on the live connection, then IDLE until the
     // server announces changes or the deadline passes. The first re-sync runs
     // straight after the sweep and catches mail that arrived while other
     // folders were syncing — arrivals whose untagged EXISTS would otherwise be
     // swallowed by the pre-IDLE SELECT and sit unnoticed until the deadline.
     // Later iterations are IDLE wakeups: one STATUS+FETCH round trip from
-    // wakeup to notification, no reconnect.
+    // wakeup to notification, no reconnect. Body prefetch (issue #40) is
+    // deliberately *not* part of this per-iteration re-sync any more — see
+    // the `prefetch_message_bodies` call after `IdleOutcome::NewData` below
+    // for where it moved and why.
     let deadline = std::time::Instant::now() + FULL_RESYNC_INTERVAL;
     let mut consecutive_resyncs: u32 = 0;
     loop {
@@ -298,12 +324,15 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         // `session.idle()`. `drain_mailbox_changed` is a local, synchronous
         // `try_recv` loop — no `.await`, no network I/O — so nothing can land
         // in the channel between this check and the `idle_wait` call below.
-        // Anything piggy-backed on the STATUS/SELECT/FETCH/prefetch calls just
-        // above is already sitting in the channel by now; this is what closes
-        // the race that commit 0f1354e left open (it re-synced before every
-        // IDLE, same as here, but never drained this channel, so a server
-        // response landing on any of those commands was still silently
-        // dropped instead of triggering another re-sync).
+        // Anything piggy-backed on the STATUS/SELECT/FETCH calls just above
+        // is already sitting in the channel by now (there is no prefetch call
+        // in this window any more — see issue #40 below — so this is now a
+        // short, cheap sequence rather than the long one prefetch used to
+        // make it); this is what closes the race that commit 0f1354e left
+        // open (it re-synced before every IDLE, same as here, but never
+        // drained this channel, so a server response landing on any of those
+        // commands was still silently dropped instead of triggering another
+        // re-sync).
         let changed = drain_mailbox_changed(&session.unsolicited_responses);
         match drain_action(changed, consecutive_resyncs) {
             DrainAction::Resync => {
@@ -324,6 +353,28 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
             IdleOutcome::NewData(live) => {
                 session = live;
                 emit_state(app, &account.id, SyncState::Syncing, None, false);
+                // Issue #40: body prefetch happens *here* — right after IDLE
+                // has already woken us up — rather than before entering IDLE.
+                // The old placement (inline at the tail of `sync_folder_uids`,
+                // i.e. between the envelope fetch/notify above and the
+                // drain-check/IDLE that follows it) made prefetch's up-to-5
+                // downloads by far the longest stretch of the pre-IDLE window,
+                // on *every* iteration, which is exactly the window in which a
+                // fresh arrival's untagged EXISTS gets silently attached to
+                // one of our own in-flight commands instead of landing during
+                // an actual idle wait. Running it here instead means: (1) the
+                // window immediately before every `idle_wait` call is now just
+                // the cheap STATUS/SELECT/FETCH above, and (2) any EXISTS that
+                // piggy-backs on *this* prefetch's FETCH commands is not lost
+                // or even specially recovered — it is simply picked up for
+                // free by the ordinary UID-range fetch at the top of the next
+                // loop iteration, same as any other new mail. Do not move this
+                // back above the drain-check/`idle_wait` call, and do not add
+                // an `.await` between the drain-check and `idle_wait` to make
+                // room for it — that would reopen the exact window this
+                // change closes and would also violate the issue #39
+                // atomicity invariant (see the drain-check comment above).
+                prefetch_message_bodies(db, inbox_id, &mut session).await;
             }
             IdleOutcome::Timeout(live) => {
                 session = live;
@@ -339,6 +390,12 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
 
 /// Fetch new UIDs for a folder, upsert them, emit events, and (for inbox,
 /// non-initial) notify.
+///
+/// Deliberately does *not* prefetch bodies (issue #40): this is called for
+/// every folder on every full sweep, but prefetch is inbox-only and its
+/// timing relative to IDLE matters a great deal (see the `prefetch_message_bodies`
+/// call sites in `run_once`), so it is the caller's job to invoke it at the
+/// right moment rather than have it tag along here.
 #[allow(clippy::too_many_arguments)]
 async fn sync_folder_uids(
     app: &AppHandle,
@@ -432,7 +489,9 @@ async fn sync_folder_uids(
     }
 
     if !envelopes.is_empty() {
-        // Emit and notify before prefetch so body downloads do not delay new-mail delivery.
+        // Emit and notify immediately; body prefetch (now handled by the
+        // caller, never here — see the doc comment above) must never sit
+        // between new mail landing in the DB and this notification.
         let _ = app.emit(
             "mail:new-messages",
             serde_json::json!({
@@ -449,10 +508,6 @@ async fn sync_folder_uids(
         if !notify_list.is_empty() {
             notifications::notify_new_mail(app, &account.email, &notify_list);
         }
-    }
-
-    if role == FolderRole::Inbox {
-        prefetch_message_bodies(db, folder_id, session).await;
     }
 
     Ok(())
