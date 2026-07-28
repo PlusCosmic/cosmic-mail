@@ -504,12 +504,26 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   authoritative `MESSAGES`, `UNSEEN`, `UIDNEXT`, and `UIDVALIDITY` → UIDVALIDITY check
   (mismatch ⇒ wipe folder cache) → fetch/upsert envelopes → emit events/notify. Then hold the
   connection in an INBOX idle loop: re-sync INBOX (STATUS counts + incremental fetch + notify)
-  → IDLE → on wakeup, re-sync INBOX on the same connection and IDLE again — until the 25-min
-  full-resync deadline ends the cycle and the loop reconnects for a fresh full sweep. A re-sync
-  precedes *every* IDLE, so mail arriving while the sweep was busy (whose untagged EXISTS the
-  SELECT swallows and IDLE will not re-announce) is caught immediately, and the deadline is a
-  hard wall-clock bound (async-imap's IDLE timeout is inactivity-based; server keepalives reset
-  it). On error: emit sync-state error, retry with backoff (30s → 5 min cap).
+  → drain-check → IDLE → on wakeup, re-sync INBOX on the same connection and drain-check/IDLE
+  again — until the 25-min full-resync deadline ends the cycle and the loop reconnects for a
+  fresh full sweep. The deadline is a hard wall-clock bound (async-imap's IDLE timeout is
+  inactivity-based; server keepalives reset it). On error: emit sync-state error, retry with
+  backoff (30s → 5 min cap).
+- **Drain-check, and why it exists (issue #39):** an IMAP server announces new mail by
+  piggy-backing an untagged `* N EXISTS` onto whatever command response is in flight, and never
+  repeats that announcement later. `async-imap` routes any such response that lands outside of
+  IDLE's own wait — i.e. on the STATUS/SELECT/FETCH/prefetch commands a re-sync issues, or even on
+  the IDLE command's own response before its `+ idling` continuation — onto
+  `Session::unsolicited_responses`, a `bounded(100)` channel that is otherwise never read. Before
+  entering IDLE, and again immediately after `Handle::init()` succeeds, the loop drains that
+  channel with `try_recv` (`sync::drain_mailbox_changed`) and treats any `Exists`/`Recent` as
+  "mailbox changed — re-sync now, don't idle yet," repeating the STATUS/SELECT/FETCH pass until a
+  drain comes back clean before calling `session.idle()`. The check is a local, non-blocking read
+  with no `.await` between it and entering IDLE, so there is no remaining gap — closing a race that
+  a bare "re-sync precedes every IDLE" structure (the previous fix, commit 0f1354e) left open,
+  since that re-sync happened without ever reading this channel. Bounded by
+  `MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE` (a small constant) so a mailbox that is genuinely changing
+  on every single re-sync still idles eventually instead of spinning forever.
 - Initial sync: use message sequence numbers from `STATUS MESSAGES` to `FETCH` exactly the
   newest 200 existing messages per folder (or all when fewer than 200), including `UID` in the
   response. Do not `UID FETCH 1:*` and trim afterward.

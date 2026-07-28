@@ -2,17 +2,35 @@
 //!
 //! Each task connects, lists folders, performs an initial sync (newest 200
 //! envelopes per folder), then holds the connection in an INBOX idle loop:
-//! re-sync INBOX → IDLE → wakeup → re-sync INBOX → IDLE … until the 25-minute
-//! full-resync deadline, when the cycle ends and the caller reconnects for a
-//! full folder sweep. Re-syncing on the live connection keeps new-mail
-//! notification latency at one STATUS+FETCH round trip, and because a re-sync
-//! precedes *every* IDLE, mail that arrived while the sweep was busy (and
-//! whose untagged EXISTS the pre-IDLE SELECT would swallow) is caught
-//! immediately instead of waiting out the deadline. A small inbox working set
-//! is prefetched without changing `\Seen`; other bodies remain lazy. Errors
-//! trigger exponential backoff (30s → 5 min). Notifications fire only for new
-//! inbox messages above the folder's `last_seen_uid`, and never during the
-//! initial sweep.
+//! re-sync INBOX → drain-check → IDLE → wakeup → re-sync INBOX → … until the
+//! 25-minute full-resync deadline, when the cycle ends and the caller
+//! reconnects for a full folder sweep. Re-syncing on the live connection keeps
+//! new-mail notification latency at one STATUS+FETCH round trip.
+//!
+//! The drain-check closes a race that a re-sync-before-every-IDLE alone does
+//! not: an IMAP server announces new mail by piggy-backing an untagged
+//! `* N EXISTS` onto whatever command response happens to be in flight, and
+//! never repeats that announcement later, so it must be caught the instant it
+//! arrives or it is gone until the next full resync. `async-imap` routes any
+//! such response that lands outside of IDLE's own wait — i.e. on the STATUS,
+//! SELECT, FETCH, and prefetch calls a re-sync issues, or even on the IDLE
+//! command's own response before its "+ idling" continuation — onto
+//! `Session::unsolicited_responses`, a channel nothing else reads. Before
+//! entering IDLE we drain that channel with `try_recv` (see
+//! [`drain_mailbox_changed`]) and, if anything landed there, re-sync again
+//! instead of idling — repeating until a drain comes back clean, bounded by
+//! [`MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE`] so a genuinely hyperactive mailbox
+//! can't starve IDLE forever. Because draining is a local, non-blocking read
+//! with no `.await` between it and the `session.idle()` call that follows,
+//! there is no remaining window for a server response to land unobserved
+//! between "we checked" and "we committed to IDLE" (see [`should_resync_again`]
+//! and its call site in `run_once` for the exact ordering, and issue #39 for
+//! why a re-sync-precedes-every-IDLE structure alone, tried once already in
+//! commit 0f1354e, does not close this race by itself). A small inbox working
+//! set is prefetched without changing `\Seen`; other bodies remain lazy.
+//! Errors trigger exponential backoff (30s → 5 min). Notifications fire only
+//! for new inbox messages above the folder's `last_seen_uid`, and never during
+//! the initial sweep.
 
 pub mod imap;
 
@@ -22,6 +40,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_imap::extensions::idle::IdleResponse;
+use async_imap::types::UnsolicitedResponse;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
@@ -40,6 +59,16 @@ const FULL_RESYNC_INTERVAL: Duration = Duration::from_secs(25 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(60);
 const BACKOFF_MIN: Duration = Duration::from_secs(30);
 const BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
+/// Cap on re-syncing INBOX again immediately, back to back, without ever
+/// entering IDLE, when each drain keeps finding the mailbox changed (see
+/// [`should_resync_again`]). A real mailbox settles within a resync or two;
+/// this bound only exists so a pathological case — mail landing on literally
+/// every single re-sync's commands, e.g. a hammering test fixture — still
+/// idles eventually rather than spinning on STATUS/SELECT/FETCH forever. Kept
+/// small: it costs one full IMAP round trip per unit, and giving up on IDLE
+/// after a handful of misses is fine because the *next* wakeup or the
+/// deadline will catch up regardless.
+const MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE: u32 = 5;
 
 /// Sync state reported to the frontend.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -226,6 +255,7 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
     // Later iterations are IDLE wakeups: one STATUS+FETCH round trip from
     // wakeup to notification, no reconnect.
     let deadline = std::time::Instant::now() + FULL_RESYNC_INTERVAL;
+    let mut consecutive_resyncs: u32 = 0;
     loop {
         // STATUS first (and write the counts) so the refresh events emitted by
         // sync_folder_uids find server-authoritative folder badges in the DB.
@@ -262,6 +292,24 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         if now >= deadline {
             break;
         }
+
+        // Atomicity requirement (issue #39): the decision to IDLE must be made
+        // from a check that cannot go stale before we actually call
+        // `session.idle()`. `drain_mailbox_changed` is a local, synchronous
+        // `try_recv` loop — no `.await`, no network I/O — so nothing can land
+        // in the channel between this check and the `idle_wait` call below.
+        // Anything piggy-backed on the STATUS/SELECT/FETCH/prefetch calls just
+        // above is already sitting in the channel by now; this is what closes
+        // the race that commit 0f1354e left open (it re-synced before every
+        // IDLE, same as here, but never drained this channel, so a server
+        // response landing on any of those commands was still silently
+        // dropped instead of triggering another re-sync).
+        let changed = drain_mailbox_changed(&session.unsolicited_responses);
+        if should_resync_again(changed, consecutive_resyncs) {
+            consecutive_resyncs += 1;
+            continue;
+        }
+        consecutive_resyncs = 0;
 
         // Work is done; settle to Idle before entering IDLE (or the polling
         // fallback inside idle_wait), which can last up to the deadline.
@@ -479,6 +527,64 @@ async fn prefetch_message_bodies(db: &Db, folder_id: i64, session: &mut imap::Im
     }
 }
 
+/// Whether an [`UnsolicitedResponse`] means the mailbox changed and a
+/// re-sync is owed before the next IDLE, as opposed to a kind we can safely
+/// ignore for this purpose (e.g. `Status` for a *different* mailbox pushed by
+/// a server extension, or `Expunge`, which shrinks the mailbox and is already
+/// handled by the ordinary UID-based re-sync catching up next time around).
+///
+/// `Exists` and `Recent` are exactly the RFC 3501 §7.3.1/§7.3.2 signals a
+/// server uses to announce new mail arriving in the selected mailbox — the
+/// two kinds this whole fix exists to stop dropping.
+fn mailbox_changed(resp: &UnsolicitedResponse) -> bool {
+    matches!(
+        resp,
+        UnsolicitedResponse::Exists(_) | UnsolicitedResponse::Recent(_)
+    )
+}
+
+/// Drain every response currently queued on an `async-imap` session's
+/// `unsolicited_responses` channel and report whether any of them means the
+/// mailbox changed (see [`mailbox_changed`]).
+///
+/// Must loop on `try_recv`, not `recv().await`: the channel is filled by
+/// `try_send().ok()` on the other end and is never closed by the server, so
+/// awaiting would block forever once it runs dry rather than returning "no
+/// more right now". Draining to completion (not stopping at the first hit)
+/// is deliberate too, independent of the return value: the channel is
+/// `bounded(100)` and filled with `try_send().ok()`, so anything left behind
+/// counts against that bound and brings the channel closer to silently
+/// dropping *future* announcements once it fills up — see the module docs
+/// for why a dropped announcement is unrecoverable (the server never repeats
+/// it).
+fn drain_mailbox_changed(unsolicited: &async_channel::Receiver<UnsolicitedResponse>) -> bool {
+    let mut changed = false;
+    // `Err` here is Empty (nothing queued right now) or Closed (session gone)
+    // — either way there is nothing left to read this pass, so the loop ends.
+    while let Ok(resp) = unsolicited.try_recv() {
+        changed |= mailbox_changed(&resp);
+    }
+    changed
+}
+
+/// Decide whether the idle loop should re-sync INBOX again immediately
+/// (`true`) rather than proceed to enter IDLE (`false`), given whether the
+/// last drain found the mailbox changed and how many times in a row this
+/// cycle has already re-synced without ever actually idling.
+///
+/// This is the pure core of the atomicity requirement described in the
+/// module docs: as long as every "yes" here is followed by another
+/// STATUS/SELECT/FETCH/drain pass rather than an IDLE call, no server
+/// response can be left unread while we sleep in IDLE. The
+/// `consecutive_resyncs` bound is the pathological-loop guard: past
+/// [`MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE`] misses in a row this returns
+/// `false` unconditionally, so a mailbox that is (or a test fixture that
+/// simulates) genuinely changing on every single re-sync still idles
+/// eventually instead of spinning forever.
+fn should_resync_again(mailbox_changed_since_last_check: bool, consecutive_resyncs: u32) -> bool {
+    mailbox_changed_since_last_check && consecutive_resyncs < MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE
+}
+
 /// Outcome of one IDLE wait on the selected inbox.
 enum IdleOutcome {
     /// The server announced changes; the recovered session is live for an
@@ -499,6 +605,11 @@ enum IdleOutcome {
 /// If the server does not support IDLE, `init()` fails and we fall back to a
 /// single poll sleep, per the contract.
 async fn idle_wait(session: imap::ImapSession, timeout: Duration) -> Result<IdleOutcome> {
+    // Cloning the receiver half of an `async_channel` clones a handle onto the
+    // same underlying queue, not a snapshot — this still observes every push
+    // `Handle` makes into the same channel once `session.idle()` below
+    // consumes `session` and we lose direct field access to it.
+    let unsolicited = session.unsolicited_responses.clone();
     let mut handle = session.idle();
 
     if let Err(err) = handle.init().await {
@@ -513,6 +624,25 @@ async fn idle_wait(session: imap::ImapSession, timeout: Duration) -> Result<Idle
         tokio::time::sleep(POLL_INTERVAL.min(timeout)).await;
         let _ = session.noop().await;
         return Ok(IdleOutcome::Timeout(session));
+    }
+
+    // `init()`'s own response-reading loop runs until the server's "+ idling"
+    // continuation, and anything it sees before that — e.g. an EXISTS
+    // piggy-backed on the IDLE command's own response — is routed to
+    // `unsolicited_responses` rather than surfaced to us (see
+    // `extensions::idle::Handle::init` in the vendored async-imap source: it
+    // calls `handle_unilateral` for everything except the continuation and
+    // its own tagged completion). That is the "handle.init() can swallow an
+    // announcement too" case from issue #39. Drain now, before committing to
+    // an actual wait, so it is not lost: if something is already there, end
+    // IDLE immediately and report it exactly like a real wakeup rather than
+    // waiting out `timeout` on a mailbox we already know has moved on.
+    if drain_mailbox_changed(&unsolicited) {
+        let session = handle
+            .done()
+            .await
+            .context("closing IDLE handle after pre-wait drain")?;
+        return Ok(IdleOutcome::NewData(session));
     }
 
     let (fut, _stop) = handle.wait_with_timeout(timeout);
@@ -536,10 +666,25 @@ async fn idle_wait(session: imap::ImapSession, timeout: Duration) -> Result<Idle
     // dead connection is still caught for real by the next cycle's
     // `imap::connect`.
     match handle.done().await {
-        Ok(session) => Ok(match response {
-            IdleResponse::NewData(_) => IdleOutcome::NewData(session),
-            IdleResponse::Timeout | IdleResponse::ManualInterrupt => IdleOutcome::Timeout(session),
-        }),
+        Ok(session) => {
+            // A `NewData` wakeup already means "the mailbox changed" via the
+            // one response that ended `wait_with_timeout` directly (see the
+            // module docs: that response bypasses the channel entirely). This
+            // drain is purely hygiene for whatever *else* may have landed in
+            // the channel during the wait or DONE's own response read (e.g.
+            // via the `Done`-response arm inside `wait_with_timeout`, which
+            // does route through `handle_unilateral`) — left undrained it
+            // just brings the bounded(100) channel closer to silently
+            // dropping a future announcement. The outcome below is decided by
+            // `response`, not by this drain, either way.
+            drain_mailbox_changed(&unsolicited);
+            Ok(match response {
+                IdleResponse::NewData(_) => IdleOutcome::NewData(session),
+                IdleResponse::Timeout | IdleResponse::ManualInterrupt => {
+                    IdleOutcome::Timeout(session)
+                }
+            })
+        }
         Err(err) if is_benign_after_routine_wakeup(&err) => {
             tracing::debug!(
                 error = %err,
@@ -662,5 +807,98 @@ mod tests {
             b"garbage".to_vec(),
         ));
         assert!(!is_benign_after_routine_wakeup(&parse));
+    }
+
+    // -- issue #39: drain unsolicited EXISTS/RECENT before every IDLE --
+
+    #[test]
+    fn mailbox_changed_flags_exists_and_recent() {
+        // These are the two RFC 3501 signals a server uses to announce new
+        // mail in the selected mailbox — exactly what this fix must stop
+        // dropping.
+        assert!(mailbox_changed(&UnsolicitedResponse::Exists(42)));
+        assert!(mailbox_changed(&UnsolicitedResponse::Recent(3)));
+    }
+
+    #[test]
+    fn mailbox_changed_ignores_other_response_kinds() {
+        // Expunge shrinks the mailbox (handled by the ordinary UID re-sync
+        // catching up), and Status is scoped to a mailbox name, not
+        // necessarily the selected one — neither means "re-sync INBOX now".
+        assert!(!mailbox_changed(&UnsolicitedResponse::Expunge(1)));
+        assert!(!mailbox_changed(&UnsolicitedResponse::Status {
+            mailbox: "Other".to_string(),
+            attributes: Vec::new(),
+        }));
+    }
+
+    #[test]
+    fn drain_mailbox_changed_reports_true_when_exists_queued() {
+        let (tx, rx) = async_channel::bounded(8);
+        tx.try_send(UnsolicitedResponse::Exists(5)).unwrap();
+        assert!(drain_mailbox_changed(&rx));
+    }
+
+    #[test]
+    fn drain_mailbox_changed_reports_false_on_empty_channel() {
+        let (_tx, rx) = async_channel::bounded::<UnsolicitedResponse>(8);
+        assert!(!drain_mailbox_changed(&rx));
+        // Calling again on an already-empty channel must not block or panic
+        // (this is exactly why `try_recv`, not `recv().await`, is required —
+        // the channel is never closed by the server side).
+        assert!(!drain_mailbox_changed(&rx));
+    }
+
+    #[test]
+    fn drain_mailbox_changed_ignores_non_mailbox_kinds() {
+        let (tx, rx) = async_channel::bounded(8);
+        tx.try_send(UnsolicitedResponse::Expunge(1)).unwrap();
+        tx.try_send(UnsolicitedResponse::Status {
+            mailbox: "Other".to_string(),
+            attributes: Vec::new(),
+        })
+        .unwrap();
+        assert!(!drain_mailbox_changed(&rx));
+    }
+
+    #[test]
+    fn drain_mailbox_changed_drains_fully_not_just_first_hit() {
+        // A partial drain would leave items counting against the bounded(100)
+        // channel, eventually causing it to silently start dropping future
+        // announcements. One call must empty it completely regardless of how
+        // many items (or what kind) are queued.
+        let (tx, rx) = async_channel::bounded(8);
+        tx.try_send(UnsolicitedResponse::Expunge(1)).unwrap();
+        tx.try_send(UnsolicitedResponse::Exists(9)).unwrap();
+        tx.try_send(UnsolicitedResponse::Recent(2)).unwrap();
+
+        assert!(drain_mailbox_changed(&rx));
+        // Nothing left: a follow-up drain finds the channel empty.
+        assert!(!drain_mailbox_changed(&rx));
+    }
+
+    #[test]
+    fn should_resync_again_only_when_changed_and_under_the_bound() {
+        assert!(!should_resync_again(false, 0));
+        assert!(should_resync_again(true, 0));
+        assert!(should_resync_again(
+            true,
+            MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE - 1
+        ));
+    }
+
+    #[test]
+    fn should_resync_again_stops_at_the_pathological_loop_bound() {
+        // Once the bound is reached, idle anyway even though the mailbox is
+        // still reporting changes — this is the guard against a hyperactive
+        // mailbox starving IDLE forever.
+        assert!(!should_resync_again(
+            true,
+            MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE
+        ));
+        assert!(!should_resync_again(
+            true,
+            MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE + 10
+        ));
     }
 }
