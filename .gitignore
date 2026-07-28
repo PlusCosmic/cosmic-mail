@@ -22,6 +22,9 @@ pnpm-debug.log*
 /src-tauri/target/
 **/*.rs.bk
 
+# Arch packages left behind by packaging/build-local.sh
+/*.pkg.tar.zst
+
 # Local configuration and credentials
 .env
 .env.*
