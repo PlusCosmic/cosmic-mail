@@ -523,7 +523,11 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   a bare "re-sync precedes every IDLE" structure (the previous fix, commit 0f1354e) left open,
   since that re-sync happened without ever reading this channel. Bounded by
   `MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE` (a small constant) so a mailbox that is genuinely changing
-  on every single re-sync still idles eventually instead of spinning forever.
+  on every single re-sync cannot spin forever. Note what that bound must *not* do: once a drain
+  has returned "changed", the announcement is already out of the channel and the server will
+  never repeat it, so idling at the cap would strand that message until the deadline — the exact
+  bug being fixed. The cap therefore ends the cycle (reconnect + full sweep, guaranteed to see
+  it) rather than idling. Only a clean drain may enter IDLE (`sync::drain_action`).
 - Initial sync: use message sequence numbers from `STATUS MESSAGES` to `FETCH` exactly the
   newest 200 existing messages per folder (or all when fewer than 200), including `UID` in the
   response. Do not `UID FETCH 1:*` and trim afterward.

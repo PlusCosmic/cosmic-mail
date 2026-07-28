@@ -23,7 +23,7 @@
 //! can't starve IDLE forever. Because draining is a local, non-blocking read
 //! with no `.await` between it and the `session.idle()` call that follows,
 //! there is no remaining window for a server response to land unobserved
-//! between "we checked" and "we committed to IDLE" (see [`should_resync_again`]
+//! between "we checked" and "we committed to IDLE" (see [`drain_action`]
 //! and its call site in `run_once` for the exact ordering, and issue #39 for
 //! why a re-sync-precedes-every-IDLE structure alone, tried once already in
 //! commit 0f1354e, does not close this race by itself). A small inbox working
@@ -61,7 +61,7 @@ const BACKOFF_MIN: Duration = Duration::from_secs(30);
 const BACKOFF_MAX: Duration = Duration::from_secs(5 * 60);
 /// Cap on re-syncing INBOX again immediately, back to back, without ever
 /// entering IDLE, when each drain keeps finding the mailbox changed (see
-/// [`should_resync_again`]). A real mailbox settles within a resync or two;
+/// [`drain_action`]). A real mailbox settles within a resync or two;
 /// this bound only exists so a pathological case — mail landing on literally
 /// every single re-sync's commands, e.g. a hammering test fixture — still
 /// idles eventually rather than spinning on STATUS/SELECT/FETCH forever. Kept
@@ -305,11 +305,17 @@ async fn run_once(app: &AppHandle, db: &Db, account: &Account, initial: bool) ->
         // response landing on any of those commands was still silently
         // dropped instead of triggering another re-sync).
         let changed = drain_mailbox_changed(&session.unsolicited_responses);
-        if should_resync_again(changed, consecutive_resyncs) {
-            consecutive_resyncs += 1;
-            continue;
+        match drain_action(changed, consecutive_resyncs) {
+            DrainAction::Resync => {
+                consecutive_resyncs += 1;
+                continue;
+            }
+            // The drain consumed an announcement the server will not repeat,
+            // and the cap says stop re-syncing — so idling here would strand
+            // it. Reconnect and sweep instead.
+            DrainAction::EndCycle => break,
+            DrainAction::Idle => consecutive_resyncs = 0,
         }
-        consecutive_resyncs = 0;
 
         // Work is done; settle to Idle before entering IDLE (or the polling
         // fallback inside idle_wait), which can last up to the deadline.
@@ -567,22 +573,44 @@ fn drain_mailbox_changed(unsolicited: &async_channel::Receiver<UnsolicitedRespon
     changed
 }
 
-/// Decide whether the idle loop should re-sync INBOX again immediately
-/// (`true`) rather than proceed to enter IDLE (`false`), given whether the
-/// last drain found the mailbox changed and how many times in a row this
-/// cycle has already re-synced without ever actually idling.
+/// What the idle loop should do once the drain-check has run.
+#[derive(Debug, PartialEq, Eq)]
+enum DrainAction {
+    /// Nothing pending; enter IDLE.
+    Idle,
+    /// The mailbox changed; re-sync INBOX again before idling.
+    Resync,
+    /// The mailbox changed but the re-sync cap is exhausted; end the cycle so
+    /// the caller reconnects and sweeps rather than idling on a known-stale
+    /// view.
+    EndCycle,
+}
+
+/// Decide what to do after a drain-check, given whether it found the mailbox
+/// changed and how many times in a row this cycle has already re-synced
+/// without ever actually idling.
 ///
-/// This is the pure core of the atomicity requirement described in the
-/// module docs: as long as every "yes" here is followed by another
-/// STATUS/SELECT/FETCH/drain pass rather than an IDLE call, no server
-/// response can be left unread while we sleep in IDLE. The
-/// `consecutive_resyncs` bound is the pathological-loop guard: past
-/// [`MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE`] misses in a row this returns
-/// `false` unconditionally, so a mailbox that is (or a test fixture that
-/// simulates) genuinely changing on every single re-sync still idles
-/// eventually instead of spinning forever.
-fn should_resync_again(mailbox_changed_since_last_check: bool, consecutive_resyncs: u32) -> bool {
-    mailbox_changed_since_last_check && consecutive_resyncs < MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE
+/// This is the pure core of the atomicity requirement described in the module
+/// docs: as long as a `changed` drain is never followed by an IDLE call, no
+/// server response is left unread while we sleep.
+///
+/// The `consecutive_resyncs` bound is the pathological-loop guard, but note
+/// what it must *not* do: once the drain has returned `true`, the announcement
+/// it saw has already been taken out of the channel and the server will never
+/// repeat it. Idling at that point would strand the very message the drain
+/// just told us about until the full-resync deadline — the exact bug this
+/// whole change set exists to fix. So the cap ends the cycle instead, which
+/// reconnects and sweeps every folder and is therefore guaranteed to see it.
+/// Only a clean drain may enter IDLE.
+fn drain_action(mailbox_changed_since_last_check: bool, consecutive_resyncs: u32) -> DrainAction {
+    if !mailbox_changed_since_last_check {
+        return DrainAction::Idle;
+    }
+    if consecutive_resyncs < MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE {
+        DrainAction::Resync
+    } else {
+        DrainAction::EndCycle
+    }
 }
 
 /// Outcome of one IDLE wait on the selected inbox.
@@ -893,27 +921,36 @@ mod tests {
     }
 
     #[test]
-    fn should_resync_again_only_when_changed_and_under_the_bound() {
-        assert!(!should_resync_again(false, 0));
-        assert!(should_resync_again(true, 0));
-        assert!(should_resync_again(
-            true,
-            MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE - 1
-        ));
+    fn drain_action_idles_only_on_a_clean_drain() {
+        assert_eq!(drain_action(false, 0), DrainAction::Idle);
+        assert_eq!(
+            drain_action(false, MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE + 10),
+            DrainAction::Idle
+        );
     }
 
     #[test]
-    fn should_resync_again_stops_at_the_pathological_loop_bound() {
-        // Once the bound is reached, idle anyway even though the mailbox is
-        // still reporting changes — this is the guard against a hyperactive
-        // mailbox starving IDLE forever.
-        assert!(!should_resync_again(
-            true,
-            MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE
-        ));
-        assert!(!should_resync_again(
-            true,
-            MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE + 10
-        ));
+    fn drain_action_resyncs_while_under_the_bound() {
+        assert_eq!(drain_action(true, 0), DrainAction::Resync);
+        assert_eq!(
+            drain_action(true, MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE - 1),
+            DrainAction::Resync
+        );
+    }
+
+    #[test]
+    fn drain_action_ends_the_cycle_rather_than_idling_on_a_stranded_announcement() {
+        // At the cap the drain has already consumed an announcement the server
+        // will never repeat. Idling would strand that message until the
+        // full-resync deadline — precisely the bug being fixed — so the cap
+        // must reconnect-and-sweep, never idle.
+        assert_eq!(
+            drain_action(true, MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE),
+            DrainAction::EndCycle
+        );
+        assert_eq!(
+            drain_action(true, MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE + 10),
+            DrainAction::EndCycle
+        );
     }
 }
