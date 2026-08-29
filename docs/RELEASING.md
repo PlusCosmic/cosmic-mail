@@ -80,6 +80,13 @@ does not replace local promotion, and application self-update stays disabled.
 `repository_dispatch` to [PlusCosmic/packages], carrying the package name, this
 repository, the merged commit SHA, and the version from `src-tauri/tauri.conf.json`.
 
+The dispatch also refuses to run for anything but the current tip of `main`. `pkgrel`
+is the packaging repository's run number, so *any* dispatch outranks every package
+already published — a manual run launched from a feature branch, or a re-run of an
+older `main` run, would hand unmerged or stale code a higher `pkgrel` and offer it to
+clients as an upgrade. Nothing prunes a bad package from the bucket, so recovering from
+one means bumping the version to supersede it.
+
 This repository never writes to the package bucket, and it holds no `PKGBUILD`. Both
 live in the packaging repository, which is the sole publisher. That is deliberate: the
 pacman database is a read-modify-write over shared object storage, and GitHub's

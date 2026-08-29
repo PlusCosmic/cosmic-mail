@@ -71,6 +71,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Refuse anything but the current tip of main
+        run: |
+          # pkgrel is the packaging repository's run number, so any dispatch
+          # outranks every package already published — including one built from
+          # code that is not on main. There are two ways in: workflow_dispatch
+          # takes whichever ref it is launched from, and re-running an old run
+          # replays that run's original SHA. Either would reach clients as an
+          # upgrade, nothing prunes a bad package from the bucket, and undoing
+          # one means bumping the version to supersede it. Cheaper to refuse.
+          #
+          # This fails rather than skipping: a manual run from a branch is
+          # someone trying to publish, and a silent success would look like it
+          # worked. The verify job above still runs, so it is usable as a check.
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "release publishes from main only; this run is on $GITHUB_REF" >&2
+            exit 1
+          fi
+
+          tip=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "main has moved to $tip; this run is for $GITHUB_SHA." >&2
+            echo "That commit's own run publishes it — do not replay this one." >&2
+            exit 1
+          fi
+
       - name: Dispatch to the packaging repository
         env:
           # Fine-grained PAT with contents:write on PlusCosmic/packages;
