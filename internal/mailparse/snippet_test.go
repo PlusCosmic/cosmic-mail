@@ -163,6 +163,18 @@ func TestDeglue(t *testing.T) {
 	}
 }
 
+func TestHTMLToTextKeepsBareLessThanSigns(t *testing.T) {
+	if got := HTMLToText("<p>1 < 2 and <3 sweet</p>"); got != "1 < 2 and <3 sweet" {
+		t.Fatalf("%q", got)
+	}
+	if got := HTMLToText("x <br/>y</p><!-- c --> z"); got != "x \ny\n z" && got != "x\ny\n z" {
+		t.Fatalf("%q", got)
+	}
+	if got := HTMLToText("trailing <"); got != "trailing <" {
+		t.Fatalf("%q", got)
+	}
+}
+
 func TestHTMLToTextBasics(t *testing.T) {
 	if got := HTMLToText("<p>Hello&nbsp;<b>world</b>&#x21;</p><!-- c --><br>next"); got != "Hello world!\n\nnext" {
 		t.Fatalf("%q", got)

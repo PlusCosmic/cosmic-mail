@@ -13,7 +13,7 @@ compiled out of `production` builds) and the `e2e/` harness. It finds DOM elemen
 them, and reads text back — deterministic and far less fragile than wtype/grim, and it
 works headless. See `e2e/README.md`.
 
-- **Hermetic run (no real mailbox):** `go run ./cmd/fakeimap -ca-out /tmp/ca.pem &` (no
+- **Hermetic run (no real mailbox):** `go run -tags gtk3 ./cmd/fakeimap -ca-out /tmp/ca.pem &` (no
   Docker) or `npm run e2e:env:up` in `frontend/` (GreenMail), then
   `COSMIC_MAIL_EXTRA_CA=… dbus-run-session -- e2e/ci-run.sh` against a dev build
   (`go build -tags gtk3 -o bin/cosmic-mail .`). `go test -tags gtk3 ./internal/sync/`

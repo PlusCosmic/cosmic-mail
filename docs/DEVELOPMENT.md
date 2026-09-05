@@ -85,7 +85,7 @@ Inspect sync progress without the UI:
 - **Sync engine, hermetically**: `go test -tags gtk3 ./internal/sync/` runs the whole engine
   against go-imap's in-memory IMAP server over TLS (`internal/testimap`): initial sweep, folder
   roles, events, body prefetch with shipment detection, and a message arriving during IDLE
-  (wakeup + notification). `go run ./cmd/fakeimap -ca-out /tmp/ca.pem` serves the same fixture
+  (wakeup + notification). `go run -tags gtk3 ./cmd/fakeimap -ca-out /tmp/ca.pem` serves the same fixture
   mailbox on `127.0.0.1:3993` for the UI e2e suite without Docker — see `e2e/README.md`.
 - **Theme integration**: run `omarchy-theme-set <name>` while the app is running — expect
   exactly one `emitted omarchy theme change` log line and a full UI re-tint. (Watcher
@@ -118,7 +118,7 @@ Inspect sync progress without the UI:
   immediately without changing unread state before selection. Open an HTML message with a controlled
   remote image and verify no request occurs until `Load remote images` is pressed; selecting another
   message must restore the default block. `npm test` covers the generated iframe resource policy.
-- **Search**: `go test ./internal/store/` covers the store layer — FTS5 availability, the
+- **Search**: `go test -tags gtk3 ./internal/store/` covers the store layer — FTS5 availability, the
   MATCH-expression builder (quoting/escaping, operators as literals), per-column and prefix
   matching, account scoping, trigger sync (rows appear after `UpsertMessage`/`SetBody`, disappear
   on delete). For a live check: sync an account, type a term in the header field and press Enter —
@@ -126,7 +126,7 @@ Inspect sync progress without the UI:
   inbox, one account in account view) and matches cached bodies too; Escape or the header's clear
   control restores the normal view. `sqlite3 ~/.local/share/cosmic-mail/mail.db "SELECT count(*)
   FROM messages_fts;"` should track the cached message count.
-- **Attachments**: `go test ./internal/mailparse/ ./internal/attachments/` covers extraction
+- **Attachments**: `go test -tags gtk3 ./internal/mailparse/ ./internal/attachments/` covers extraction
   (metadata incl. RFC 2047 filenames, mime, size, inline flag, content-id), the deterministic part
   index, the cid→data rewrite happening under caps and being skipped over the per-part/total
   budgets, `has_attachments` reconciliation from the real parse, filename sanitization, and
@@ -135,7 +135,7 @@ Inspect sync progress without the UI:
   file appears in the downloads directory (a second save suffixes `name (1).ext`); confirm an
   inline `cid:` image renders in the body while an over-cap inline image renders blank without any
   network request.
-- **Message actions**: `go test ./internal/store/` covers the store layer — `SetFlagged`,
+- **Message actions**: `go test -tags gtk3 ./internal/store/` covers the store layer — `SetFlagged`,
   `RemoveMessage` count adjustments (seen vs. unseen, floored at 0) with the FTS delete trigger and
   attachment cascade, `FindFolderByRole`, and `MessageActionContext`. `npm test` covers the
   next-selection helper. Live check on **both** account kinds (Gmail advertises `MOVE`; a
@@ -146,7 +146,7 @@ Inspect sync progress without the UI:
   move. Confirm the selected row is removed locally, the next message is selected, folder
   totals/unread settle after the next STATUS, and the message reappears in the destination on its
   next sync with no duplicates.
-- **Discovery**: `COSMIC_MAIL_LIVE_TESTS=1 go test ./internal/autoconfig/` covers ISPDB (gmx.de),
+- **Discovery**: `COSMIC_MAIL_LIVE_TESTS=1 go test -tags gtk3 ./internal/autoconfig/` covers ISPDB (gmx.de),
   provider autoconfig (fastmail.com), and the MX→provider path (pluscosmic.dev/Purelymail).
 - **Gmail e2e**: verified working 2026-07-09 on the Rust build (OAuth → XOAUTH2 → folder LIST →
   envelope sync → UI); the Go port has not yet been confirmed against a live Gmail account. Do not

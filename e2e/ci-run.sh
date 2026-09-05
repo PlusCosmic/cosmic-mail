@@ -6,7 +6,7 @@
 # `wails3 task build DEV=true` (a production build has no automation bridge).
 #
 # Assumes the fixture is already up + seeded: either GreenMail
-# (`npm run e2e:env:up` in frontend/) or the Docker-free `go run ./cmd/fakeimap
+# (`npm run e2e:env:up` in frontend/) or the Docker-free `go run -tags gtk3 ./cmd/fakeimap
 # -ca-out <path>` with COSMIC_MAIL_EXTRA_CA pointed at that path.
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root

@@ -144,6 +144,12 @@ func Connect(ctx context.Context, account accounts.Account) (*Session, error) {
 	}
 	c := imapclient.New(tlsConn, opts)
 	s.c = c
+	// The greeting and authentication waits below do not observe ctx, so a
+	// server that accepts the connection and then stalls would otherwise
+	// hold a cancelled sync goroutine until its read timeout; closing the
+	// client on cancellation makes those waits return at once.
+	stop := context.AfterFunc(ctx, func() { _ = c.Close() })
+	defer stop()
 	if err := c.WaitGreeting(); err != nil {
 		c.Close()
 		return nil, fmt.Errorf("reading IMAP greeting: %w", err)

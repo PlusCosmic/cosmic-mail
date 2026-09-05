@@ -50,7 +50,7 @@ Build a development binary first (a production build has no bridge):
 Without Docker, using the in-memory fixture server:
 
 ```sh
-go run ./cmd/fakeimap -ca-out /tmp/fakeimap-ca.pem &   # IMAPS on 127.0.0.1:3993
+go run -tags gtk3 ./cmd/fakeimap -ca-out /tmp/fakeimap-ca.pem &   # IMAPS on 127.0.0.1:3993
 COSMIC_MAIL_EXTRA_CA=/tmp/fakeimap-ca.pem dbus-run-session -- e2e/ci-run.sh
 kill %1
 ```

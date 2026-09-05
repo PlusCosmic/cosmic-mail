@@ -750,7 +750,7 @@ Both are gated on `buildinfo.Debug`. Also: **tray setup is non-fatal** — a mis
 StatusNotifier host (headless CI under Xvfb) logs an error instead of aborting startup before
 the webview/bridge come up. CI (`.github/workflows/e2e.yml`) builds a development binary
 (`go build -tags gtk3`, no `production` tag) and runs it under `dbus-run-session -- xvfb-run`
-via `e2e/ci-run.sh`. Locally, `go test ./internal/sync/` exercises the same engine against
+via `e2e/ci-run.sh`. Locally, `go test -tags gtk3 ./internal/sync/` exercises the same engine against
 `internal/testimap` (go-imap's in-memory server) with no Docker.
 
 ## Conventions

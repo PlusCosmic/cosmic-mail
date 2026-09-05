@@ -74,7 +74,7 @@ func HTMLToText(input string) string {
 		}
 		skipTokenTracking := false
 		switch {
-		case ch == '<':
+		case ch == '<' && (inTag || isTagStarter(in, pos+1)):
 			if !inTag && !inHead && !inStyle && !inScript && !inTemplate && !isTokenStart {
 				addHTMLToken(&result, in[tokenStart:tokenEnd+1], isAfterSpace)
 				isAfterSpace = false
@@ -160,6 +160,18 @@ func HTMLToText(input string) string {
 		addHTMLToken(&result, in[tokenStart:tokenEnd+1], isAfterSpace && !isNewLine)
 	}
 	return result.String()
+}
+
+// isTagStarter reports whether the byte after a `<` can begin markup (a tag
+// name, a closing tag, or a comment/doctype). A bare `<` in prose — `1 < 2`,
+// `<3` — is kept as text, as browsers do; mail-parser's original swallowed
+// everything up to the next `>`.
+func isTagStarter(in []byte, pos int) bool {
+	if pos >= len(in) {
+		return false
+	}
+	c := in[pos]
+	return c == '/' || c == '!' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
 // TextToHTML is a port of mail-parser's `text_to_html`, which the Rust
