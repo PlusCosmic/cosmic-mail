@@ -5,6 +5,7 @@ import {
 	OPEN_LINK_MESSAGE_TYPE,
 	messageFrameDocument,
 	remoteContentCsp,
+	isOpenableUrl,
 	resolveOpenableLinkUrl,
 } from "../src/lib/message-html.ts";
 
@@ -116,4 +117,22 @@ test("resolves protocol-relative and relative hrefs against a real http(s) base"
 		resolveOpenableLinkUrl("page.html", httpBase),
 		"https://mail.example.com/inbox/page.html",
 	);
+});
+
+test("isOpenableUrl accepts only absolute http(s) URLs", () => {
+	assert.equal(isOpenableUrl("https://www.ups.com/track?tracknum=1Z999AA10123456784"), true);
+	assert.equal(isOpenableUrl("http://example.com/a"), true);
+	assert.equal(isOpenableUrl("HTTPS://EXAMPLE.COM"), true);
+	for (const bad of [
+		"mailto:track@ups.com",
+		"javascript:alert(1)",
+		"file:///etc/passwd",
+		"x-ups-track://ups.com/track",
+		"data:text/html,hi",
+		"/relative/track",
+		"",
+		"not a url",
+	]) {
+		assert.equal(isOpenableUrl(bad), false, bad);
+	}
 });

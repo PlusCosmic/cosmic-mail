@@ -187,3 +187,25 @@ func TestHelpers(t *testing.T) {
 		t.Fatal("FromDB unknown")
 	}
 }
+
+func TestOnlyHTTPLinksBecomeTrackingURLs(t *testing.T) {
+	for _, u := range []string{"mailto:track@ups.com", "x-ups://www.ups.com/track?x=1", "javascript:track('ups.com')", "//www.ups.com/track"} {
+		if c, ok := carrierForURL(u); ok {
+			t.Errorf("%s should not map to a carrier (got %s)", u, c)
+		}
+	}
+	if c, ok := carrierForURL("HTTPS://www.UPS.com/track?tracknum=1"); !ok || c != UPS {
+		t.Fatal("https link should still map")
+	}
+	// A crafted link in the body must not surface as a shipment, even next
+	// to shipping keywords, and must not be captured as the tracking URL.
+	html := `<p>Your parcel has shipped. <a href="mailto:track@ups.com">Track your package</a></p>`
+	if got := Extract(nil, s(html)); len(got) != 0 {
+		t.Fatalf("mailto link surfaced: %+v", got)
+	}
+	html = `<p>Tracking Number: 1Z999AA10123456784</p><a href="mailto:track@ups.com">Track</a>`
+	got := Extract(nil, s(html))
+	if len(got) != 1 || got[0].TrackingURL == nil || !strings.HasPrefix(*got[0].TrackingURL, "https://www.ups.com/") {
+		t.Fatalf("expected the synthesised https URL, got %+v", got)
+	}
+}

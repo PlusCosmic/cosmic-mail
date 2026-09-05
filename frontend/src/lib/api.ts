@@ -13,6 +13,7 @@
 
 import { Browser, Events } from "@wailsio/runtime";
 import * as App from "$bindings/cosmicmail/app";
+import { isOpenableUrl } from "./message-html";
 import type {
 	Account,
 	DiscoveredConfig,
@@ -158,8 +159,16 @@ export function updateSettings(settings: Settings): Promise<Settings> {
 	return App.UpdateSettings(settings);
 }
 
-/** Open an http(s) URL in the system browser. */
+/**
+ * Open a URL in the system browser. Only http(s) URLs are ever handed to
+ * the OS — the Tauri build's opener capability was scoped to those, and the
+ * Wails runtime call is unscoped, so the check lives here where every caller
+ * (reader links, shipment tracking cards) funnels through.
+ */
 export function openUrl(url: string): Promise<void> {
+	if (!isOpenableUrl(url)) {
+		return Promise.reject(new Error("Only http(s) links can be opened"));
+	}
 	return Browser.OpenURL(url);
 }
 

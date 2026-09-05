@@ -18,6 +18,21 @@ export const OPEN_LINK_MESSAGE_TYPE = "cosmic-mail:open-link";
  * hrefs that cannot resolve against an opaque `about:srcdoc` base) is
  * rejected by returning null so the caller silently ignores the click.
  */
+/**
+ * Whether an absolute URL may be handed to the system browser: http: or
+ * https: only. Every path that opens something externally — reader link
+ * clicks, shipment tracking cards, anything else that reaches `api.openUrl`
+ * — goes through this, so a crafted `mailto:`/custom-scheme link in a
+ * message body can never invoke an arbitrary URI handler.
+ */
+export function isOpenableUrl(url: string): boolean {
+	try {
+		return OPENABLE_LINK_SCHEMES.has(new URL(url).protocol);
+	} catch {
+		return false;
+	}
+}
+
 export function resolveOpenableLinkUrl(href: string, baseUrl: string): string | null {
 	const trimmed = href.trim();
 	if (!trimmed) return null;

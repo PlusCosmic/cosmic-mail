@@ -691,8 +691,10 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   `Reader.svelte` listens for `message` events in a `$effect`, validates
   `event.source === iframeEl.contentWindow` and the message shape, then resolves the href with
   `resolveOpenableLinkUrl(href, "about:srcdoc")` (http/https only, in `message-html.ts`) before
-  forwarding to `api.openUrl` (the Wails runtime's `Browser.OpenURL`). The http/https restriction
-  lives in that resolver, since the runtime call itself is unscoped. Gmail OAuth's own consent-URL
+  forwarding to `api.openUrl` (the Wails runtime's `Browser.OpenURL`). `openUrl` itself refuses
+  anything but an absolute http(s) URL (`isOpenableUrl` in `message-html.ts`), since the runtime
+  call is unscoped and the shipment tracking cards reach it too; the backend additionally never
+  stores a non-http(s) link as a shipment `trackingUrl` (`shipments.carrierForURL`). Gmail OAuth's own consent-URL
   open (`internal/oauth`) calls `app.Browser.OpenURL` from Go directly.
 
 ## Automation bridge (development builds only — `internal/automation`)

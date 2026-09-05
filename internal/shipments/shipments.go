@@ -591,8 +591,15 @@ func extractBareURLs(text string) []string {
 	return out
 }
 
+// carrierForURL maps a URL to a carrier via the tracking-page host/path
+// substrings. Only absolute http(s) URLs qualify: a `mailto:` or custom-scheme
+// link that happens to mention a carrier domain must never become a tracking
+// URL the reader hands to the system browser.
 func carrierForURL(url string) (Carrier, bool) {
 	l := asciiLower(url)
+	if !strings.HasPrefix(l, "http://") && !strings.HasPrefix(l, "https://") {
+		return "", false
+	}
 	track := strings.Contains(l, "track")
 	switch {
 	case strings.Contains(l, "ups.com") && track:
