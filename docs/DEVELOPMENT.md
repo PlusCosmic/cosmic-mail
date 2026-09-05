@@ -60,7 +60,8 @@ that receives launcher activations and runs sync.
 - On NVIDIA/Wayland systems, WebKitGTK may need `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
   `main.go` sets it automatically. Don't remove it.
 - omarchy is installed; mako is the notification daemon; current theme files live at
-  `~/.config/omarchy/current/theme/` (symlink swapped by `omarchy-theme-set`).
+  `~/.local/state/omarchy/current/theme/` (symlink swapped by `omarchy-theme-set`;
+  `~/.config/omarchy/current/` on older releases).
 - Gmail OAuth credential setup and precedence are documented in [SETUP.md](SETUP.md#gmail).
   Without a credential source, Gmail sign-in and token refresh fail with a clear error;
   `obtaining Gmail access token` warnings mean credentials are missing in that process.

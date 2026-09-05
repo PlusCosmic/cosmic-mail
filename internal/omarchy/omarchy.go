@@ -1,9 +1,11 @@
 // Package omarchy reads the active omarchy theme's colors and watches for
 // theme switches.
 //
-// The active theme lives at ~/.config/omarchy/current/theme, a symlink that
-// omarchy-theme-set swaps atomically. We watch the parent directory
-// ~/.config/omarchy/current (non-recursively), debounce, re-read, and emit.
+// The active theme lives at $XDG_STATE_HOME/omarchy/current/theme
+// (~/.local/state/omarchy/current/theme; older omarchy releases used
+// ~/.config/omarchy/current/theme), a symlink that omarchy-theme-set swaps
+// atomically. We watch the parent directory `current` (non-recursively),
+// debounce, re-read, and emit.
 package omarchy
 
 import (
@@ -27,13 +29,33 @@ import (
 // before re-reading the theme.
 const Debounce = 300 * time.Millisecond
 
+// colorsToml covers both colors.toml dialects: the current named-colour
+// format (accent, selection, muted, background, foreground, red, bright_red,
+// ...) and the older terminal-style one (cursor, selection_*, color0..15).
+// Named keys win; the old keys are the fallback for older installs.
 type colorsToml struct {
 	Accent              *string `toml:"accent"`
 	Foreground          *string `toml:"foreground"`
 	Background          *string `toml:"background"`
 	Cursor              *string `toml:"cursor"`
+	Selection           *string `toml:"selection"`
 	SelectionForeground *string `toml:"selection_foreground"`
 	SelectionBackground *string `toml:"selection_background"`
+	Muted               *string `toml:"muted"`
+	DarkerBackground    *string `toml:"darker_background"`
+	BrightForeground    *string `toml:"bright_foreground"`
+	Red                 *string `toml:"red"`
+	Green               *string `toml:"green"`
+	Yellow              *string `toml:"yellow"`
+	Blue                *string `toml:"blue"`
+	Magenta             *string `toml:"magenta"`
+	Cyan                *string `toml:"cyan"`
+	BrightRed           *string `toml:"bright_red"`
+	BrightGreen         *string `toml:"bright_green"`
+	BrightYellow        *string `toml:"bright_yellow"`
+	BrightBlue          *string `toml:"bright_blue"`
+	BrightMagenta       *string `toml:"bright_magenta"`
+	BrightCyan          *string `toml:"bright_cyan"`
 	Color0              *string `toml:"color0"`
 	Color1              *string `toml:"color1"`
 	Color2              *string `toml:"color2"`
@@ -52,13 +74,38 @@ type colorsToml struct {
 	Color15             *string `toml:"color15"`
 }
 
-// CurrentDir is ~/.config/omarchy/current.
+// CurrentDir is the omarchy `current` directory: $XDG_STATE_HOME/omarchy/current
+// (~/.local/state/omarchy/current) on current releases, with a fallback to the
+// pre-state-dir location $XDG_CONFIG_HOME/omarchy/current when only that one
+// exists. When neither exists the state-dir path is returned so callers report
+// the location current omarchy would use.
 func CurrentDir() (string, error) {
-	cfg, err := xdg.ConfigDir()
+	candidates, err := currentDirCandidates()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(cfg, "omarchy", "current"), nil
+	for _, dir := range candidates {
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return dir, nil
+		}
+	}
+	return candidates[0], nil
+}
+
+// currentDirCandidates lists the `current` dir locations in preference order.
+func currentDirCandidates() ([]string, error) {
+	state, err := xdg.StateDir()
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := xdg.ConfigDir()
+	if err != nil {
+		return nil, err
+	}
+	return []string{
+		filepath.Join(state, "omarchy", "current"),
+		filepath.Join(cfg, "omarchy", "current"),
+	}, nil
 }
 
 // KanagawaFallback is the built-in theme used when the omarchy files are
@@ -105,26 +152,50 @@ func ReadThemeFrom(dir string) (models.OmarchyTheme, error) {
 		name = strings.TrimSpace(string(b))
 	}
 	fb := KanagawaFallback()
-	pick := func(v *string, fallback string) string {
-		if v != nil {
-			return *v
+	// first returns the first non-nil candidate, else the fallback.
+	first := func(fallback string, candidates ...*string) string {
+		for _, c := range candidates {
+			if c != nil {
+				return *c
+			}
 		}
 		return fallback
 	}
-	raws := []*string{colors.Color0, colors.Color1, colors.Color2, colors.Color3, colors.Color4, colors.Color5, colors.Color6, colors.Color7,
-		colors.Color8, colors.Color9, colors.Color10, colors.Color11, colors.Color12, colors.Color13, colors.Color14, colors.Color15}
-	palette := make([]string, 16)
-	for i, c := range raws {
-		palette[i] = pick(c, fb.Palette[i])
+	// Named colours (current omarchy) map onto the terminal palette slots;
+	// color0..15 (older omarchy) are the fallback, then kanagawa. background
+	// and foreground exist in both dialects, so an explicit color0/color7
+	// outranks them.
+	slots := [16][]*string{
+		{colors.Color0, colors.DarkerBackground, colors.Background},
+		{colors.Red, colors.Color1},
+		{colors.Green, colors.Color2},
+		{colors.Yellow, colors.Color3},
+		{colors.Blue, colors.Color4},
+		{colors.Magenta, colors.Color5},
+		{colors.Cyan, colors.Color6},
+		{colors.Color7, colors.Foreground},
+		{colors.Muted, colors.Color8},
+		{colors.BrightRed, colors.Color9},
+		{colors.BrightGreen, colors.Color10},
+		{colors.BrightYellow, colors.Color11},
+		{colors.BrightBlue, colors.Color12},
+		{colors.BrightMagenta, colors.Color13},
+		{colors.BrightCyan, colors.Color14},
+		{colors.BrightForeground, colors.Color15},
 	}
+	palette := make([]string, 16)
+	for i, c := range slots {
+		palette[i] = first(fb.Palette[i], c...)
+	}
+	foreground := first(fb.Foreground, colors.Foreground)
 	return models.OmarchyTheme{
 		Name:                name,
-		Accent:              pick(colors.Accent, fb.Accent),
-		Foreground:          pick(colors.Foreground, fb.Foreground),
-		Background:          pick(colors.Background, fb.Background),
-		Cursor:              pick(colors.Cursor, fb.Cursor),
-		SelectionForeground: pick(colors.SelectionForeground, fb.SelectionForeground),
-		SelectionBackground: pick(colors.SelectionBackground, fb.SelectionBackground),
+		Accent:              first(fb.Accent, colors.Accent),
+		Foreground:          foreground,
+		Background:          first(fb.Background, colors.Background),
+		Cursor:              first(foreground, colors.Cursor),
+		SelectionForeground: first(foreground, colors.SelectionForeground),
+		SelectionBackground: first(fb.SelectionBackground, colors.Selection, colors.SelectionBackground),
 		Palette:             palette,
 	}, nil
 }

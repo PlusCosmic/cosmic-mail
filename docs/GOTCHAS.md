@@ -78,8 +78,18 @@ the crate-specific ones were replaced by their Go equivalents in the port.
   the feedback loop the Rust `notify` crate had. The change-dedupe (compare the parsed theme to
   the last one) is still required: the watcher fires for unrelated churn in the dir.
 - omarchy's `current/theme` is a **symlink swapped atomically** — watch the parent dir
-  `~/.config/omarchy/current` non-recursively; a real theme switch arrives as
-  rename/create events.
+  `current` non-recursively; a real theme switch arrives as rename/create events.
+- **omarchy moved `current` from `~/.config/omarchy/current` to
+  `$XDG_STATE_HOME/omarchy/current`** (`~/.local/state/omarchy/current`). Watching only
+  the config-dir path silently logged `omarchy current dir not present; theme watcher
+  inactive` and the app stayed on kanagawa. `omarchy.CurrentDir` prefers the state dir and
+  falls back to the config dir only when that alone exists.
+- **omarchy's `colors.toml` no longer has `color0..color15` / `cursor` / `selection_*`**;
+  it has named colours (`red`, `bright_red`, `muted`, `darker_background`, `selection`,
+  ...). Only `accent`/`foreground`/`background` overlap with the old dialect, so parsing
+  the old keys alone leaves the whole palette on the kanagawa fallback while the base
+  colours track the theme. See [OMARCHY.md](OMARCHY.md#live-theming) for the mapping;
+  check `/usr/share/omarchy/themes/*/colors.toml` before adding a key.
 - **`Window.ExecJS` has no return path, and Wails queues it until the runtime reports ready.**
   The automation bridge gets results back through the webview's raw message channel
   (`RawMessageHandler`), and its `/health` gates on a real eval round-trip for exactly this

@@ -123,7 +123,7 @@ interface Shipment {          // models.Shipment (shipments.Carrier + store.Ship
 }
 
 interface OmarchyTheme {
-  name: string;               // e.g. "kanagawa" (~/.config/omarchy/current/theme.name)
+  name: string;               // e.g. "kanagawa" ($XDG_STATE_HOME/omarchy/current/theme.name)
   accent: string; foreground: string; background: string; cursor: string;
   selectionForeground: string; selectionBackground: string;
   palette: string[];          // color0..color15 as "#rrggbb"
@@ -346,12 +346,24 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
     sync pass for a folder, send ONE notification: `{n} new messages in {account email}`.
   - Only notify for folders with role `inbox`, only for UIDs above `last_seen_uid`, never
     during an account's initial sync.
-- Theme: read `~/.config/omarchy/current/theme/colors.toml` (keys: accent, foreground,
-  background, cursor, selection_foreground, selection_background, color0..color15) and
-  `~/.config/omarchy/current/theme.name`. `~/.config/omarchy/current/theme` is a symlink
-  swapped by `omarchy-theme-set`; watch the **parent directory** `~/.config/omarchy/current`
-  with fsnotify (watch for any event, then debounce ~300ms, re-read, emit
-  `omarchy:theme-changed` only if the parsed theme actually changed). Fall back to built-in kanagawa values if files are missing.
+- Theme: the omarchy `current` dir is `$XDG_STATE_HOME/omarchy/current`
+  (`~/.local/state/omarchy/current`); fall back to the pre-state-dir location
+  `$XDG_CONFIG_HOME/omarchy/current` only when that alone exists. Read
+  `current/theme/colors.toml` and `current/theme.name`. `colors.toml` uses named colours
+  (accent, selection, muted, background, dark_background, darker_background,
+  lighter_background, foreground, dark_foreground, light_foreground, bright_foreground,
+  red, yellow, orange, green, cyan, blue, magenta, brown, bright_red, bright_yellow,
+  bright_green, bright_cyan, bright_blue, bright_magenta) mapped onto the palette as
+  color0=darker_background (else background), color1..6=red,green,yellow,blue,magenta,cyan,
+  color7=foreground, color8=muted, color9..14=bright_red,bright_green,bright_yellow,
+  bright_blue,bright_magenta,bright_cyan, color15=bright_foreground;
+  selectionBackground=selection; cursor and selectionForeground default to foreground.
+  The older dialect (cursor, selection_foreground, selection_background, color0..color15)
+  is honoured as a fallback; an explicit color0/color7 outranks background/foreground.
+  `current/theme` is a symlink swapped by `omarchy-theme-set`; watch the **parent
+  directory** `current` with fsnotify (watch for any event, then debounce ~300ms, re-read,
+  emit `omarchy:theme-changed` only if the parsed theme actually changed). Fall back to
+  built-in kanagawa values if files are missing.
 - Frontend maps OmarchyTheme onto CSS custom properties (see prototypes): `--bg`, `--fg`,
   `--accent`, `--cursor`, `--sel-bg`, `--sel-fg`, `--c0`..`--c15`. All UI colors derive from
   these; no hardcoded colors outside the fallback.
