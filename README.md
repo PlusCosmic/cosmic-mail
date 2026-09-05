@@ -8,23 +8,31 @@ The application is built with Go, Wails 3, Svelte 5, and TypeScript. Gmail and
 password-based IMAP accounts share the same IMAP sync engine; Gmail authenticates with
 OAuth 2.0 rather than an app password.
 
-> [!WARNING]
-> Cosmic Mail is under active development. Reading and syncing mail works, but sending,
-> search, attachments, and several everyday message actions are not implemented yet.
+> [!NOTE]
+> Cosmic Mail is under active development. Reading, syncing, composing, search,
+> attachments, and the everyday message actions all work; see the open
+> [issues](https://github.com/PlusCosmic/cosmic-mail/issues) for known gaps such as
+> STARTTLS IMAP providers and full-history backfill.
 
 ## Highlights
 
-- Gmail OAuth 2.0 and implicit-TLS IMAP account support
+- Gmail OAuth 2.0 (PKCE) and implicit-TLS IMAP account support
+- Automatic account discovery: autoconfig, ISPDB, MX and SRV lookups
 - Fast local SQLite cache with lazy message-body fetching
-- IMAP IDLE for near-real-time inbox updates
+- IMAP IDLE for near-real-time inbox updates, with polling for servers without it
+- Compose, reply, and reply-all over SMTP
+- Full-text search across the local cache (SQLite FTS5)
+- Attachment download and inline image rendering; remote images blocked by default
+- Flag, archive, delete, and move messages
+- Delivery-tracking chips for shipments detected in mail
 - Unified inbox and account-specific folder views
-- Vim-style keyboard navigation and resizable three-pane layout
+- Vim-style keyboard navigation, command palette, and resizable three-pane layout
 - Live colour updates when the active Omarchy theme changes
-- Native Mako notifications with click-to-focus support
+- Native Mako notifications with click-to-focus, plus a system tray and background mode
 - Passwords and refresh tokens stored in the Secret Service keyring
 
-See the [roadmap](docs/ROADMAP.md) for the current implementation status and known
-limitations.
+Open work is tracked in [GitHub issues](https://github.com/PlusCosmic/cosmic-mail/issues)
+(labels `roadmap`, `verification`, `papercut`).
 
 ## Try it from source
 
@@ -73,7 +81,7 @@ event, wire type, and database schema shared by the Go backend and Svelte fronte
 - [Omarchy integration](docs/OMARCHY.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Architecture contract](docs/ARCHITECTURE.md)
-- [Roadmap and known limitations](docs/ROADMAP.md)
+- [Issues and roadmap](https://github.com/PlusCosmic/cosmic-mail/issues)
 - [Project documentation index](docs/README.md)
 
 ## License
