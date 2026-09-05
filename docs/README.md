@@ -26,7 +26,7 @@ Design goals, in priority order:
 
 1. **Native omarchy citizen** — notifications through mako (freedesktop D-Bus, stable
    app-name, click-to-focus); UI colors live-track the active omarchy theme by watching
-   `~/.config/omarchy/current/theme/colors.toml`; keyboard-driven, minimal chrome,
+   `~/.local/state/omarchy/current/theme/colors.toml`; keyboard-driven, minimal chrome,
    monospace aesthetic (see `prototypes/`).
 2. **One sync engine for both account kinds** — plain IMAP (password) and Gmail
    (OAuth2 PKCE → SASL XOAUTH2 over IMAP). No Gmail REST API.

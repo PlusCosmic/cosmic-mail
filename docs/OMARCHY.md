@@ -6,10 +6,27 @@ background application lifecycle.
 
 ## Live theming
 
-The application reads `~/.config/omarchy/current/theme/colors.toml` and watches the
-active-theme symlink for changes. Switching themes recolours the application without a
-restart, including unstyled HTML mail. If the active theme cannot be read, Cosmic Mail
-falls back to a Kanagawa-inspired palette.
+The application reads `colors.toml` from the active theme and watches the active-theme
+symlink for changes. Switching themes recolours the application without a restart,
+including unstyled HTML mail. If the active theme cannot be read, Cosmic Mail falls back
+to a Kanagawa-inspired palette.
+
+The active theme lives at `$XDG_STATE_HOME/omarchy/current` (default
+`~/.local/state/omarchy/current`, containing `theme/`, `theme.name` and `background`).
+Older Omarchy releases kept it at `~/.config/omarchy/current`; Cosmic Mail falls back to
+that location when only it exists. `omarchy theme current` prints the active theme name.
+
+`theme/colors.toml` uses named colours (`accent`, `selection`, `muted`, `background`,
+`darker_background`, `foreground`, `bright_foreground`, `red`..`magenta`,
+`bright_red`..`bright_magenta`, ...). Cosmic Mail maps them onto the 16-slot terminal
+palette that drives `--c0`..`--c15` and the avatar colours: `color0` =
+`darker_background` (else `background`), `color1`..`color6` = `red`, `green`, `yellow`,
+`blue`, `magenta`, `cyan`, `color7` = `foreground`, `color8` = `muted`,
+`color9`..`color14` = the `bright_*` counterparts, `color15` = `bright_foreground`, and
+`selection` = the selection background. Cursor and selection foreground default to
+`foreground`. The pre-named-colour keys (`color0`..`color15`, `cursor`,
+`selection_foreground`, `selection_background`) are still honoured as a fallback for
+older installs.
 
 ## Notifications
 

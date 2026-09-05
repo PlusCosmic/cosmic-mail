@@ -21,7 +21,7 @@ Each file has a **theme switcher** in the top-right corner (plain `<select>`) th
 **everforest** — so you can confirm the UI is fully theme-adaptive. Every color in every
 prototype is derived from the `OmarchyTheme` variables (`--bg`, `--fg`, `--accent`, `--cursor`,
 `--sel-bg`, `--sel-fg`, `--c0`..`--c15`) via `color-mix()`; no other colors are hardcoded, which
-mirrors how the real app maps `~/.config/omarchy/current/theme/colors.toml` onto CSS variables.
+mirrors how the real app maps `~/.local/state/omarchy/current/theme/colors.toml` onto CSS variables.
 
 For best fidelity install a Nerd Font (`CaskaydiaMono Nerd Font` or `JetBrainsMono Nerd Font`) so
 the glyphs render; the layout is otherwise font-agnostic monospace.

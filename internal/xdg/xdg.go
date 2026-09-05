@@ -93,3 +93,15 @@ func userDirsEntry(path, key, home string) string {
 	}
 	return ""
 }
+
+// StateDir is $XDG_STATE_HOME, falling back to ~/.local/state.
+func StateDir() (string, error) {
+	if v := os.Getenv("XDG_STATE_HOME"); filepath.IsAbs(v) {
+		return v, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.New("could not determine state dir (XDG_STATE_HOME)")
+	}
+	return filepath.Join(home, ".local", "state"), nil
+}
