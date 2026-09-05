@@ -102,12 +102,15 @@ type task struct {
 }
 
 // Manager owns the per-account sync goroutines so they can be cancelled on
-// removal or restarted on demand.
+// removal or restarted on demand. opMu serialises Start/Stop/StopAll in
+// their entirety — stop, join, and register happen under one hold — so two
+// overlapping Start calls for the same account (a UI and a tray "sync now"
+// at once) can never leave an untracked loop running.
 type Manager struct {
 	store    *store.Store
 	emitter  Emitter
 	notifier Notifier
-	mu       gosync.Mutex
+	opMu     gosync.Mutex
 	tasks    map[string]*task
 }
 
@@ -120,12 +123,12 @@ func NewManager(st *store.Store, emitter Emitter, notifier Notifier) *Manager {
 // goroutine for the same account is stopped and joined first, so two loops
 // never write the same account's rows at once.
 func (m *Manager) Start(account accounts.Account) {
-	m.Stop(account.ID)
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.stopLocked(account.ID)
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &task{cancel: cancel, done: make(chan struct{})}
-	m.mu.Lock()
 	m.tasks[account.ID] = t
-	m.mu.Unlock()
 	go func() {
 		defer close(t.done)
 		m.accountLoop(ctx, account)
@@ -136,34 +139,39 @@ func (m *Manager) Start(account accounts.Account) {
 // so a caller that deletes the account's data afterwards (RemoveAccount)
 // cannot race a store write the old loop was about to make.
 func (m *Manager) Stop(accountID string) {
-	m.mu.Lock()
-	t, ok := m.tasks[accountID]
-	if ok {
-		delete(m.tasks, accountID)
-	}
-	m.mu.Unlock()
-	if !ok {
-		return
-	}
-	t.cancel()
-	select {
-	case <-t.done:
-	case <-time.After(StopTimeout):
-		slog.Warn("sync goroutine did not stop in time", "accountId", accountID)
-	}
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	m.stopLocked(accountID)
 }
 
 // StopAll cancels every sync goroutine and waits for them (application
 // shutdown, before the store closes).
 func (m *Manager) StopAll() {
-	m.mu.Lock()
-	ids := make([]string, 0, len(m.tasks))
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
 	for id := range m.tasks {
-		ids = append(ids, id)
+		m.stopLocked(id)
 	}
-	m.mu.Unlock()
-	for _, id := range ids {
-		m.Stop(id)
+}
+
+// Running reports how many sync goroutines are tracked.
+func (m *Manager) Running() int {
+	m.opMu.Lock()
+	defer m.opMu.Unlock()
+	return len(m.tasks)
+}
+
+func (m *Manager) stopLocked(accountID string) {
+	t, ok := m.tasks[accountID]
+	if !ok {
+		return
+	}
+	delete(m.tasks, accountID)
+	t.cancel()
+	select {
+	case <-t.done:
+	case <-time.After(StopTimeout):
+		slog.Warn("sync goroutine did not stop in time", "accountId", accountID)
 	}
 }
 

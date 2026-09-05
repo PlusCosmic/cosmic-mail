@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,12 +71,20 @@ func Open() (*Store, error) {
 	return OpenPath(path)
 }
 
+// DSN builds the SQLite URI for a filesystem path (":memory:" for tests).
+// The path is percent-escaped so a `?` or `#` in $XDG_DATA_HOME cannot be
+// read as the start of the query string.
+func DSN(path string) string {
+	if path == ":memory:" {
+		return "file::memory:?_pragma=foreign_keys(ON)"
+	}
+	escaped := (&url.URL{Path: path}).EscapedPath()
+	return "file:" + escaped + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
+}
+
 // OpenPath opens the database at path (":memory:" for tests).
 func OpenPath(path string) (*Store, error) {
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
-	if path == ":memory:" {
-		dsn = "file::memory:?_pragma=foreign_keys(ON)"
-	}
+	dsn := DSN(path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening %s: %w", path, err)

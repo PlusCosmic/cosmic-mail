@@ -2,6 +2,9 @@ package store_test
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"cosmicmail/internal/mailparse"
@@ -542,6 +545,28 @@ func TestUnifiedPagingFolderOrderAndUIDValidityWipe(t *testing.T) {
 	s.SetLastSeenUID(inbox, 5)
 	if _, last, _ := s.FolderSyncState(inbox); last != 10 {
 		t.Fatalf("last seen %d", last)
+	}
+}
+
+func TestDSNEscapesURIDelimitersInThePath(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "odd?dir#1 two")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "mail.db")
+	if dsn := store.DSN(path); strings.Contains(dsn, "?dir") || !strings.Contains(dsn, "odd%3Fdir%231%20two/mail.db?_pragma=") {
+		t.Fatal(dsn)
+	}
+	s, err := store.OpenPath(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, _, err := s.UpsertFolder("acct", "INBOX", store.RoleInbox, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("database not created at the configured path: %v", err)
 	}
 }
 
