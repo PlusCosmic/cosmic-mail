@@ -1,51 +1,64 @@
 # Cosmic Mail — Architecture Contract
 
-Native Linux mail client for [omarchy](https://omarchy.org), built with Tauri 2 + Svelte 5.
+Native Linux mail client for [omarchy](https://omarchy.org), built with Go + Wails 3 + Svelte 5.
 Supports plain IMAP accounts and Gmail (OAuth2/XOAUTH2 over IMAP — one sync engine for both).
 
-**This document is the contract between the Rust backend and the Svelte frontend. Both sides
-must conform to it exactly.** All serde structs use `#[serde(rename_all = "camelCase")]`.
-Tauri command args arrive camelCase on the Rust side too (Tauri converts JS camelCase args to
-snake_case parameter names automatically — declare Rust params in snake_case as usual).
+**This document is the contract between the Go backend and the Svelte frontend. Both sides
+must conform to it exactly.** Every struct that crosses the boundary lives in
+`internal/models` with camelCase `json` tags; `wails3 generate bindings` turns those structs,
+the `App` service methods, and the registered events into the TypeScript under
+`frontend/bindings`, which is committed and diffed in CI. The frontend's `types.ts` and
+`api.ts` are the only files that import the bindings.
 
 ## Module layout
 
 ```
-src-tauri/src/
-  lib.rs            # tauri::Builder wiring, state setup, background task spawn
-  main.rs
-  desktop.rs        # process/window lifecycle, launcher + notification activation
-  tray.rs           # persistent system tray and Open / Sync now / Quit menu
-  error.rs          # AppError (thiserror) -> serialized as String to frontend
-  state.rs          # AppState: db pool, account registry, sync handles
-  commands.rs       # all #[tauri::command] fns (thin; delegate to modules)
-  store.rs          # rusqlite: schema, migrations, queries
-  accounts.rs       # Account model, accounts.json persistence, keyring secrets
-  omarchy.rs        # theme reader + file watcher -> "omarchy:theme-changed" event
-  notifications.rs  # notify-rust wrapper (mako-aware)
-  automation.rs     # DEBUG BUILDS ONLY: loopback E2E bridge (see section below)
-  sync/
-    mod.rs          # SyncManager: per-account background task, IDLE loop
-    imap.rs         # async-imap + tokio-rustls connector, LOGIN + XOAUTH2
-  auth/
-    oauth.rs        # Gmail OAuth2 (PKCE + loopback redirect), token refresh
-src/                # SvelteKit (adapter-static, SPA)
-  lib/api.ts        # typed invoke() wrappers — mirrors commands below
-  lib/types.ts      # TS mirrors of the wire types below
-  lib/theme.ts      # applies OmarchyTheme as CSS custom properties
-  lib/palette.ts    # command-palette fuzzy ranking (pure, unit-tested; no backend surface)
-  lib/stores/       # Svelte 5 runes-based state
-  lib/components/   # *.svelte (incl. CommandPalette.svelte — the Ctrl+K overlay)
-  routes/+page.svelte  # app shell
+main.go             # application.New wiring: window, tray, single instance, events, watchers
+app.go              # App service: every command below is an exported method (thin; delegates)
+app_test.go         # service round-trip test against a scratch XDG profile
+internal/
+  models/           # wire types + event payloads (the TS mirrors are generated from these)
+  store/            # modernc.org/sqlite: schema, migrations, queries (one mutex-guarded conn)
+  accounts/         # Account model, accounts.json persistence, keyring secrets (go-keyring)
+  settings/         # settings.json (atomic write helper shared with accounts)
+  xdg/              # $XDG_CONFIG_HOME / $XDG_DATA_HOME / downloads resolution
+  imap/             # go-imap v2 connector over crypto/tls, LOGIN + XOAUTH2, ops, IDLE
+  mailparse/        # go-message body parsing, attachment metadata, cid: inlining, snippets
+  sync/             # Manager: per-account goroutine, sweep + INBOX idle loop, prefetch
+  oauth/            # Gmail OAuth2 (PKCE + loopback redirect), token cache, XOAUTH2 SASL
+  send/             # go-smtp submission (PLAIN/LOGIN or XOAUTH2, implicit TLS or STARTTLS)
+  autoconfig/       # Thunderbird-style settings discovery (net/http + net.Resolver)
+  xmldom/           # case-insensitive element tree over encoding/xml (autoconfig XML)
+  shipments/        # tracking-number heuristics (pure)
+  attachments/      # downloads dir, filename sanitisation, collision naming
+  omarchy/          # theme reader + fsnotify watcher -> "omarchy:theme-changed" event
+  notify/           # org.freedesktop.Notifications over D-Bus (app name + desktop-entry hint)
+  desktop/          # --background detection, window activation + Hyprland focus fallback
+  automation/       # DEVELOPMENT BUILDS ONLY (`!production`): loopback E2E bridge
+  buildinfo/        # Debug const: true unless built with -tags production
+  testimap/         # in-memory IMAPS server for hermetic tests (not linked into the app)
+cmd/fakeimap/       # serves the e2e fixture mailbox without Docker
+frontend/           # SvelteKit (adapter-static, SPA) — embedded from frontend/dist/app
+  bindings/         # GENERATED by `wails3 generate bindings`; do not edit
+  src/lib/api.ts    # typed wrappers over the bindings — mirrors commands below
+  src/lib/types.ts  # app-facing types narrowed from the generated models
+  src/lib/theme.ts  # applies OmarchyTheme as CSS custom properties
+  src/lib/palette.ts # command-palette fuzzy ranking (pure, unit-tested; no backend surface)
+  src/lib/stores/   # Svelte 5 runes-based state
+  src/lib/components/ # *.svelte (incl. CommandPalette.svelte — the Ctrl+K overlay)
+  src/routes/+page.svelte  # app shell
+  tests/            # node:test suites for the pure frontend modules
+build/              # Wails build assets; build/config.yml is the version of record
+e2e/                # automation-bridge test suite + GreenMail fixture
 prototypes/         # static HTML/CSS design mockups (no build step)
 ```
 
-## Wire types (TS names; Rust equivalents in parens)
+## Wire types (TS names; Go structs in `internal/models`)
 
 ```ts
 type AccountKind = "imap" | "gmail";
 
-interface Account {           // accounts.rs::Account (public projection, NO secrets)
+interface Account {           // models.Account (public projection, NO secrets)
   id: string;                 // uuid v4
   email: string;
   displayName: string;
@@ -78,7 +91,7 @@ interface MessageSummary {
   hasAttachments: boolean;
 }
 
-interface AttachmentInfo {    // store.rs::AttachmentRow projection
+interface AttachmentInfo {    // models.AttachmentInfo (store.AttachmentRow projection)
   id: number;                 // attachments.id rowid
   filename: string;           // decoded (RFC 2047/2231), sanitized display name
   mimeType: string;           // e.g. "application/pdf"
@@ -98,7 +111,7 @@ interface MessageBody {
 
 type ShipmentCarrier = "ups" | "fedex" | "usps" | "dhl" | "royal_mail" | "amazon";
 
-interface Shipment {          // shipments.rs::Carrier + store.rs::ShipmentRow projection
+interface Shipment {          // models.Shipment (shipments.Carrier + store.ShipmentRow)
   id: number;                 // shipments.id rowid
   carrier: ShipmentCarrier;   // stable lowercase code; frontend maps to a display label/glyph
   trackingNumber: string | null;
@@ -120,7 +133,7 @@ type SyncState = "idle" | "syncing" | "error";
 
 type DiscoverySource = "autoconfig" | "ispdb" | "mx" | "srv" | "guess";
 
-interface DiscoveredConfig {      // autoconfig.rs — settings discovery result
+interface DiscoveredConfig {      // internal/autoconfig — settings discovery result
   kind: AccountKind;              // "gmail" ⇒ frontend steers user to the Gmail OAuth tab
   imapHost: string; imapPort: number;   // implicit-TLS entries only (we don't do IMAP STARTTLS yet)
   smtpHost: string; smtpPort: number;
@@ -146,12 +159,18 @@ interface SendMessageInput {
   replyToMessageId: number | null;      // local message rowid, never an arbitrary RFC header
 }
 
-interface Settings {                    // settings.rs::Settings — global preferences
+interface Settings {                    // models.Settings — global preferences
   alwaysDownloadRemoteImages: boolean;  // off by default; see "Reader remote-content policy"
 }
 ```
 
-## Tauri commands (exact names)
+## Commands (exact names)
+
+Each row is a method on the `App` service in `app.go`, named in PascalCase (`list_messages`
+→ `ListMessages`); the generated binding keeps the Go method name and `api.ts` exposes the
+camelCase wrapper the components use. A nil Go slice would serialise as `null`, so every
+list the backend returns is built non-nil (`models.NonNil`) and `api.ts` narrows the
+generated `T[] | null` types once. `int64` ids and `uint32` UIDs are plain `number`s.
 
 | command | args | returns |
 |---|---|---|
@@ -181,9 +200,11 @@ interface Settings {                    // settings.rs::Settings — global pref
 | `get_settings` | — | `Settings` (never errors; a missing/malformed settings file yields defaults) |
 | `update_settings` | `settings: Settings` | `Settings` (persists to `settings.json`, returns the stored value) |
 
-Errors: commands return `Result<T, String>` — human-readable message, frontend shows it in a toast.
+Errors: commands return `error` — Wails rejects the promise with the human-readable message,
+and the frontend shows it in a toast.
 
-## Events (backend -> frontend, via `AppHandle::emit`)
+## Events (backend -> frontend, via `app.Event.Emit`; registered in `main.go` with
+`application.RegisterEvent` so the generator types them)
 
 | event | payload |
 |---|---|
@@ -192,7 +213,7 @@ Errors: commands return `Result<T, String>` — human-readable message, frontend
 | `mail:messages-updated` | `{ folderId: number }` (flags changed / deletions — frontend refetches page) |
 | `mail:sync-state` | `{ accountId: string, state: SyncState, error: string | null, needsReauth: boolean }` (`needsReauth` is `true` only when the failure is classified `AuthExpired` — see the Gmail section — meaning retrying cannot help and the UI should offer Reconnect) |
 
-## SQLite schema (store.rs; db at `$XDG_DATA_HOME/cosmic-mail/mail.db`)
+## SQLite schema (internal/store; db at `$XDG_DATA_HOME/cosmic-mail/mail.db`)
 
 ```sql
 CREATE TABLE IF NOT EXISTS folders (
@@ -230,8 +251,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_folder_date ON messages(folder_id, date 
 
 -- Attachment metadata, populated when a message body is parsed (foreground miss
 -- or background prefetch). Raw part bytes are NOT stored; `save_attachment`
--- refetches and re-parses. `part_index` is the mail-parser MessagePartId (stable
--- position in the flat parse order) so the exact part can be re-extracted.
+-- refetches and re-parses. `part_index` is the part's position in the flat,
+-- depth-first parse order (root = 0; mail-parser's MessagePartId in the Rust
+-- build, reproduced by `mailparse.Parse`) so the exact part can be re-extracted.
 -- Needs no FTS triggers. Rows are replaced wholesale each time a body is cached.
 CREATE TABLE IF NOT EXISTS attachments (
   id INTEGER PRIMARY KEY,
@@ -249,7 +271,7 @@ CREATE TABLE IF NOT EXISTS attachments (
 -- is parsed, in the same transaction that replaces attachment rows.
 
 -- Shipments detected by local heuristic parsing of a cached message body
--- (shipments.rs::extract_shipments), populated at the same body-parse hook as
+-- (shipments.Extract), populated at the same body-parse hook as
 -- `attachments` (foreground cache miss in `get_message_body`, or background
 -- prefetch). `carrier` is a stable lowercase code (see the `ShipmentCarrier`
 -- wire type above), not a display label. Nullable columns reflect what the
@@ -281,10 +303,10 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 -- (`INSERT INTO messages_fts(messages_fts, rowid, …) VALUES('delete', …)`).
 ```
 
-At startup — synchronously in application setup, before any sync task spawns (so it heals even
+At startup — synchronously in `main`, before any sync goroutine starts (so it heals even
 when sync cannot run, e.g. a missing OAuth token) and before the webview requests its first
-message pages (so no update events are needed) — `store::heal_cached_snippets` recomputes the
-snippet of every row with `body_cached = 1` using the current `snippet_for_body` logic and
+message pages (so no update events are needed) — `Store.HealCachedSnippets` recomputes the
+snippet of every row with `body_cached = 1` using the current `mailparse.SnippetForBody` logic and
 updates only the rows whose snippet actually changes (the FTS `AFTER UPDATE` trigger re-indexes
 them; unchanged rows are skipped so the trigger doesn't fire needlessly). Cached bodies are never
 re-fetched, so this self-healing pass is how previously-cached rows pick up snippet-cleanup
@@ -297,25 +319,28 @@ matching — never passing untrusted text to MATCH — then `ORDER BY rank` (bm2
 
 Account configs (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/accounts.json`.
 Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.json`
-(`settings.rs`); the read path never errors — a missing or malformed file yields defaults.
+(`internal/settings`); the read path never errors — a missing or malformed file yields defaults.
 
-## Secrets (keyring, Secret Service via keyring v4 zbus store)
+## Secrets (Secret Service via go-keyring)
 
-- service: `dev.pluscosmic.mail`
+- service: `dev.pluscosmic.mail` (the `service` attribute; the key below is the `username`
+  attribute — the same pair the Rust build's keyring crate used, so existing entries carry over)
 - user key: `imap-password:<account-id>` for IMAP; `oauth-refresh-token:<account-id>` for Gmail.
 - Never write secrets to sqlite, accounts.json, or logs.
 
 ## Omarchy integration (verified on this machine)
 
 - Notifications are rendered by **mako**; plain freedesktop D-Bus notifications are all that's
-  needed. Send via `notify-rust` with:
-  - `appname("Cosmic Mail")` — users theme/script per app-name in mako config
+  needed. `internal/notify` calls `org.freedesktop.Notifications.Notify` directly over godbus
+  (the Wails notification service cannot set the app name or the desktop-entry hint) with:
+  - app name `Cosmic Mail` — users theme/script per app-name in mako config
     (user already has an `[app-name="Betterbird Mail"]` block; ours enables the same pattern).
-  - `.hint(Hint::DesktopEntry("dev.pluscosmic.mail".into()))` — icon + association.
-  - a `default` action; on activation, focus the main window (and later, select the message).
-    Use Tauri's portable show/unminimize/focus path first; under Hyprland, follow it with a
-    fixed-argument `hyprctl dispatch focuswindow class:^(cosmic-mail)$` fallback because
-    Wayland focus-stealing prevention can ignore a background `set_focus()` call. Never invoke
+  - the `desktop-entry` hint `dev.pluscosmic.mail` (also the app icon name) — icon + association.
+  - a `default` action; on `ActionInvoked`, focus the main window (and later, select the message).
+    Use Wails' portable unminimise/show/focus path first; under Hyprland, follow it with a
+    fixed-argument `hyprctl dispatch 'hl.dsp.focus({ window = "class:cosmic-mail" })'` (Hyprland
+    0.56+ Lua dispatch; the classic `focuswindow class:^(cosmic-mail)$` form is tried second)
+    because Wayland focus-stealing prevention can ignore a background focus call. Never invoke
     this through a shell or interpolate notification/message content into the command.
   - summary: `New mail — {fromName}`, body: `{subject}`. Batch: if >3 new messages in one
     sync pass for a folder, send ONE notification: `{n} new messages in {account email}`.
@@ -325,8 +350,8 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   background, cursor, selection_foreground, selection_background, color0..color15) and
   `~/.config/omarchy/current/theme.name`. `~/.config/omarchy/current/theme` is a symlink
   swapped by `omarchy-theme-set`; watch the **parent directory** `~/.config/omarchy/current`
-  with the `notify` crate (watch for any event, then debounce ~300ms, re-read, emit
-  `omarchy:theme-changed`). Fall back to built-in kanagawa values if files are missing.
+  with fsnotify (watch for any event, then debounce ~300ms, re-read, emit
+  `omarchy:theme-changed` only if the parsed theme actually changed). Fall back to built-in kanagawa values if files are missing.
 - Frontend maps OmarchyTheme onto CSS custom properties (see prototypes): `--bg`, `--fg`,
   `--accent`, `--cursor`, `--sel-bg`, `--sel-fg`, `--c0`..`--c15`. All UI colors derive from
   these; no hardcoded colors outside the fallback.
@@ -349,10 +374,11 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
 
 ## Process and window lifecycle
 
-- Cosmic Mail has exactly one process/sync-engine owner per desktop session. Tauri's
-  single-instance plugin owns `dev.pluscosmic.mail.SingleInstance` on the session D-Bus; a
-  second process forwards its argv to that owner and exits before application setup can start a
-  second set of sync tasks.
+- Cosmic Mail has exactly one process/sync-engine owner per desktop session. Wails'
+  single-instance support (`SingleInstanceOptions{UniqueID: "dev.pluscosmic.mail"}`) owns
+  `org.wails_app_dev_pluscosmic_mail.SingleInstance` on the session D-Bus; a second process
+  forwards its argv to that owner and exits before `main` can start a second set of sync
+  goroutines.
 - The promoted daily build installs `cosmic-mail.service`, a systemd user service bound to
   `graphical-session.target`. It launches the current promoted binary with `--background`, uses
   `Restart=on-failure` for crash recovery, and stops it with the graphical session. A clean tray
@@ -367,21 +393,20 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   unminimizes, and focuses the existing main window. A second `--background` invocation is silent
   so service restarts cannot steal focus. Notification default actions use the same activation
   path, including the fixed-argument Hyprland focus fallback described above.
-- Desktop builds create one Tauri tray icon for the process lifetime. Its attached menu is kept
-  for the tray lifetime and contains **Open Cosmic Mail**, **Sync now**, and **Quit**. Open uses
-  the same activation path as launcher and notification actions. Sync now restarts the background
-  sync task for every configured account. Quit requests a clean application exit; it does not
-  merely hide the window.
-- Linux tray interaction is menu-driven. The backend does not depend on tray pointer events,
-  tooltips, or tray-rectangle queries, and it does not remove or replace the attached menu. Linux
-  bundles declare the detected compatible Ayatana/AppIndicator GTK3 runtime through Tauri's
-  built-in packaging path; Cosmic Mail uses only Tauri's tray API rather than calling that library
-  directly.
+- Desktop builds create one tray icon (`app.SystemTray.New()`) for the process lifetime. Its
+  attached menu contains **Open Cosmic Mail**, **Sync now**, and **Quit**. Open uses the same
+  activation path as launcher and notification actions. Sync now restarts the background sync
+  goroutine for every configured account. Quit requests a clean application exit (`app.Quit()`);
+  it does not merely hide the window.
+- Linux tray interaction is menu-driven. Wails registers a StatusNotifierItem over D-Bus itself
+  (no AppIndicator library); the backend does not depend on tray pointer events, tooltips, or
+  tray-rectangle queries. A missing StatusNotifier host (headless CI) logs an error and startup
+  continues.
 
-## Gmail (auth/oauth.rs)
+## Gmail (internal/oauth)
 
 - OAuth 2.0 authorization-code + PKCE, loopback redirect (`http://127.0.0.1:<random port>`),
-  per RFC 8252. Open the consent URL with `tauri-plugin-opener`. Scope: `https://mail.google.com/`
+  per RFC 8252. Open the consent URL with `app.Browser.OpenURL`. Scope: `https://mail.google.com/`
   plus `openid email` (to learn the address). Endpoints:
   auth `https://accounts.google.com/o/oauth2/v2/auth`, token `https://oauth2.googleapis.com/token`.
 - Client credentials resolve in order (first hit wins):
@@ -389,10 +414,10 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
      `COSMIC_MAIL_GOOGLE_CLIENT_SECRET`) — dev override.
   2. `$XDG_CONFIG_HOME/cosmic-mail/google-oauth.json` — `{"clientId": "…",
      "clientSecret": "…"}` (camelCase; `clientSecret` optional) — user self-provisioning.
-  3. Compile-time baked defaults via `option_env!("COSMIC_MAIL_BUILD_GOOGLE_CLIENT_ID")`
-     (+ `COSMIC_MAIL_BUILD_GOOGLE_CLIENT_SECRET`) — set these env vars when building a
-     packaged release so installs work out of the box. Distinct names from the runtime
-     vars on purpose: a dev shell must never silently bake its credentials into a binary.
+  3. Link-time baked defaults: `-ldflags "-X cosmicmail/internal/oauth.BakedClientID=…
+     -X cosmicmail/internal/oauth.BakedClientSecret=…"` when building a packaged release so
+     installs work out of the box. Deliberately not read from the runtime env var names, so
+     a dev shell can never silently bake its credentials into a binary.
   Shipping/storing these is fine: Google desktop-app client credentials are
   non-confidential by design (RFC 8252 §8.5 — installed apps can't hold secrets; PKCE
   secures the flow). The keyring rule covers real secrets — passwords and refresh tokens.
@@ -402,10 +427,10 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   Google verification (CASA security assessment); that, not credential plumbing, is the
   real gate on public packaging.
 - Store refresh token in keyring; access tokens cached in memory with expiry, refreshed on demand.
-- Dead credentials are classified, not just reported: `access_token` tags exactly two failures
-  with the `AuthExpired` marker — a missing keyring entry, and a refresh exchange rejected with
-  OAuth `invalid_grant` (what Google returns when a "Testing"-status client's 7-day refresh token
-  lapses, or the user revoked access). The sync loop downcasts for the marker and emits
+- Dead credentials are classified, not just reported: `oauth.AccessToken` wraps exactly two
+  failures with `oauth.ErrAuthExpired` — a missing keyring entry, and a refresh exchange rejected
+  with OAuth `invalid_grant` (what Google returns when a "Testing"-status client's 7-day refresh
+  token lapses, or the user revoked access). The sync loop checks `errors.Is` for it and emits
   `mail:sync-state` with `needsReauth: true`; every other failure (network, keyring outage,
   server 5xx) keeps `needsReauth: false` and remains a plain retryable sync error.
   `reauth_gmail_account` is the recovery path: same consent flow, then verify the authenticated
@@ -414,19 +439,20 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   Removing/re-adding the account (which wipes its local cache) is never required for expired auth.
 - IMAP/SMTP auth: SASL `AUTHENTICATE XOAUTH2` with the raw string
   `"user=" + email + "\x01auth=Bearer " + access_token + "\x01\x01"`.
-  NOTE: async-imap base64-encodes the authenticator's response itself —
-  do NOT pre-encode (double encoding ⇒ Gmail "Invalid SASL argument").
+  NOTE: go-imap and go-smtp base64-encode the SASL initial response themselves —
+  `oauth.XOAuth2Client` returns the raw string; do NOT pre-encode (double encoding ⇒ Gmail
+  "Invalid SASL argument").
   Hosts: `imap.gmail.com:993`, `smtp.gmail.com:587`.
 
-## Compose and SMTP sending (send.rs)
+## Compose and SMTP sending (internal/send)
 
 - The first compose implementation sends plain-text messages. `send_message` requires at least one
-  valid To/Cc/Bcc mailbox and builds all address and message headers with lettre; the frontend never
-  supplies raw headers or SMTP credentials.
+  valid To/Cc/Bcc mailbox and builds all address and message headers with go-message; the frontend
+  never supplies raw headers or SMTP credentials.
 - The selected account supplies the From mailbox and SMTP configuration. Password accounts reuse
-  their keyring-held IMAP password with SMTP `PLAIN`/`LOGIN`; Gmail obtains an access token through
-  `auth/oauth.rs` and uses lettre's `XOAUTH2` mechanism with the raw token (lettre constructs and
-  base64-encodes the SASL response).
+  their keyring-held IMAP password with SMTP `PLAIN` (`LOGIN` when the server offers only that);
+  Gmail obtains an access token through `internal/oauth` and uses the shared `XOAUTH2` SASL client
+  with the raw token (go-smtp base64-encodes the SASL response).
 - SMTP is always encrypted: port 465 uses implicit TLS; every other configured submission port uses
   required STARTTLS. There is no plaintext or opportunistic-TLS fallback.
 - For replies, `replyToMessageId` is a local SQLite rowid. The backend verifies that the cached
@@ -437,7 +463,7 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
 - SMTP acceptance completes the command. Providers such as Gmail normally copy SMTP submissions to
   Sent themselves; Cosmic Mail does not locally insert or IMAP-APPEND the outgoing message.
 
-## Message actions (commands.rs + sync/imap.rs)
+## Message actions (app.go + internal/imap)
 
 Flag/archive/delete/move follow the same shape as `mark_read`: locate the row → open a
 per-command IMAP connection → select the source folder → run the server op → update the DB →
@@ -450,14 +476,14 @@ and reload folder counts).
   (`Account.kind == "gmail"`), the same physical message is exposed under multiple folders
   (labels); after the primary update, every other cached copy in that account sharing the same
   RFC 5322 Message-ID has its `seen` state and owning folder's unread count updated locally too
-  (`store::mark_seen_for_message_id_siblings`), and `mail:messages-updated` is emitted for each
+  (`Store.MarkSeenForMessageIDSiblings`), and `mail:messages-updated` is emitted for each
   additionally-changed folder — no new event/wire type, this just fans the existing event out to
   more folder ids. Gmail's own `\Seen` propagation across labels means the next sync of those
   folders reconciles regardless; this only removes the wait until that next sync.
 - **Flag** — `UID STORE ±FLAGS (\Flagged)`, mirroring the `\Seen` path. No unread-count change.
 - **Move** (also the mechanism behind archive and non-trash delete) — prefers `UID MOVE`
-  (RFC 6851, `MOVE` capability); otherwise falls back to `UID COPY` + `UID STORE +FLAGS
-  (\Deleted)` + expunge, preferring `UID EXPUNGE` (RFC 4315 `UIDPLUS`) so only the copied
+  (RFC 6851, `MOVE` capability); otherwise go-imap's `Move` falls back to `UID COPY` + `UID STORE
+  +FLAGS.SILENT (\Deleted)` + expunge, preferring `UID EXPUNGE` (RFC 4315 `UIDPLUS`) so only the copied
   message is removed, and dropping to a plain `EXPUNGE` when `UIDPLUS` is absent (which removes
   every `\Deleted` message in the mailbox). The target must belong to the **same account** and
   differ from the source (moving between accounts is unsupported; both are rejected with a clear
@@ -471,11 +497,11 @@ and reload folder counts).
   is already `trash`; otherwise a move to the `trash`-role folder. The local row is removed in
   both cases.
 
-`remove_message` deletes the local row (the FTS5 delete trigger and the `attachments`
+`Store.RemoveMessage` deletes the local row (the FTS5 delete trigger and the `attachments`
 foreign-key cascade clean up derived rows) and decrements the source folder's `total_count`
 (and `unread_count` when the row was unseen), floored at 0.
 
-## Settings discovery (autoconfig.rs)
+## Settings discovery (internal/autoconfig)
 
 `discover_account_config` resolves IMAP/SMTP settings from just the address, trying in order
 (each HTTP fetch 5s timeout, ~12s total budget; first hit wins):
@@ -483,13 +509,13 @@ foreign-key cascade clean up derived rows) and decrements the source folder's `t
 1. `https://autoconfig.{domain}/mail/config-v1.1.xml?emailaddress={email}` → source `autoconfig`
 2. `https://{domain}/.well-known/autoconfig/mail/config-v1.1.xml` → source `autoconfig`
 3. `https://autoconfig.thunderbird.net/v1.1/{domain}` → source `ispdb`
-4. MX lookup (hickory-resolver) → registrable domain of the MX host → that provider's own
+4. MX lookup (`net.Resolver`) → registrable domain of the MX host → that provider's own
    `autoconfig.{mxdomain}` endpoint (hosts configs for custom domains, e.g. Purelymail),
    then ISPDB again → source `mx`
 5. RFC 6186 SRV: `_imaps._tcp.{domain}` + `_submission._tcp.{domain}` → source `srv`
 6. Fallback `imap.{domain}:993` / `smtp.{domain}:587`, `confident: false` → source `guess`
 
-Rules: parse config-v1.1.xml with roxmltree; take the first `incomingServer type="imap"` with
+Rules: parse config-v1.1.xml with `internal/xmldom` (malformed XML ⇒ no config); take the first `incomingServer type="imap"` with
 `socketType SSL` (skip STARTTLS — unsupported by our connector) and first `outgoingServer
 type="smtp"` preferring STARTTLS/587 then SSL/465; resolve `%EMAILADDRESS%`/`%EMAILLOCALPART%`
 placeholders in username. Gmail detection: domain is `gmail.com`/`googlemail.com`, discovered
@@ -497,9 +523,10 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 `kind: "gmail"`. Discovery makes no connections to the mail servers themselves —
 `add_imap_account` still validates by connecting.
 
-## Sync engine (sync/)
+## Sync engine (internal/sync)
 
-- One tokio task per account (`SyncManager` holds JoinHandles; aborted on account removal).
+- One goroutine per account (`sync.Manager` holds a cancel func per account; cancelled on
+  removal or restart, which also tears the connection down so a blocking IDLE returns).
 - Loop: connect → LIST folders (RFC 6154 SPECIAL-USE for roles) → `STATUS` each folder for
   authoritative `MESSAGES`, `UNSEEN`, `UIDNEXT`, and `UIDVALIDITY` → UIDVALIDITY check
   (mismatch ⇒ wipe folder cache) → fetch/upsert envelopes → emit events/notify. Then hold the
@@ -507,45 +534,43 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   inbox body prefetch → drain-check → IDLE → on wakeup, re-sync INBOX on the same connection and
   prefetch/drain-check/IDLE again — until the
   25-min full-resync deadline ends the cycle and the loop reconnects for a fresh full sweep. The
-  deadline is a hard wall-clock bound (async-imap's IDLE timeout is inactivity-based; server
-  keepalives reset it). On error: emit sync-state error, retry with backoff (30s → 5 min cap).
+  deadline is a hard wall-clock bound (a timer around go-imap's `IdleCommand`, which otherwise
+  re-issues IDLE on its own every 28 minutes). On error: emit sync-state error, retry with backoff (30s → 5 min cap).
 - **Dead-connection detection (issue #41):** two independent layers, because each one alone leaves
   a window a laptop resume/wifi-roam/VPN-flap/NAT-timeout can fall into (see `docs/GOTCHAS.md`).
-  First, TCP keepalive on the socket itself (`sync::imap::tls_client`, via `socket2::SockRef`
-  applied to the `tokio::net::TcpStream` before the TLS handshake): `TCP_KEEPALIVE_IDLE` = 60s,
-  `TCP_KEEPALIVE_INTERVAL` = 10s, `TCP_KEEPALIVE_RETRIES` = 3, so a genuinely dead peer surfaces as
+  First, TCP keepalive on the socket itself (`imap.Connect`, via `net.Dialer.KeepAliveConfig`,
+  applied before the TLS handshake): idle = 60s, interval = 10s, count = 3, so a genuinely dead peer surfaces as
   an IO error in roughly 90s instead of sitting silent until the full-resync deadline. Second, the
-  IDLE re-issue cadence: a single IDLE command is capped at `IDLE_REISSUE_INTERVAL` (5 min) rather
-  than the full `FULL_RESYNC_INTERVAL` (25 min) — those two were previously the same constant.
+  IDLE re-issue cadence: a single IDLE command is capped at `IdleReissueInterval` (5 min) rather
+  than the full `FullResyncInterval` (25 min) — those two were previously the same constant.
   Hitting the 5-minute cap alone does **not** end the cycle: the loop re-syncs INBOX,
-  drain-checks, and re-issues IDLE on the *same* connection (`IdleTimeoutAction::Reissue`); only
+  drain-checks, and re-issues IDLE on the *same* connection (`TimeoutReissue`); only
   actually reaching the 25-minute deadline tears the connection down and reconnects fresh
-  (`IdleTimeoutAction::EndCycle`). Each `idle_wait` call is capped at
-  `min(IDLE_REISSUE_INTERVAL, time_remaining_until_full_resync_deadline)`
-  (`sync::idle_wait_budget`), and which of the two a `Timeout` outcome actually was is decided by
-  `sync::idle_timeout_action` — both are pure functions over `Duration`s, unit-tested including the
+  (`TimeoutEndCycle`). Each `IdleWait` call is capped at
+  `min(IdleReissueInterval, time_remaining_until_full_resync_deadline)`
+  (`sync.IdleWaitBudget`), and which of the two a timeout outcome actually was is decided by
+  `sync.IdleTimeoutAction` — both are pure functions over durations, unit-tested including the
   boundary where the re-issue interval would overrun the deadline. The re-issue path still goes
   through the same drain-check as every other path into IDLE (a `DONE`/`IDLE` round trip is itself
   a window an `EXISTS` can land in — see issue #39 below).
 - **Drain-check, and why it exists (issue #39):** an IMAP server announces new mail by
   piggy-backing an untagged `* N EXISTS` onto whatever command response is in flight, and never
-  repeats that announcement later. `async-imap` routes any such response that lands outside of
-  IDLE's own wait — i.e. on the STATUS/SELECT/FETCH commands a re-sync issues, or even on the IDLE
-  command's own response before its `+ idling` continuation — onto
-  `Session::unsolicited_responses`, a `bounded(100)` channel that is otherwise never read. Before
-  entering IDLE, and again immediately after `Handle::init()` succeeds, the loop drains that
-  channel with `try_recv` (`sync::drain_mailbox_changed`) and treats any `Exists`/`Recent` as
-  "mailbox changed — re-sync now, don't idle yet," repeating the STATUS/SELECT/FETCH pass until a
-  drain comes back clean before calling `session.idle()`. The check is a local, non-blocking read
-  with no `.await` between it and entering IDLE, so there is no remaining gap — closing a race that
-  a bare "re-sync precedes every IDLE" structure (the previous fix, commit 0f1354e) left open,
-  since that re-sync happened without ever reading this channel. Bounded by
-  `MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE` (a small constant) so a mailbox that is genuinely changing
+  repeats that announcement later. go-imap hands any such response that lands outside a SELECT —
+  i.e. on the STATUS/FETCH commands a re-sync issues, or on the IDLE command's own response before
+  its `+ idling` continuation — to the `UnilateralDataHandler`, which `internal/imap` turns into a
+  "mailbox changed" flag (plus a wake signal for a running IDLE). Before entering IDLE, and again
+  immediately after IDLE is issued, the loop reads-and-clears that flag
+  (`Session.DrainMailboxChanged`) and treats it as "mailbox changed — re-sync now, don't idle
+  yet," repeating the STATUS/SELECT/FETCH pass until a drain comes back clean before waiting. The
+  check is a local, non-blocking read with no network I/O between it and entering IDLE, so there
+  is no remaining gap — closing a race that a bare "re-sync precedes every IDLE" structure (the
+  previous fix, commit 0f1354e) left open. Bounded by
+  `MaxConsecutiveResyncsBeforeIdle` (a small constant) so a mailbox that is genuinely changing
   on every single re-sync cannot spin forever. Note what that bound must *not* do: once a drain
   has returned "changed", the announcement is already out of the channel and the server will
   never repeat it, so idling at the cap would strand that message until the deadline — the exact
   bug being fixed. The cap therefore ends the cycle (reconnect + full sweep, guaranteed to see
-  it) rather than idling. Only a clean drain may enter IDLE (`sync::drain_action`).
+  it) rather than idling. Only a clean drain may enter IDLE (`sync.DrainAction`).
 - Initial sync: use message sequence numbers from `STATUS MESSAGES` to `FETCH` exactly the
   newest 200 existing messages per folder (or all when fewer than 200), including `UID` in the
   response. Do not `UID FETCH 1:*` and trim afterward.
@@ -553,42 +578,43 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   Folder `totalCount`/`unreadCount` stay server-authoritative even when only 200 envelopes are
   cached; successful local flag changes adjust the stored server count until the next STATUS.
 - **Body prefetch timing (issue #40):** opportunistically cache at most 5 bodies from the newest
-  20 unread and newest 20 overall cached inbox envelopes (`BODY_PREFETCH_WORKING_SET` = 20,
-  `BODY_PREFETCH_LIMIT` = 5). Prefetch is sequential and best-effort so an individual body failure
+  20 unread and newest 20 overall cached inbox envelopes (`BodyPrefetchWorkingSet` = 20,
+  `BodyPrefetchLimit` = 5). Prefetch is sequential and best-effort so an individual body failure
   does not fail the sync cycle. Skip messages larger than 1 MiB, using a separate `RFC822.SIZE`
   lookup when a pre-migration envelope has no stored size. Fetch full messages with
   `BODY.PEEK[]`, never `BODY[]`/`RFC822`, so caching cannot set `\Seen`; only the explicit
   `mark_read` command changes that flag. Parsing and caching do not render HTML or load network
   resources. Foreground cache misses use the same non-marking fetch. Prefetch is *not* part of
-  the per-folder re-sync helper (`sync_folder_uids`) — issue #40 hoisted it into `run_once`'s
+  the per-folder re-sync helper (`syncFolderUIDs`) — issue #40 hoisted it into `runOnce`'s
   idle loop, where it runs at exactly one call site, positioned between the re-sync's notify and
   the drain-check. Both sides of that position are load-bearing. **After the notify**, because
   prefetch is up to five sequential size+body fetches and putting it ahead of the notify would
   delay every new-mail toast by exactly the best-effort background work that must stay out of the
   notification path. **Before the drain-check**, because the drain-check has to be the last thing
-  that happens before `session.idle()` (issue #39) — so an `EXISTS` piggy-backed on one of
-  prefetch's own FETCH commands lands in `unsolicited_responses` and is caught by the drain-check
+  that happens before `IdleWait` (issue #39) — so an `EXISTS` piggy-backed on one of
+  prefetch's own FETCH commands lands in the mailbox-changed flag and is caught by the drain-check
   rather than lost. On a single connection this window can be made *safe* but not made to
   disappear; eliminating it requires prefetch on a second connection (issue #42). Prefetch also
   requires INBOX to be the selected mailbox — UIDs are mailbox-scoped, and a matching UID in the
   wrong mailbox would store another folder's body/attachments/shipments against an INBOX message,
-  which is why it runs immediately after `sync_folder_uids` has selected INBOX and never straight
+  which is why it runs immediately after `syncFolderUIDs` has selected INBOX and never straight
   after the full sweep (which leaves whichever folder came last in the LIST response selected).
 - The idle loop's step order is therefore: full sweep (all folders) → loop { STATUS+SELECT+FETCH
   INBOX (envelopes + notify) → inbox prefetch → drain-check → IDLE (capped at
-  `min(IDLE_REISSUE_INTERVAL, time_remaining_until_deadline)`) }, repeating on a `NewData` wakeup
-  or a re-issue-cadence `Timeout`, and ending the cycle to reconnect fresh on a
-  full-resync-deadline `Timeout`, a dead connection, or a drain-check that hits
-  `MAX_CONSECUTIVE_RESYNCS_BEFORE_IDLE`.
-- rustls: `tokio_rustls` with `rustls_native_certs` root store.
+  `min(IdleReissueInterval, time_remaining_until_deadline)`) }, repeating on a `IdleNewData` wakeup
+  or a re-issue-cadence timeout, and ending the cycle to reconnect fresh on a
+  full-resync-deadline timeout, a dead connection, or a drain-check that hits
+  `MaxConsecutiveResyncsBeforeIdle`.
+- TLS: `crypto/tls` with the system root store (`imap.TLSConfig`, shared with SMTP).
 
-## Shipment detection (shipments.rs)
+## Shipment detection (internal/shipments)
 
 - Pure, dependency-free heuristic parsing over a message's cached `text`/`html` body — no
   network calls, no new crates. Runs at the same body-parse hook as attachment extraction, in
   both places a body is cached: the foreground cache miss in `get_message_body` and the
-  background prefetch loop in `sync/mod.rs`. Each call replaces that message's `shipments` rows
-  wholesale (`store::replace_shipments`, mirroring `replace_attachments`), so re-parsing cannot
+  background prefetch loop in `internal/sync`. Each call replaces that message's `shipments` rows
+  wholesale (`Store.ReplaceShipments`, mirroring `ReplaceAttachments`, both inside
+  `Store.CacheParsedBody`, the single body-parse hook `sync.CacheBody` wraps), so re-parsing cannot
   accumulate duplicates. Bodies already cached before this feature shipped are not retroactively
   backfilled — there is no startup healing pass for shipments (unlike snippets); a shipment
   surfaces once that message's body is (re)fetched.
@@ -651,7 +677,7 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   above are unchanged. Turning the preference off applies to subsequently rendered messages.
 - Links never navigate the sandbox or reach the app: the iframe runs with `sandbox="allow-scripts"`
   only (no `allow-popups`, no `allow-same-origin`), giving it an opaque origin — no parent DOM
-  access, no Tauri IPC, and a new-window request still can't reach the system browser directly.
+  access, no Wails IPC, and a new-window request still can't reach the system browser directly.
   Click handling lives inside the frame rather than being observed from the parent, because
   WebKitGTK keeps a sandboxed `srcdoc` iframe's `contentDocument` null once the real document
   loads. `messageFrameDocument` injects `LINK_FORWARDER_SCRIPT` into the frame's `<head>`, ahead
@@ -665,31 +691,32 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   `Reader.svelte` listens for `message` events in a `$effect`, validates
   `event.source === iframeEl.contentWindow` and the message shape, then resolves the href with
   `resolveOpenableLinkUrl(href, "about:srcdoc")` (http/https only, in `message-html.ts`) before
-  forwarding to `@tauri-apps/plugin-opener`'s `openUrl`. The `opener:allow-open-url` capability
-  permission is scoped to `http://*` / `https://*` only — narrower than the plugin's
-  `opener:default` set (which also grants `mailto:`/`tel:` and `reveal_item_in_dir`, unneeded
-  here). Gmail OAuth's own consent-URL open (`auth/oauth.rs`) calls the Rust `OpenerExt::open_url`
-  API directly and is unaffected by this capability, since ACL scoping only gates the JS-invoked
-  command.
+  forwarding to `api.openUrl` (the Wails runtime's `Browser.OpenURL`). `openUrl` itself refuses
+  anything but an absolute http(s) URL (`isOpenableUrl` in `message-html.ts`), since the runtime
+  call is unscoped and the shipment tracking cards reach it too; the backend additionally never
+  stores a non-http(s) link as a shipment `trackingUrl` (`shipments.carrierForURL`). Gmail OAuth's own consent-URL
+  open (`internal/oauth`) calls `app.Browser.OpenURL` from Go directly.
 
-## Automation bridge (debug builds only — `automation.rs`)
+## Automation bridge (development builds only — `internal/automation`)
 
 Scripted end-to-end tests drive the real webview through an in-app bridge. Arch/CachyOS
-`webkit2gtk-4.1` ships no `WebKitWebDriver`, so the standard `tauri-driver` route is
-unavailable; the bridge replaces it. **It exists only in `debug_assertions` builds** —
-`lib.rs` gates both `mod automation;` and the `automation::spawn` call on `cfg`, so it is
-compiled out of every release/promoted binary. It never appears in the invoke handler and
-adds no wire types or events.
+`webkit2gtk-4.1` ships no `WebKitWebDriver`, so a WebDriver route is unavailable; the bridge
+replaces it. **It exists only in builds without the `production` tag** — `automation.go` is
+`//go:build !production` and `stub.go` supplies no-ops under `production`, so it is compiled
+out of every release/promoted binary (`wails3 task build` sets the tag). It is not a service
+method and adds no wire types or events.
 
-- **Transport.** A raw loopback HTTP/1.1 listener on `127.0.0.1:4127` (override with
-  `COSMIC_MAIL_AUTOMATION_PORT`), on tokio (no new crates). Binds loopback only; one
-  request per `Connection: close`. Bind failure is logged and non-fatal. Never handles
-  secrets.
-- **`GET /health`** → `200 {"ok":true}` once the main webview exists; `503` otherwise. A
-  client's readiness wait gates on this, so it means "UI drivable", not just "socket up".
+- **Transport.** A loopback HTTP/1.1 listener on `127.0.0.1:4127` (override with
+  `COSMIC_MAIL_AUTOMATION_PORT`), on `net/http`. Binds loopback only; one request per
+  `Connection: close`. Bind failure is logged and non-fatal. Never handles secrets.
+- **`GET /health`** → `200 {"ok":true}` once an eval round-trip succeeds; `503` otherwise. A
+  client's readiness wait gates on this, so it means "UI drivable", not just "socket up"
+  (Wails queues `ExecJS` until the runtime reports ready).
 - **`POST /eval`**, body = a JS **function body** → runs it in the main webview via
-  `WebviewWindow::eval_with_callback` (WebKitGTK `run_javascript` → `js_value().to_json`)
-  and returns the value. The snippet is wrapped in a try/catch IIFE, so:
+  `Window.ExecJS`. That call has no return path, so the wrapper posts its result back through
+  the webview's raw message channel (`window.webkit.messageHandlers.external.postMessage`,
+  prefixed `cosmic-automation:<id>:`), which `main.go` routes to the bridge through Wails'
+  `RawMessageHandler` option. The snippet is wrapped in a try/catch IIFE, so:
   - success → `{"ok":true,"value":<the JSON value; undefined coerced to null>}`
   - a throw → `{"ok":false,"error":"<message>"}`
   Only JSON-serializable return values survive (strings, numbers, booleans, arrays, plain
@@ -708,23 +735,29 @@ Tests run against a **disposable GreenMail IMAPS server** (`e2e/docker-compose.y
 with fixed fixture emails (`e2e/fixtures/mail/`), not a real mailbox. The app is launched
 against an **isolated XDG profile** — `XDG_CONFIG_HOME`/`XDG_DATA_HOME` pointed at a
 throwaway dir with `e2e/profile/accounts.json` — so a run never touches real accounts or the
-mail DB (both resolve via `dirs::config_dir`/`dirs::data_dir`). Two **`debug_assertions`-only,
-env-gated** hooks bridge the app to the fixture; both are compiled out of release and inert
+mail DB (both resolve through `internal/xdg`). Two **development-build-only,
+env-gated** hooks bridge the app to the fixture; both are compiled out of production and inert
 unless their env var is set:
 
-- **`COSMIC_MAIL_EXTRA_CA`** (`sync/imap.rs::tls_config`) — path to a PEM whose certs are
-  added to the rustls trust store, so the app accepts the fixture's committed self-signed
-  `localhost` cert (`e2e/fixtures/tls/ca.pem`). The strict-TLS production path is unchanged.
-- **`COSMIC_MAIL_TEST_IMAP_PASSWORD`** (`accounts.rs::get_imap_password`) — returned as the
-  IMAP password instead of the keyring, so tests need no Secret Service (e.g. headless CI).
+- **`COSMIC_MAIL_EXTRA_CA`** (`imap.TLSConfig`) — path to a PEM whose certs are added to the
+  trust store (shared by IMAP and SMTP), so the app accepts the fixture's committed self-signed
+  `localhost` cert (`e2e/fixtures/tls/ca.pem`) or `cmd/fakeimap`'s generated one. The strict-TLS
+  production path is unchanged.
+- **`COSMIC_MAIL_TEST_IMAP_PASSWORD`** (`accounts.GetImapPassword`) — returned as the IMAP
+  password instead of the keyring, so tests need no Secret Service (e.g. headless CI).
 
-Also: **tray setup is non-fatal** (`lib.rs`) — a missing StatusNotifier host (headless CI
-under Xvfb) logs a warning instead of aborting startup before the webview/bridge come up. CI
-(`.github/workflows/e2e.yml`) builds a debug binary (`tauri build --debug --no-bundle`) and
-runs it under `dbus-run-session -- xvfb-run` via `e2e/ci-run.sh`.
+Both are gated on `buildinfo.Debug`. Also: **tray setup is non-fatal** — a missing
+StatusNotifier host (headless CI under Xvfb) logs an error instead of aborting startup before
+the webview/bridge come up. CI (`.github/workflows/e2e.yml`) builds a development binary
+(`go build -tags gtk3`, no `production` tag) and runs it under `dbus-run-session -- xvfb-run`
+via `e2e/ci-run.sh`. Locally, `go test -tags gtk3 ./internal/sync/` exercises the same engine against
+`internal/testimap` (go-imap's in-memory server) with no Docker.
 
 ## Conventions
 
-- Rust: edition 2021, `anyhow` internally, `thiserror` at command boundary, `tracing` for logs.
-- No `unwrap()` outside tests/main. Frontend: strict TS, Svelte 5 runes ($state/$derived/$effect).
-- `npm run check` and `cargo check` must pass. Do not commit — the supervisor handles git.
+- Go: `fmt.Errorf("…: %w", err)` internally; service methods return plain `error`s whose message
+  is what the toast shows; `log/slog` for logs; no panics outside tests/main. Every Go command
+  takes `-tags gtk3`. Frontend: strict TS, Svelte 5 runes ($state/$derived/$effect).
+- `npm run check` (in `frontend/`) and `go vet -tags gtk3 ./...` must pass, and the committed
+  `frontend/bindings` must match `wails3 generate bindings`. Do not commit — the supervisor
+  handles git.

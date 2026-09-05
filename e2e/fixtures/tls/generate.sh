@@ -6,7 +6,7 @@
 # pointed at ca.pem via COSMIC_MAIL_EXTRA_CA. Committed on purpose so E2E runs
 # are deterministic and need no cert tooling at run time (see e2e/README.md).
 #
-# A proper CA -> leaf chain is used (not a bare self-signed cert): rustls/webpki
+# A proper CA -> leaf chain is used (not a bare self-signed cert): the TLS stack
 # validates the leaf against the trusted CA and requires a serverAuth EKU + SAN.
 #
 # Outputs (committed): ca.pem (app trusts this), localhost.p12 (GreenMail serves

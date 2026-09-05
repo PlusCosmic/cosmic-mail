@@ -8,15 +8,17 @@ description: Verify Cosmic Mail changes end-to-end. Prefer the scripted automati
 ## Prefer the scripted bridge (default)
 
 For anything you can assert on — element presence, text, clicking, list/reader/
-shipment state — use the **debug-only automation bridge** (`src-tauri/src/automation.rs`,
-compiled into debug builds only) and the `e2e/` harness. It finds DOM elements, clicks
+shipment state — use the **development-only automation bridge** (`internal/automation`,
+compiled out of `production` builds) and the `e2e/` harness. It finds DOM elements, clicks
 them, and reads text back — deterministic and far less fragile than wtype/grim, and it
 works headless. See `e2e/README.md`.
 
-- **Hermetic run (no real mailbox):** `npm run e2e:env:up` (GreenMail fixture + seed),
-  launch a debug build against the isolated profile with the env block from the README,
-  `npm run e2e`, then `npm run e2e:env:down`. This is what CI does.
-- **Ad-hoc against the real mailbox:** `npm run tauri dev`, then drive it with
+- **Hermetic run (no real mailbox):** `go run -tags gtk3 ./cmd/fakeimap -ca-out /tmp/ca.pem &` (no
+  Docker) or `npm run e2e:env:up` in `frontend/` (GreenMail), then
+  `COSMIC_MAIL_EXTRA_CA=… dbus-run-session -- e2e/ci-run.sh` against a dev build
+  (`go build -tags gtk3 -o bin/cosmic-mail .`). `go test -tags gtk3 ./internal/sync/`
+  covers the engine without the UI.
+- **Ad-hoc against the real mailbox:** `wails3 dev`, then drive it with
   `e2e/client.mjs`'s `Bridge` (`await bridge.eval("return …")`, `.click(sel)`, `.waitFor…`).
   Stay read-mostly and restore side effects (see the real-mailbox caveat below).
 - Async UI waits are **client-side poll loops** (`bridge.waitFor`) — WebKitGTK evaluates
@@ -32,18 +34,20 @@ search) and #36 (message-list listbox focus); confirm against those before filin
 
 ## Before launching
 
-- The promoted daily build runs as a user service and owns the app's D-Bus name
-  (first owner runs sync). Stop it first, restart it when done:
+- The promoted daily build runs as a user service and syncs the same accounts. Stop it
+  first, restart it when done:
   `systemctl --user stop cosmic-mail.service` … `systemctl --user start cosmic-mail.service`
-- Port 1420 must be free (`pkill -f 'vite dev'` for strays). After killing dev
-  sessions also check for orphaned `target/debug/cosmic-mail` processes —
+- Port 9245 must be free (`pkill -f 'vite dev'` for strays). After killing dev
+  sessions also check for orphaned `bin/cosmic-mail` processes —
   but beware `pgrep -f` matching its own shell; confirm with `pgrep -a -x cosmic-mail`.
 
 ## Launch and drive
 
-- `npm run tauri dev` (background, log to a file). Wait for the window:
+- `wails3 dev` (background, log to a file). Wait for the window:
   `until hyprctl clients -j | jq -e '.[] | select(.class=="cosmic-mail")' ...`
-- Focus before every key injection: `hyprctl dispatch focuswindow class:cosmic-mail`.
+- Focus before every key injection (Hyprland 0.56 Lua form; the classic
+  `focuswindow class:…` fails with exit 7):
+  `hyprctl dispatch 'hl.dsp.focus({ window = "class:cosmic-mail" })'`.
 - Keyboard: `wtype -k j`, `wtype -M ctrl -k k -m ctrl` (palette), `wtype "text"`.
   **Gotcha:** `wtype -k G` and `wtype -M shift -k g -m shift` do NOT produce a
   shifted key WebKit reports as `key === "G"` — use text mode `wtype "G"` for
@@ -61,7 +65,7 @@ search) and #36 (message-list listbox focus); confirm against those before filin
 - SQLite cache: `sqlite3 ~/.local/share/cosmic-mail/mail.db` — messages
   (snippet/seen/body_cached/body_text/body_html), folders (unread_count).
   Great for before/after checks of sync and snippet logic.
-- App log: the tauri-dev log file; `RUST_LOG=cosmic_mail_lib=debug npm run tauri dev` for more.
+- App log: the `wails3 dev` log file; `COSMIC_MAIL_LOG=debug wails3 dev` for more.
 
 ## Environment caveats
 

@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# One-shot E2E orchestrator: launch a prebuilt debug app binary against an
-# isolated profile pointed at the GreenMail fixture, wait for the bridge, run
-# the test suite, and tear the app down. Used by CI (under dbus-run-session +
-# xvfb-run); also runnable locally once you've built the binary with
-# `npm run tauri build -- --debug --no-bundle`.
+# One-shot E2E orchestrator: launch a prebuilt development app binary against
+# an isolated profile pointed at the fixture IMAP server, wait for the bridge,
+# run the test suite, and tear the app down. Used by CI (under dbus-run-session
+# + xvfb-run); also runnable locally once you've built the binary with
+# `wails3 task build DEV=true` (a production build has no automation bridge).
 #
-# Assumes the fixture is already up + seeded (`npm run e2e:env:up`).
+# Assumes the fixture is already up + seeded: either GreenMail
+# (`npm run e2e:env:up` in frontend/) or the Docker-free `go run -tags gtk3 ./cmd/fakeimap
+# -ca-out <path>` with COSMIC_MAIL_EXTRA_CA pointed at that path.
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root
 
-APP_BIN="${APP_BIN:-src-tauri/target/debug/cosmic-mail}"
+APP_BIN="${APP_BIN:-bin/cosmic-mail}"
 PORT="${COSMIC_MAIL_AUTOMATION_PORT:-4127}"
 
 if [ ! -x "$APP_BIN" ]; then
-  echo "app binary not found at $APP_BIN — build it with 'npm run tauri build -- --debug --no-bundle'" >&2
+  echo "app binary not found at $APP_BIN — build it with 'wails3 task build DEV=true'" >&2
   exit 1
 fi
 
@@ -31,7 +33,7 @@ trap cleanup EXIT
 
 XDG_CONFIG_HOME="$PROF/config" \
 XDG_DATA_HOME="$PROF/data" \
-COSMIC_MAIL_EXTRA_CA="$PWD/e2e/fixtures/tls/ca.pem" \
+COSMIC_MAIL_EXTRA_CA="${COSMIC_MAIL_EXTRA_CA:-$PWD/e2e/fixtures/tls/ca.pem}" \
 COSMIC_MAIL_TEST_IMAP_PASSWORD="test-pass" \
 COSMIC_MAIL_AUTOMATION_PORT="$PORT" \
   "$APP_BIN" &
@@ -50,4 +52,4 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
-npm run e2e
+(cd frontend && npm run e2e)

@@ -11,18 +11,20 @@ debug output, the working tree, or an automatic updater.
 From the repository root:
 
 ```sh
-npm run promote:local
+scripts/promote-local.sh
 ```
+
+(`npm run promote:local` in `frontend/` runs the same script.)
 
 Promotion refuses an uncommitted working tree by default. That makes an installed build
 traceable to its Git revision. For a one-off snapshot that is intentionally not
 reproducible:
 
 ```sh
-npm run promote:local -- --allow-dirty
+scripts/promote-local.sh --allow-dirty
 ```
 
-The command runs the complete definition-of-done checks, creates a Tauri release binary
+The command runs the complete definition-of-done checks, creates a production Wails binary
 with the frontend embedded, and installs it at:
 
 ```text
@@ -50,8 +52,8 @@ test leaves the active release untouched.
 List installed releases and activate an older one without rebuilding:
 
 ```sh
-npm run promote:local -- --list
-npm run promote:local -- --activate <release-id>
+scripts/promote-local.sh --list
+scripts/promote-local.sh --activate <release-id>
 ```
 
 The release and dev executables are separate, but use the same application identifier, account
@@ -61,7 +63,7 @@ build—owns activation:
 
 ```sh
 systemctl --user stop cosmic-mail.service
-npm run tauri dev
+wails3 dev
 ```
 
 Restart `cosmic-mail.service` when the dev session ends.
@@ -75,10 +77,11 @@ does not replace local promotion, and application self-update stays disabled.
 ### How it works
 
 `.github/workflows/release.yml` runs the definition-of-done suite on every merge to
-`main` — `npm run check`, `npm run build`, and `cargo check`, `clippy`, `test --lib` and
-`fmt --check` in `src-tauri/`. Only if all of that passes does it send a
+`main` — `npm run check`, `npm run build` and `npm test` in `frontend/`, a bindings
+freshness diff, `gofmt`, `go vet`, `go test` and a production `go build`. Only if all of
+that passes does it send a
 `repository_dispatch` to [PlusCosmic/packages], carrying the package name, this
-repository, the merged commit SHA, and the version from `src-tauri/tauri.conf.json`.
+repository, the merged commit SHA, and the version from `build/config.yml`.
 
 The dispatch also refuses to run for anything but the current tip of `main`. `pkgrel`
 is the packaging repository's run number, so *any* dispatch outranks every package
@@ -96,12 +99,13 @@ Funnelling every update through one repository gives one concurrency group that 
 serialises them.
 
 The packaging repository builds from `git archive` of the dispatched SHA, so a package
-can only contain committed source. It installs the same `--no-bundle` binary promotion
-does, plus the desktop entry, the icons, and the systemd user unit under
+can only contain committed source. It builds the frontend with `npm ci && npm run build`
+in `frontend/` and the binary with `go build -tags gtk3,production`, the same artifact
+promotion installs, plus the desktop entry, the icons, and the systemd user unit under
 `/usr/lib/systemd/user/`.
 
 `pkgrel` is the packaging repository's Actions run number rather than a hand-maintained
-counter, so each build is an upgrade to pacman even when the `tauri.conf.json` version is
+counter, so each build is an upgrade to pacman even when the `build/config.yml` version is
 unchanged. Bump that version for anything users should recognise as a release.
 
 ### Setup

@@ -13,7 +13,7 @@ services:
       - "127.0.0.1:8080:8080" # management API (readiness/debug)
     environment:
       # greenmail.hostname=0.0.0.0 so the published ports are reachable from the
-      # host; serve our own keystore so the cert's SAN is `localhost` (rustls
+      # host; serve our own keystore so the cert's SAN is `localhost` (Go's crypto/tls
       # validates the hostname). Password matches fixtures/tls/generate.sh.
       GREENMAIL_OPTS: >-
         -Dgreenmail.setup.test.all

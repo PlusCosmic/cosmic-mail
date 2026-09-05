@@ -5,11 +5,10 @@ artifacts and distro packages are planned for a later stage of the project.
 
 ## Requirements
 
+- Go 1.25+ and the `wails3` CLI (`go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16`)
 - Node.js and npm
-- A current Rust toolchain
-- Tauri's Linux development dependencies
-- Arch packages: `webkit2gtk-4.1`, `gtk3`, `librsvg`, `openssl`, and
-  `libayatana-appindicator` (system tray runtime)
+- Arch packages: `webkit2gtk-4.1` and `gtk3` (the tray speaks StatusNotifierItem over
+  D-Bus itself, so no AppIndicator library is needed)
 - A running Secret Service implementation for credential storage
 
 Omarchy's default environment provides the expected Hyprland, Mako, and Secret Service
@@ -20,8 +19,8 @@ integration.
 ```sh
 git clone https://github.com/PlusCosmic/cosmic-mail.git
 cd cosmic-mail
-npm install
-npm run tauri dev
+(cd frontend && npm install)
+wails3 dev
 ```
 
 ## Account setup
@@ -52,9 +51,8 @@ save the credentials to `~/.config/cosmic-mail/google-oauth.json`:
 
 The client secret is optional for a desktop OAuth client. For development, the
 `COSMIC_MAIL_GOOGLE_CLIENT_ID` and `COSMIC_MAIL_GOOGLE_CLIENT_SECRET` environment
-variables override the JSON file. Packaged builds can provide defaults with
-`COSMIC_MAIL_BUILD_GOOGLE_CLIENT_ID` and `COSMIC_MAIL_BUILD_GOOGLE_CLIENT_SECRET` at
-compile time.
+variables override the JSON file. Packaged builds can bake in defaults at link time:
+`-ldflags "-X cosmicmail/internal/oauth.BakedClientID=… -X cosmicmail/internal/oauth.BakedClientSecret=…"`.
 
 Cosmic Mail opens an RFC 8252 loopback PKCE flow in the browser, then uses SASL XOAUTH2
 with Gmail's IMAP service. The OAuth refresh token is stored only in the Secret Service
