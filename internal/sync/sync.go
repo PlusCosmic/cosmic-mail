@@ -89,6 +89,18 @@ type Notifier interface {
 	NotifyNewMail(accountEmail string, mail []NewMail)
 }
 
+// StopTimeout bounds how long Stop waits for a cancelled sync goroutine to
+// finish. Cancellation tears the IMAP connection down and aborts any dial, so
+// the loop normally exits within milliseconds; the bound only guards against
+// a stuck syscall, and a stop that hits it is logged.
+const StopTimeout = 15 * time.Second
+
+// task is one running per-account sync goroutine.
+type task struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 // Manager owns the per-account sync goroutines so they can be cancelled on
 // removal or restarted on demand.
 type Manager struct {
@@ -96,43 +108,62 @@ type Manager struct {
 	emitter  Emitter
 	notifier Notifier
 	mu       gosync.Mutex
-	cancels  map[string]context.CancelFunc
+	tasks    map[string]*task
 }
 
 // NewManager creates an empty manager.
 func NewManager(st *store.Store, emitter Emitter, notifier Notifier) *Manager {
-	return &Manager{store: st, emitter: emitter, notifier: notifier, cancels: map[string]context.CancelFunc{}}
+	return &Manager{store: st, emitter: emitter, notifier: notifier, tasks: map[string]*task{}}
 }
 
-// Start spawns (or respawns) the sync goroutine for an account.
+// Start spawns (or respawns) the sync goroutine for an account. A running
+// goroutine for the same account is stopped and joined first, so two loops
+// never write the same account's rows at once.
 func (m *Manager) Start(account accounts.Account) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if cancel, ok := m.cancels[account.ID]; ok {
-		cancel()
-	}
+	m.Stop(account.ID)
 	ctx, cancel := context.WithCancel(context.Background())
-	m.cancels[account.ID] = cancel
-	go m.accountLoop(ctx, account)
+	t := &task{cancel: cancel, done: make(chan struct{})}
+	m.mu.Lock()
+	m.tasks[account.ID] = t
+	m.mu.Unlock()
+	go func() {
+		defer close(t.done)
+		m.accountLoop(ctx, account)
+	}()
 }
 
-// Stop cancels and forgets the sync goroutine for an account.
+// Stop cancels the sync goroutine for an account and waits for it to exit,
+// so a caller that deletes the account's data afterwards (RemoveAccount)
+// cannot race a store write the old loop was about to make.
 func (m *Manager) Stop(accountID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if cancel, ok := m.cancels[accountID]; ok {
-		cancel()
-		delete(m.cancels, accountID)
+	t, ok := m.tasks[accountID]
+	if ok {
+		delete(m.tasks, accountID)
+	}
+	m.mu.Unlock()
+	if !ok {
+		return
+	}
+	t.cancel()
+	select {
+	case <-t.done:
+	case <-time.After(StopTimeout):
+		slog.Warn("sync goroutine did not stop in time", "accountId", accountID)
 	}
 }
 
-// StopAll cancels every sync goroutine (application shutdown).
+// StopAll cancels every sync goroutine and waits for them (application
+// shutdown, before the store closes).
 func (m *Manager) StopAll() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id, cancel := range m.cancels {
-		cancel()
-		delete(m.cancels, id)
+	ids := make([]string, 0, len(m.tasks))
+	for id := range m.tasks {
+		ids = append(ids, id)
+	}
+	m.mu.Unlock()
+	for _, id := range ids {
+		m.Stop(id)
 	}
 }
 
@@ -192,9 +223,10 @@ func (m *Manager) runOnce(ctx context.Context, log *slog.Logger, account account
 		return err
 	}
 	defer session.Logout()
-	// A cancelled context (account removed, sync restarted) tears the
-	// connection down so a blocking IDLE returns promptly.
-	stop := context.AfterFunc(ctx, session.Logout)
+	// A cancelled context (account removed, sync restarted) drops the
+	// connection so a blocking IDLE returns promptly; the deferred Logout
+	// then finds it closed and is a no-op.
+	stop := context.AfterFunc(ctx, session.Close)
 	defer stop()
 
 	remote, err := session.ListFoldersWithRoles()

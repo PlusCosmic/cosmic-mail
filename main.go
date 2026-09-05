@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"embed"
+	"io/fs"
 	"log/slog"
 	"os"
 
@@ -27,7 +28,10 @@ import (
 	mailsync "cosmicmail/internal/sync"
 )
 
-// The SvelteKit static build (frontend/dist) is embedded into the binary.
+// The SvelteKit static build (frontend/dist/app) is embedded into the binary.
+// The pattern is rooted at frontend/dist, whose tracked .gitkeep keeps it
+// matching on a checkout that has not built the frontend yet, so go vet /
+// go test never fail on "no matching files".
 //
 //go:embed all:frontend/dist
 var assets embed.FS
@@ -105,7 +109,7 @@ func main() {
 			application.NewService(service),
 		},
 		Assets: application.AssetOptions{
-			Handler: application.AssetFileServerFS(assets),
+			Handler: application.AssetFileServerFS(frontendAssets()),
 		},
 		Linux: application.LinuxOptions{
 			ProgramName:                   desktop.WindowClass,
@@ -179,6 +183,18 @@ func main() {
 		slog.Error("application failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// frontendAssets is the embedded SvelteKit bundle. On a checkout with no
+// frontend build it is empty, which only matters to a binary someone runs
+// without `npm run build` — every asset request then 404s.
+func frontendAssets() fs.FS {
+	sub, err := fs.Sub(assets, "frontend/dist/app")
+	if err != nil {
+		slog.Warn("frontend bundle missing from the binary; run npm run build in frontend/", "error", err)
+		return assets
+	}
+	return sub
 }
 
 // setupTray keeps one tray icon and its menu attached for the lifetime of

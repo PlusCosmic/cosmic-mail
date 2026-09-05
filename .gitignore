@@ -49,8 +49,7 @@ vite.config.ts.timestamp-*
 
 # Frontend (moved under frontend/ for Wails)
 frontend/node_modules/
-frontend/dist/*
-!frontend/dist/.gitkeep
+frontend/dist/app/
 frontend/.svelte-kit/
 frontend/package/
 frontend/vite.config.js.timestamp-*

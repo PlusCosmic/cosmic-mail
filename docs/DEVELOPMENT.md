@@ -21,7 +21,7 @@ COSMIC_MAIL_LIVE_TESTS=1 go test -tags gtk3 ./internal/autoconfig/   # live-netw
 npm run check          # svelte-check — must be 0 errors
 npm run build          # static build incl. prerender — must pass
 npm test               # pure frontend logic tests (node:test)
-npm run promote:local  # verify, build, and manually promote the launcher-visible daily build
+npm run promote:local  # = scripts/promote-local.sh: verify, build, and promote the daily build
 ```
 
 Every Go command needs `-tags gtk3` (the root `Taskfile.yml` defaults it for `wails3`
@@ -35,7 +35,8 @@ promotion policy.
 Build modes: `wails3 dev` and `wails3 task build DEV=true` compile without the `production`
 tag, which keeps the automation bridge and the `COSMIC_MAIL_EXTRA_CA` /
 `COSMIC_MAIL_TEST_IMAP_PASSWORD` hooks in (`internal/buildinfo`). `wails3 task build` sets
-`production`, compiling them out. Both embed `frontend/dist`; there is no separate
+`production`, compiling them out. Both embed `frontend/dist/app` (the tracked `frontend/dist/.gitkeep`
+keeps the Go checks working before a frontend build); there is no separate
 "dev-mode binary that needs a Vite server" — only `wails3 dev` uses the dev server, via
 `FRONTEND_DEVSERVER_URL`.
 

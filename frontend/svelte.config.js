@@ -12,9 +12,13 @@ const config = {
     alias: { $bindings: "./bindings" },
     adapter: adapter({
       // Wails embeds frontend/dist (see main.go); `build/` is the Wails
-      // build-asset directory at the repository root.
-      pages: "dist",
-      assets: "dist",
+      // build-asset directory at the repository root. The bundle goes one
+      // level down because adapter-static empties its output directory on
+      // every build, and Go's embed needs the tracked frontend/dist/.gitkeep
+      // to survive so the Go checks work on a checkout with no frontend
+      // build.
+      pages: "dist/app",
+      assets: "dist/app",
       fallback: "index.html",
     }),
   },

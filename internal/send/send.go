@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/mail"
 	"strings"
 	"time"
@@ -84,7 +85,14 @@ func Send(ctx context.Context, account accounts.Account, input models.SendMessag
 	if err := client.SendMail(built.From, built.Recipients, bytes.NewReader(built.Raw)); err != nil {
 		return fmt.Errorf("sending message through %s: %w", account.SmtpHost, err)
 	}
-	return client.Quit()
+	// SMTP acceptance of DATA completes the command: the message is committed
+	// on the server. A server that drops the connection or answers QUIT
+	// oddly afterwards must not turn into a "send failed" toast, or a retry
+	// would deliver a duplicate.
+	if err := client.Quit(); err != nil {
+		slog.Debug("SMTP QUIT after a successful send failed", "host", account.SmtpHost, "error", err)
+	}
+	return nil
 }
 
 // Build constructs the outgoing message. All address and message headers are

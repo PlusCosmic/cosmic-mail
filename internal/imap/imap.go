@@ -128,10 +128,21 @@ func Connect(ctx context.Context, account accounts.Account) (*Session, error) {
 		UnilateralDataHandler: handler,
 	}
 	addr := fmt.Sprintf("%s:%d", account.ImapHost, account.ImapPort)
-	c, err := imapclient.DialTLS(addr, opts)
+	// Dial and handshake under ctx so a cancelled sync goroutine (account
+	// removed, sync restarted) never sits in a 30-second connect timeout.
+	raw, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to %s: %w", addr, err)
 	}
+	tlsCfg := opts.TLSConfig.Clone()
+	tlsCfg.ServerName = account.ImapHost
+	tlsCfg.NextProtos = []string{"imap"}
+	tlsConn := tls.Client(raw, tlsCfg)
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, fmt.Errorf("TLS handshake with %s: %w", account.ImapHost, err)
+	}
+	c := imapclient.New(tlsConn, opts)
 	s.c = c
 	if err := c.WaitGreeting(); err != nil {
 		c.Close()
@@ -165,12 +176,45 @@ func Connect(ctx context.Context, account accounts.Account) (*Session, error) {
 	return s, nil
 }
 
-// Logout ends the session, best effort.
+// logoutTimeout bounds the polite LOGOUT round trip; the connection is
+// closed regardless once it elapses.
+const logoutTimeout = 5 * time.Second
+
+// Close drops the connection without a LOGOUT. Used when a sync goroutine is
+// cancelled: a polite LOGOUT would queue behind a running IDLE and wait for
+// it, whereas closing the socket ends the IDLE (and any blocking read)
+// immediately.
+func (s *Session) Close() {
+	if s == nil || s.c == nil {
+		return
+	}
+	_ = s.c.Close()
+}
+
+// Logout ends the session, best effort: a polite LOGOUT when the connection
+// is still up, then Close. Safe to call more than once and on a connection
+// the peer already dropped — a cancelled sync goroutine calls it from the
+// context's AfterFunc and again from its own defer, and a LOGOUT sent into a
+// dead socket must never block either of them.
 func (s *Session) Logout() {
 	if s == nil || s.c == nil {
 		return
 	}
-	_ = s.c.Logout().Wait()
+	select {
+	case <-s.c.Closed():
+		_ = s.c.Close()
+		return
+	default:
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = s.c.Logout().Wait()
+	}()
+	select {
+	case <-done:
+	case <-time.After(logoutTimeout):
+	}
 	_ = s.c.Close()
 }
 
