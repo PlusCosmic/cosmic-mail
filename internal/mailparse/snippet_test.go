@@ -167,7 +167,7 @@ func TestHTMLToTextKeepsBareLessThanSigns(t *testing.T) {
 	if got := HTMLToText("<p>1 < 2 and <3 sweet</p>"); got != "1 < 2 and <3 sweet\n" {
 		t.Fatalf("%q", got)
 	}
-	if got := HTMLToText("x <br/>y</p><!-- c --> z"); got != "x \ny\n z" && got != "x\ny\n z" {
+	if got := HTMLToText("x <br/>y</p><!-- c --> z"); got != "x\ny\nz" {
 		t.Fatalf("%q", got)
 	}
 	if got := HTMLToText("trailing <"); got != "trailing <" {
