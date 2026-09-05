@@ -64,7 +64,7 @@ the folder picker for **move**. `CommandPalette.svelte` renders it; `palette.ts`
 | **body cache** | The portion of the local cache containing a message's fetched and parsed body. An explicitly cached empty body is distinct from a body that has not been fetched. |
 | **body fetch** | Retrieval of a full message with `BODY.PEEK[]` when its body is not cached. It must not mark the message read. |
 | **body prefetch** | Bounded, best-effort background body fetching for recent or unread inbox messages so likely selections open immediately. It follows the same non-marking and size-limit rules as foreground body fetches. |
-| **sync engine** | The Rust subsystem that runs one background task per account, maintains the local cache, emits frontend events, and drives new-mail notifications. |
+| **sync engine** | The Go subsystem (`internal/sync`) that runs one background goroutine per account, maintains the local cache, emits frontend events, and drives new-mail notifications. |
 | **sync cycle** | One account refresh pass: connect, discover folders, obtain server status, reconcile cache validity, fetch new metadata, emit updates, and then return to waiting on the inbox. |
 | **initial sync** | The first sync of a folder or a sync after cache invalidation. It fetches up to the newest 200 existing envelopes and suppresses new-mail notifications. |
 | **incremental sync** | A later sync that fetches messages above the highest cached IMAP UID instead of repeating the initial range. |
@@ -77,11 +77,11 @@ the folder picker for **move**. `CommandPalette.svelte` renders it; `palette.ts`
 
 | term | definition |
 |---|---|
-| **frontend** | The Svelte application under `src/`, responsible for the shell, interaction state, message rendering, and typed calls into Tauri. |
-| **backend** | The Rust application core under `src-tauri/`, responsible for accounts, secrets, storage, network protocols, sync, notifications, and desktop lifecycle. |
-| **wire type** | A camelCase-serialized data shape exchanged between the Rust backend and TypeScript frontend. `ARCHITECTURE.md` is its binding contract. |
-| **command** | A typed frontend-to-backend Tauri invocation, such as `list_messages` or `mark_read`. |
-| **event** | A backend-to-frontend Tauri emission used for theme, message, and sync-state updates. |
+| **frontend** | The Svelte application under `frontend/`, responsible for the shell, interaction state, message rendering, and typed calls into the Go service through the generated Wails bindings. |
+| **backend** | The Go application core (`main.go`, `app.go`, `internal/`), responsible for accounts, secrets, storage, network protocols, sync, notifications, and desktop lifecycle. |
+| **wire type** | A camelCase-serialized data shape exchanged between the Go backend and TypeScript frontend. `ARCHITECTURE.md` is its binding contract. |
+| **command** | A typed frontend-to-backend call, such as `ListMessages` or `MarkRead`: a method on the `App` service, exposed to TypeScript by the generated bindings. |
+| **event** | A backend-to-frontend Wails event used for theme, message, and sync-state updates. |
 | **sync state** | An account's current `idle`, `syncing`, or `error` status exposed to the frontend. `idle` means no sync pass is active; background IDLE waiting may still be running. |
 | **process owner** | The single Cosmic Mail process for a desktop session that owns sync tasks, notification listeners, and the main window. Later launches activate this process instead of creating another engine. |
 | **background service** | The systemd user service installed by a promoted build. It starts the process owner hidden and keeps it running for the graphical session. |

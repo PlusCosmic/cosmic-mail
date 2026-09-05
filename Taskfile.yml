@@ -1,0 +1,39 @@
+version: '3'
+
+vars:
+  APP_NAME: "cosmic-mail"
+  BIN_DIR: "bin"
+  PACKAGE_MANAGER: '{{.PACKAGE_MANAGER | default "npm"}}'
+  VITE_PORT: '{{.WAILS_VITE_PORT | default 9245}}'
+  # Cosmic Mail only targets Linux (omarchy), but the Wails Taskfiles dispatch
+  # on GOOS, so keep the variable.
+  GOOS: '{{.GOOS | default OS}}'
+  # Linux links webkit2gtk-4.1 (the GTK3 backend), the same runtime
+  # dependency the Tauri build had. Wails 3 otherwise needs webkitgtk-6.0
+  # (the GTK4 flavour). Override with `wails3 build EXTRA_TAGS=` for GTK4.
+  EXTRA_TAGS: '{{.EXTRA_TAGS | default "gtk3"}}'
+
+includes:
+  common: ./build/Taskfile.yml
+  linux: ./build/linux/Taskfile.yml
+
+tasks:
+  build:
+    summary: Builds the application
+    cmds:
+      - task: "{{.GOOS}}:build"
+
+  package:
+    summary: Packages a production build of the application
+    cmds:
+      - task: "{{.GOOS}}:package"
+
+  run:
+    summary: Runs the application
+    cmds:
+      - task: "{{.GOOS}}:run"
+
+  dev:
+    summary: Runs the application in development mode
+    cmds:
+      - wails3 dev -config ./build/config.yml -port {{.VITE_PORT}}

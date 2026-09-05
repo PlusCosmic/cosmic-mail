@@ -1,0 +1,53 @@
+# nfpm configuration for the deb/rpm/archlinux packages `wails3 task package`
+# builds. The Arch package that actually ships (PlusCosmic/packages) has its own
+# PKGBUILD; this file exists so the Wails tooling keeps working.
+# Make sure to check the documentation at https://nfpm.goreleaser.com
+
+name: "cosmic-mail"
+arch: ${GOARCH}
+platform: "linux"
+version: "0.1.0"
+section: "default"
+priority: "extra"
+maintainer: ${GIT_COMMITTER_NAME} <${GIT_COMMITTER_EMAIL}>
+description: "A native Linux mail client for omarchy"
+vendor: "PlusCosmic"
+homepage: "https://github.com/PlusCosmic/cosmic-mail"
+license: "All rights reserved"
+release: "1"
+
+contents:
+  - src: "./bin/cosmic-mail"
+    dst: "/usr/local/bin/cosmic-mail"
+  - src: "./build/linux/icons/128x128.png"
+    dst: "/usr/share/icons/hicolor/128x128/apps/cosmic-mail.png"
+  - src: "./build/appicon.png"
+    dst: "/usr/share/icons/hicolor/512x512/apps/cosmic-mail.png"
+  - src: "./build/linux/cosmic-mail.desktop"
+    dst: "/usr/share/applications/dev.pluscosmic.mail.desktop"
+
+# Linux builds pass the gtk3 tag (see Taskfile.yml), so the binary links
+# GTK3 + WebKit2GTK 4.1 and the packages must depend on that stack, not the
+# GTK4 + WebKitGTK 6.0 one Wails defaults to. Credentials live in the Secret
+# Service (libsecret over D-Bus); notifications and the tray speak D-Bus too.
+depends:
+  - libgtk-3-0
+  - libwebkit2gtk-4.1-0
+
+overrides:
+  rpm:
+    depends:
+      - gtk3
+      - webkit2gtk4.1
+  archlinux:
+    depends:
+      - gtk3
+      - webkit2gtk-4.1
+
+scripts:
+  postinstall: "./build/linux/nfpm/scripts/postinstall.sh"
+
+# If the build ever drops the gtk3 tag (Wails removes it in v3.1), switch the
+# depends/overrides above to the GTK4 + WebKitGTK 6.0 stack:
+#   libgtk-4-1 + libwebkitgtk-6.0-4 (deb), gtk4 + webkitgtk6.0 (rpm),
+#   gtk4 + webkitgtk-6.0 (archlinux).

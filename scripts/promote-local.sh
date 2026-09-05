@@ -129,26 +129,34 @@ EOF
   exit 1
 fi
 
-version="$(node -e "const fs=require('fs'); process.stdout.write(JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')).version)")"
+version="$(sed -n 's/^  version: *"\([^"]*\)".*/\1/p' build/config.yml)"
+if [[ -z "$version" ]]; then
+  echo "no version in build/config.yml" >&2
+  exit 1
+fi
 revision="$(git rev-parse --short=10 HEAD 2>/dev/null || printf 'no-git')"
 release_id="v${version}-${revision}"
 if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
   release_id+="-dirty-$(date -u +%Y%m%dT%H%M%SZ)"
 fi
 
-npm run check
-npm run build
 (
-  cd src-tauri
-  cargo check
-  cargo clippy -- -D warnings
-  cargo test --lib
-  cargo fmt --check
+  cd frontend
+  npm run check
+  npm run build
+  npm test
 )
+if [[ -n "$(gofmt -l .)" ]]; then
+  echo "gofmt reports unformatted files:" >&2
+  gofmt -l . >&2
+  exit 1
+fi
+go vet -tags gtk3 ./...
+go test -tags gtk3 ./...
 
-# --no-bundle produces a standalone application binary with the frontend embedded,
-# without downloading AppImage tooling or installing system packages.
-npm run tauri -- build --no-bundle
+# A production build embeds the frontend and compiles the development-only
+# automation bridge and test hooks out.
+go build -tags gtk3,production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/cosmic-mail .
 
 release_dir="$releases_dir/$release_id"
 if [[ -e "$release_dir" ]]; then
@@ -156,8 +164,8 @@ if [[ -e "$release_dir" ]]; then
   exit 1
 fi
 
-install -Dm755 src-tauri/target/release/cosmic-mail "$release_dir/cosmic-mail"
-install -Dm644 src-tauri/icons/128x128.png "$release_dir/cosmic-mail.png"
+install -Dm755 bin/cosmic-mail "$release_dir/cosmic-mail"
+install -Dm644 build/linux/icons/128x128.png "$release_dir/cosmic-mail.png"
 release_pending=true
 
 mkdir -p "$applications_dir"

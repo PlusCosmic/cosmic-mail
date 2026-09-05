@@ -1,8 +1,8 @@
 name: e2e
 
-# End-to-end tests: drive the real app (WebKitGTK under Xvfb) through the debug
-# automation bridge against a hermetic GreenMail fixture. No real mailbox, no
-# secrets. See e2e/README.md.
+# End-to-end tests: drive the real app (WebKitGTK under Xvfb) through the
+# development-build automation bridge against a hermetic GreenMail fixture. No
+# real mailbox, no secrets. See e2e/README.md.
 
 on:
   push:
@@ -19,34 +19,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Wails 3 links webkit2gtk-4.1 with the gtk3 build tag, matching the
+      # Arch package.
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libayatana-appindicator3-dev \
-            libsoup-3.0-dev \
-            xvfb \
-            dbus-x11
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev xvfb dbus-x11
 
       - run: npm ci
+        working-directory: frontend
 
       - name: Start + seed the GreenMail fixture
         run: npm run e2e:env:up
+        working-directory: frontend
 
-      # Debug profile -> the automation bridge is compiled in; --no-bundle skips
-      # deb/appimage packaging; the frontend is built + embedded by tauri build.
-      - name: Build debug app binary
-        run: npm run tauri build -- --debug --no-bundle
+      # Development build (no `production` tag) -> the automation bridge and
+      # the fixture env hooks are compiled in; the frontend is built + embedded.
+      - name: Build development app binary
+        run: |
+          npm run build
+          cd .. && go build -tags gtk3 -buildvcs=false -o bin/cosmic-mail .
+        working-directory: frontend
 
       - name: Run E2E suite (headless)
         run: dbus-run-session -- xvfb-run -a e2e/ci-run.sh
@@ -59,3 +59,4 @@ jobs:
       - name: Tear down the fixture
         if: always()
         run: npm run e2e:env:down
+        working-directory: frontend

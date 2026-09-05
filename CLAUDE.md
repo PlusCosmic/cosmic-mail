@@ -3,9 +3,9 @@
 This file is shared by Claude and Codex. `AGENTS.md` is a symlink to this file, so
 keep instructions tool-agnostic unless a section explicitly names a tool.
 
-Native Linux mail client for the omarchy desktop. Tauri 2 + Rust (src-tauri/) +
-Svelte 5/TS (src/). IMAP + Gmail (OAuth2→XOAUTH2), mako notifications, live omarchy
-theming.
+Native Linux mail client for the omarchy desktop. Wails 3 + Go (`main.go`, `app.go`,
+`internal/`) + Svelte 5/TS (`frontend/`). IMAP + Gmail (OAuth2→XOAUTH2), mako
+notifications, live omarchy theming.
 
 **Start with `docs/README.md`** (2-min overview + reading order). Non-negotiables:
 
@@ -13,12 +13,14 @@ theming.
   type, and schema. Extend it before changing the API surface. All wire types serialize
   camelCase.
 - Read `docs/GOTCHAS.md` before touching deps, TLS/auth, watchers, or discovery — it
-  exists because each entry already burned us once. Crate APIs here are newer than
-  model memory: read vendored sources in `~/.cargo/registry/src/` before writing
-  dep-facing code.
-- Definition of done: `cargo check && cargo clippy && cargo test --lib && cargo fmt`
-  (src-tauri/) and `npm run check && npm run build` (root) all green.
-- No `unwrap()` outside tests/main; `anyhow` internally, `AppError` at command
+  exists because each entry already burned us once. Module APIs here are newer than
+  model memory: read the sources in `~/go/pkg/mod/` before writing dep-facing code.
+- Every Go command takes `-tags gtk3` (Wails 3 links GTK4/webkitgtk-6.0 otherwise).
+- Definition of done: `gofmt -l .` empty, `go vet -tags gtk3 ./...`,
+  `go test -tags gtk3 ./...`, `wails3 generate bindings -ts -i -clean=true -d
+  frontend/bindings -f "-tags gtk3"` leaving no diff, and `npm run check && npm run build
+  && npm test` (frontend/) all green.
+- No panics outside tests/main; wrap errors with `%w`, plain `error` at service
   boundaries; never log or persist secrets (keyring only).
 - Don't run git commits unless asked; the session owner supervises commits.
 

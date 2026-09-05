@@ -30,40 +30,46 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Wails 3 links webkit2gtk-4.1 with the gtk3 build tag; every Go step
+      # below passes it, matching what the Arch package builds.
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libayatana-appindicator3-dev \
-            libsoup-3.0-dev
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
 
       - run: npm ci
+        working-directory: frontend
 
       # The definition of done from CLAUDE.md, in the same order. A change that
       # compiles but fails these must not reach a client as an upgrade.
       - run: npm run check
+        working-directory: frontend
       - run: npm run build
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
 
-      - run: cargo check
-        working-directory: src-tauri
-      - run: cargo clippy -- -D warnings
-        working-directory: src-tauri
-      - run: cargo test --lib
-        working-directory: src-tauri
-      - run: cargo fmt --check
-        working-directory: src-tauri
+      # frontend/bindings is generated from app.go and internal/models and is
+      # committed so the frontend checks above need no Go toolchain. A stale
+      # copy means the frontend was checked against the wrong API.
+      - name: Check the committed bindings are current
+        run: |
+          go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
+          wails3 generate bindings -ts -i -clean=true -d frontend/bindings -f "-tags gtk3"
+          git diff --exit-code -- frontend/bindings
+
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet -tags gtk3 ./...
+      - run: go test -tags gtk3 ./...
+      - run: go build -tags gtk3,production -trimpath -buildvcs=false -ldflags="-w -s" -o bin/cosmic-mail .
 
   publish:
     needs: verify
@@ -102,9 +108,11 @@ jobs:
           # GITHUB_TOKEN cannot dispatch across repositories.
           GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
         run: |
-          # tauri.conf.json is the version of record, matching
-          # scripts/promote-local.sh. package.json is still "tauri-app".
-          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          # build/config.yml is the version of record, matching
+          # scripts/promote-local.sh; frontend/package.json tracks it but is
+          # not what the packaging repository reads.
+          version=$(sed -n 's/^  version: *"\([^"]*\)".*/\1/p' build/config.yml)
+          test -n "$version" || { echo "no version in build/config.yml" >&2; exit 1; }
 
           gh api repos/PlusCosmic/packages/dispatches \
             -f event_type=publish \
