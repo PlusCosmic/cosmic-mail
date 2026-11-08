@@ -5,6 +5,22 @@ Builds reach other machines through a hosted Arch package repository: every merg
 "daily promotion" script went away with the Tauri build; for a local build, run
 `cargo build --release` and use `target/release/cosmic-mail`.)
 
+## Versions
+
+Every build on `main` gets its own version, `MAJOR.MINOR.PATCH`, computed by
+`scripts/version.sh`: `MAJOR.MINOR` comes from `Cargo.toml`'s `version` (its patch digit
+is ignored), and `PATCH` is the number of commits reachable from the built commit. Every
+merge to `main` adds commits, so the patch only ever grows, and every workflow (the
+Windows release, the Arch package) computes the same version for the same commit with no
+stored counter and no bot commits. Bump `MAJOR.MINOR` in `Cargo.toml` by hand for a
+release people should notice (the patch keeps counting from the commit total).
+
+The build embeds the version: CI and the packages set `COSMIC_MAIL_VERSION`, which
+`cosmic_mail::VERSION` reads (falling back to `Cargo.toml`'s version for local builds),
+the Settings dialog's About section shows, and `build.rs` writes into the Windows exe's
+version info. The script needs full history (`fetch-depth: 0` in Actions; it refuses a
+shallow clone).
+
 A release binary is a single self-contained executable: the UI is native Rune code
 compiled into it, with no embedded web assets, webview or runtime dependencies beyond
 `libxkbcommon`, `wayland` (or X11) and a Vulkan driver.
@@ -21,7 +37,8 @@ hosted on Backblaze B2. Application self-update stays disabled.
 and a headless `--snap` render of the demo mailbox (on lavapipe), with Rune's build
 dependencies installed. Only if all of that passes does it send a `repository_dispatch`
 to [PlusCosmic/packages], carrying the package name, this repository, the merged commit
-SHA, and the version from `Cargo.toml` (the version of record).
+SHA, and the version from `scripts/version.sh` (see [Versions](#versions)), which becomes
+the package's `pkgver`.
 
 The dispatch also refuses to run for anything but the current tip of `main`. `pkgrel`
 is the packaging repository's run number, so *any* dispatch outranks every package
@@ -52,9 +69,9 @@ icons, and the systemd user unit under `/usr/lib/systemd/user/`.
 > a git dependency). The desktop entry should keep `StartupWMClass=cosmic-mail`, the
 > window's app id.
 
-`pkgrel` is the packaging repository's Actions run number rather than a hand-maintained
-counter, so each build is an upgrade to pacman even when the `Cargo.toml` version is
-unchanged. Bump that version for anything users should recognise as a release.
+`pkgver` grows with every merge (the commit count), and `pkgrel` is the packaging
+repository's Actions run number, so each build is an upgrade to pacman. The PKGBUILD
+exports `COSMIC_MAIL_VERSION="$pkgver"` so the binary reports the same version.
 
 ### Setup
 
@@ -101,10 +118,9 @@ scripts/build-local.sh cosmic-mail ~/Projects/Mail
   that breaks the Windows build fails here. Each job keeps its own Rust cache; caches
   saved on `main` are what PRs and later `main` pushes restore, so a cold cache (the
   first run after a dependency bump) costs ~15 min and a warm one a few minutes.
-- **Every push to `main`**: once both jobs pass, the `release` job publishes those files as a GitHub Release
-  tagged `v<Cargo.toml version>-build.<run number>`, marked latest. Bump the version in
-  `Cargo.toml` for anything users should read as a new release; the build number alone
-  keeps tags unique and ordered.
+- **Every push to `main`**: once both jobs pass, the `release` job publishes those files
+  as a GitHub Release tagged `v<version>` (see [Versions](#versions)), marked latest. A
+  re-run finds the release already there and publishes nothing.
 
 The installer is per-user (`PrivilegesRequired=lowest`: installs under
 `%LOCALAPPDATA%\Programs`, no UAC prompt), adds a Start-menu entry, optionally a

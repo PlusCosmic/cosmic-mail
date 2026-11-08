@@ -806,6 +806,15 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                         font(12.0, 400.0),
                         p.muted,
                     ),
+                ))
+                .child(section(
+                    "About",
+                    label(
+                        format!("Cosmic Mail {}", crate::VERSION),
+                        font(12.0, 400.0),
+                        p.muted,
+                    )
+                    .key("about-version"),
                 )),
         )
 }

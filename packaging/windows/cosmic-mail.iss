@@ -1,7 +1,7 @@
 ; Inno Setup script for the Windows installer.
 ;
 ; Built by .github/workflows/windows.yml:
-;   iscc /DAppVersion=0.1.0 /DBuild=42 /DSourceExe=...\cosmic-mail.exe
+;   iscc /DAppVersion=0.1.74 /DSourceExe=...\cosmic-mail.exe
 ;        /DOutputDir=...\dist packaging\windows\cosmic-mail.iss
 ;
 ; A per-user install (no administrator prompt): the app keeps its mail,
@@ -9,9 +9,6 @@
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
-#endif
-#ifndef Build
-  #define Build "0"
 #endif
 #ifndef SourceExe
   #define SourceExe "..\..\target\release\cosmic-mail.exe"
@@ -25,8 +22,9 @@
 AppId={{6E0C1A55-2F3B-4D5B-9C8E-7A4C2B9F1D30}
 AppName=Cosmic Mail
 AppVersion={#AppVersion}
-AppVerName=Cosmic Mail {#AppVersion} (build {#Build})
-VersionInfoVersion={#AppVersion}.{#Build}
+AppVerName=Cosmic Mail {#AppVersion}
+; Windows file versions have four parts: MAJOR.MINOR.PATCH.0.
+VersionInfoVersion={#AppVersion}.0
 AppPublisher=PlusCosmic
 AppPublisherURL=https://github.com/PlusCosmic/cosmic-mail
 AppSupportURL=https://github.com/PlusCosmic/cosmic-mail/issues
@@ -38,7 +36,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
-OutputBaseFilename=cosmic-mail-{#AppVersion}-build{#Build}-windows-x64-setup
+OutputBaseFilename=cosmic-mail-{#AppVersion}-windows-x64-setup
 SetupIconFile=..\..\assets\icon.ico
 UninstallDisplayIcon={app}\cosmic-mail.exe
 LicenseFile=..\..\LICENSE

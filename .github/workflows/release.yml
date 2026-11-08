@@ -69,6 +69,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # scripts/version.sh counts commits, so it needs the whole history.
+          fetch-depth: 0
 
       - name: Refuse anything but the current tip of main
         run: |
@@ -101,8 +104,9 @@ jobs:
           # GITHUB_TOKEN cannot dispatch across repositories.
           GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
         run: |
-          # Cargo.toml's package version is the version of record.
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          # MAJOR.MINOR from Cargo.toml, PATCH = commit count: the same
+          # version the Windows release publishes for this commit.
+          version=$(scripts/version.sh)
 
           gh api repos/PlusCosmic/packages/dispatches \
             -f event_type=publish \
