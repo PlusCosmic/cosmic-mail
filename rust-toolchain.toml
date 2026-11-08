@@ -1,0 +1,4 @@
+# Rune pins this toolchain; building it with an older one fails.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]

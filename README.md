@@ -4,7 +4,8 @@ Cosmic Mail is a native Linux mail client built for the
 [Omarchy](https://omarchy.org) desktop. It combines a keyboard-driven interface with
 live Omarchy theming, desktop notifications, and a local-first mail cache.
 
-The application is built with Go, Wails 3, Svelte 5, and TypeScript. Gmail and
+The application is written in Rust, with a native GPU-rendered interface built on
+[Rune](https://github.com/anomalyco/rune) (no webview). Gmail and
 password-based IMAP accounts share the same IMAP sync engine; Gmail authenticates with
 OAuth 2.0 rather than an app password.
 
@@ -36,44 +37,34 @@ Open work is tracked in [GitHub issues](https://github.com/PlusCosmic/cosmic-mai
 
 ## Try it from source
 
-Cosmic Mail currently targets Omarchy on Arch Linux. You will need Go 1.25+, Node.js,
-the `wails3` CLI, the `webkit2gtk-4.1` and `gtk3` development packages, and a running
-Secret Service implementation.
+Cosmic Mail currently targets Omarchy on Arch Linux. You will need Rust (the pinned
+toolchain in `rust-toolchain.toml` installs itself through rustup), a Vulkan driver,
+and a running Secret Service implementation.
 
 ```sh
+sudo pacman -S libxkbcommon wayland vulkan-icd-loader   # plus your GPU's Vulkan driver
 git clone https://github.com/PlusCosmic/cosmic-mail.git
 cd cosmic-mail
-go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16
-(cd frontend && npm install)
-wails3 dev
+cargo run
 ```
 
-Gmail also requires your own Google OAuth desktop client credentials. The
+`cargo run -- --background` starts without a window (tray and sync only). Gmail also
+requires your own Google OAuth desktop client credentials. The
 [setup guide](docs/SETUP.md) covers account configuration, local data, and keyboard
 shortcuts.
 
 ## Development
 
-The checks that gate a release, in the order the workflow runs them:
-
 ```sh
-cd frontend && npm run check && npm run build && npm test && cd ..
-wails3 generate bindings -ts -i -clean=true -d frontend/bindings -f "-tags gtk3"
-gofmt -l .                      # must print nothing
-go vet -tags gtk3 ./...
-go test -tags gtk3 ./...
-go build -tags gtk3,production -trimpath -ldflags="-w -s" -o bin/cosmic-mail .
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo run -- --snap out.png --scene default   # headless render of the demo mailbox
 ```
 
-`frontend/bindings` is generated from `app.go` and `internal/models` and is committed,
-so `npm run check` works without a Go toolchain; regenerate it whenever the service or a
-model changes (the workflow fails if it is stale). On Linux, Wails 3 defaults to
-GTK4/WebKitGTK 6.0; every Go command here passes `gtk3` to link against webkit2gtk-4.1
-instead, which is what the Arch package depends on.
-
 The [development guide](docs/DEVELOPMENT.md) has the complete workflow and subsystem
-test recipes. The [architecture contract](docs/ARCHITECTURE.md) documents every command,
-event, wire type, and database schema shared by the Go backend and Svelte frontend.
+test recipes. The [architecture contract](docs/ARCHITECTURE.md) documents every backend
+operation, event, wire type, and database schema the Rune UI relies on.
 
 ## Documentation
 

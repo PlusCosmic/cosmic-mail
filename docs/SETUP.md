@@ -5,11 +5,12 @@ artifacts and distro packages are planned for a later stage of the project.
 
 ## Requirements
 
-- Go 1.25+ and the `wails3` CLI (`go install -tags gtk3 github.com/wailsapp/wails/v3/cmd/wails3@v3.0.0-beta.16`)
-- Node.js and npm
-- Arch packages: `webkit2gtk-4.1` and `gtk3` (the tray speaks StatusNotifierItem over
-  D-Bus itself, so no AppIndicator library is needed)
+- Rust via rustup (the pinned 1.99.1 toolchain in `rust-toolchain.toml` installs on first build)
+- Arch packages: `libxkbcommon`, `wayland`, `vulkan-icd-loader`, and your GPU's Vulkan driver
+  (`vulkan-radeon`, `vulkan-intel`, `nvidia-utils`, ...)
 - A running Secret Service implementation for credential storage
+- Optional: the CaskaydiaMono or JetBrainsMono Nerd Font (Omarchy ships them); otherwise the
+  system monospace font is used
 
 Omarchy's default environment provides the expected Hyprland, Mako, and Secret Service
 integration.
@@ -19,9 +20,11 @@ integration.
 ```sh
 git clone https://github.com/PlusCosmic/cosmic-mail.git
 cd cosmic-mail
-(cd frontend && npm install)
-wails3 dev
+cargo run --release
 ```
+
+`--background` starts without a window (tray and sync only). Launching again while it runs
+shows and focuses the existing window instead of starting a second process.
 
 ## Account setup
 
@@ -51,8 +54,9 @@ save the credentials to `~/.config/cosmic-mail/google-oauth.json`:
 
 The client secret is optional for a desktop OAuth client. For development, the
 `COSMIC_MAIL_GOOGLE_CLIENT_ID` and `COSMIC_MAIL_GOOGLE_CLIENT_SECRET` environment
-variables override the JSON file. Packaged builds can bake in defaults at link time:
-`-ldflags "-X cosmicmail/internal/oauth.BakedClientID=… -X cosmicmail/internal/oauth.BakedClientSecret=…"`.
+variables override the JSON file. Packaged builds can provide defaults with
+`COSMIC_MAIL_BUILD_GOOGLE_CLIENT_ID` and `COSMIC_MAIL_BUILD_GOOGLE_CLIENT_SECRET` at
+compile time.
 
 Cosmic Mail opens an RFC 8252 loopback PKCE flow in the browser, then uses SASL XOAUTH2
 with Gmail's IMAP service. The OAuth refresh token is stored only in the Secret Service
@@ -65,17 +69,18 @@ Settings dialog; the command palette's "Open settings" entry opens it too. Escap
 changes save immediately.
 
 - **Always download remote images** — off by default. When on, HTML messages load HTTP(S) images
-  without the per-message "Load remote images" prompt. This relaxes **images only**: message
-  sanitization and iframe sandboxing stay on, and scripts, forms, and every other remote resource
-  remain blocked. Leave it off if you want tracking-pixel protection on a per-message basis.
+  without the per-message "Load remote images" prompt. This relaxes **images only**: HTML mail is
+  always rendered as styled text, so scripts, styles, forms, and every other remote resource are
+  never loaded. Leave it off if you want tracking-pixel protection on a per-message basis.
 
 Preferences are stored, without secrets, in `~/.config/cosmic-mail/settings.json`.
 
 ## System tray
 
-Desktop builds keep a tray icon available while Cosmic Mail runs in the background. Its menu can
-open/focus the existing window, restart sync for every account, or quit the process. On Linux the
-tray is menu-driven; clicking it opens the menu rather than directly activating the window.
+A tray icon stays available while Cosmic Mail runs in the background (where a StatusNotifier
+host such as waybar runs). Clicking it shows and focuses the window; its menu offers **Open
+Cosmic Mail**, **Sync now** (restart sync for every account), and **Quit**. Closing the window
+only hides it — mail keeps syncing and notifying until you quit from the tray.
 
 ## Keyboard shortcuts
 
@@ -83,8 +88,10 @@ tray is menu-driven; clicking it opens the menu rather than directly activating 
 |---|---|
 | `j` / `k` | select the next or previous message |
 | `gg` / `G` | jump to the first or last message |
-| `Enter` | open the selected message |
-| `Esc` | return to the message list |
+| `↓` / `↑` | same as `j` / `k` |
+| `Enter` | scroll the reader back to the top of the selected message |
+| `Space` / `Shift+Space` | page the reader down / up |
+| `Esc` | leave the focused control (back to list shortcuts) |
 | `/` | focus the header search field |
 | `Enter` (in search) | search the whole local cache for the typed text |
 | `Esc` (in search) | clear an active search and return to the normal view |
@@ -95,7 +102,7 @@ tray is menu-driven; clicking it opens the menu rather than directly activating 
 | `d` | delete the selected message (to Trash, or permanently when already in Trash) |
 | `f` | toggle the flag on the selected message |
 | `m` | move the selected message (opens a folder picker) |
-| `Ctrl+K` | open the command palette |
+| `Ctrl+K` | open the command palette (`↑`/`↓` or `Ctrl+N`/`Ctrl+P`, `Enter`, `Esc`) |
 | `Ctrl+Enter` | send from the compose dialog |
 | `1`, `2`, … | switch inbox or account view |
 
@@ -115,5 +122,6 @@ Search does not reach mail that has not been synced locally; server-side search 
 |---|---|
 | account settings, without secrets | `~/.config/cosmic-mail/accounts.json` |
 | global preferences, without secrets | `~/.config/cosmic-mail/settings.json` |
+| window layout (list/reader split) | `~/.config/cosmic-mail/ui.json` |
 | message cache | `~/.local/share/cosmic-mail/mail.db` |
 | IMAP passwords and OAuth refresh tokens | Secret Service keyring, service `dev.pluscosmic.mail` |

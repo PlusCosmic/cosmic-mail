@@ -3,25 +3,26 @@
 This file is shared by Claude and Codex. `AGENTS.md` is a symlink to this file, so
 keep instructions tool-agnostic unless a section explicitly names a tool.
 
-Native Linux mail client for the omarchy desktop. Wails 3 + Go (`main.go`, `app.go`,
-`internal/`) + Svelte 5/TS (`frontend/`). IMAP + Gmail (OAuth2→XOAUTH2), mako
-notifications, live omarchy theming.
+Native Linux mail client for the omarchy desktop. One Rust crate: the backend
+(`src/`, UI-agnostic) and a native GPU UI built with [Rune](https://github.com/anomalyco/rune)
+(`src/ui/`). IMAP + Gmail (OAuth2→XOAUTH2), mako notifications, live omarchy theming.
 
 **Start with `docs/README.md`** (2-min overview + reading order). Non-negotiables:
 
-- `docs/ARCHITECTURE.md` is the **binding contract** for every command, event, wire
-  type, and schema. Extend it before changing the API surface. All wire types serialize
-  camelCase.
-- Read `docs/GOTCHAS.md` before touching deps, TLS/auth, watchers, or discovery — it
-  exists because each entry already burned us once. Module APIs here are newer than
-  model memory: read the sources in `~/go/pkg/mod/` before writing dep-facing code.
-- Every Go command takes `-tags gtk3` (Wails 3 links GTK4/webkitgtk-6.0 otherwise).
-- Definition of done: `gofmt -l .` empty, `go vet -tags gtk3 ./...`,
-  `go test -tags gtk3 ./...`, `wails3 generate bindings -ts -i -clean=true -d
-  frontend/bindings -f "-tags gtk3"` leaving no diff, and `npm run check && npm run build
-  && npm test` (frontend/) all green.
-- No panics outside tests/main; wrap errors with `%w`, plain `error` at service
-  boundaries; never log or persist secrets (keyring only).
+- `docs/ARCHITECTURE.md` is the **binding contract** for every `Backend` method
+  (command), `AppEvent`, wire type, and schema. Extend it before changing the API
+  surface. Persisted JSON (accounts, settings) serializes camelCase.
+- Read `docs/GOTCHAS.md` before touching deps, TLS/auth, watchers, discovery, or Rune
+  layout — it exists because each entry already burned us once. Crate APIs here are
+  newer than model memory: read the sources in `~/.cargo/registry/src/` and Rune's
+  checkout in `~/.cargo/git/checkouts/rune-*/` (its `crates/rune/README.md` is the
+  manual) before writing dep-facing code. Rune is pinned by rev; the toolchain is
+  pinned by `rust-toolchain.toml`.
+- Definition of done: `cargo fmt --check && cargo clippy --all-targets -- -D warnings &&
+  cargo test` all green; for UI changes also render the affected scene headlessly
+  (`cargo run -- --snap out.png --scene NAME`) and look at it.
+- No `unwrap()` outside tests/main; `anyhow` internally, `AppError` at the `Backend`
+  boundary; never log or persist secrets (keyring only).
 - Don't run git commits unless asked; the session owner supervises commits.
 
 Dev commands, local state paths, and per-subsystem test recipes: `docs/DEVELOPMENT.md`.

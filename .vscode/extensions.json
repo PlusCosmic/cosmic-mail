@@ -1,6 +1,5 @@
 {
   "recommendations": [
-    "svelte.svelte-vscode",
-    "golang.go"
+    "rust-lang.rust-analyzer"
   ]
 }

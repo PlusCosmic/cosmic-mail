@@ -1,8 +1,9 @@
 name: e2e
 
-# End-to-end tests: drive the real app (WebKitGTK under Xvfb) through the
-# development-build automation bridge against a hermetic GreenMail fixture. No
-# real mailbox, no secrets. See e2e/README.md.
+# End-to-end tests: drive the real Rune UI over the real backend against a
+# hermetic GreenMail fixture (tests/e2e_greenmail.rs). Rune's headless runtime
+# draws and routes input without a window or GPU, so no display server is
+# needed. No real mailbox, no secrets. See e2e/README.md.
 
 on:
   push:
@@ -19,44 +20,28 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      # Wails 3 links webkit2gtk-4.1 with the gtk3 build tag, matching the
-      # Arch package.
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev xvfb dbus-x11
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libdbus-1-dev
 
-      - run: npm ci
-        working-directory: frontend
+      # The toolchain comes from rust-toolchain.toml (Rune pins it).
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Start + seed the GreenMail fixture
-        run: npm run e2e:env:up
-        working-directory: frontend
-
-      # Development build (no `production` tag) -> the automation bridge and
-      # the fixture env hooks are compiled in; the frontend is built + embedded.
-      - name: Build development app binary
         run: |
-          npm run build
-          cd .. && go build -tags gtk3 -buildvcs=false -o bin/cosmic-mail .
-        working-directory: frontend
+          docker compose -f e2e/docker-compose.yml up -d
+          node e2e/seed.mjs
 
-      - name: Run E2E suite (headless)
-        run: dbus-run-session -- xvfb-run -a e2e/ci-run.sh
-        env:
-          # Headless-WebKitGTK stability flags.
-          WEBKIT_DISABLE_DMABUF_RENDERER: "1"
-          WEBKIT_DISABLE_COMPOSITING_MODE: "1"
-          LIBGL_ALWAYS_SOFTWARE: "1"
+      # Debug profile: the COSMIC_MAIL_EXTRA_CA / COSMIC_MAIL_TEST_IMAP_PASSWORD
+      # hooks the test sets are compiled in only there.
+      - name: Run the E2E suite
+        run: cargo test --test e2e_greenmail -- --ignored
 
       - name: Tear down the fixture
         if: always()
-        run: npm run e2e:env:down
-        working-directory: frontend
+        run: docker compose -f e2e/docker-compose.yml down -v
