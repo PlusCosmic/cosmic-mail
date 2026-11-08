@@ -1,104 +1,239 @@
 //! The frame around the panes: account rail, header, folder column, footer,
 //! toasts, and the no-accounts welcome screen.
 
-use rune::{col, el, row, text, text_input, Cursor, El, Key, KeyEvent, Tx};
+use rune::text::Span;
+use rune::{col, el, rich, row, text, text_input, Cursor, El, Key, KeyEvent, Tx};
 
-use super::{button, font, kbd, label, BODY, RADIUS, SMALL};
+use super::icons;
+use super::{btn, display, eyebrow, font, glyph, kbd, label, Kind, BODY, RADIUS, RADIUS_LG, SMALL};
 use crate::accounts::AccountKind;
 use crate::sync::SyncState;
-use crate::ui::format::{
-    avatar_slot, cap_badge, display_folder_name, initials, role_glyph, short_email,
-};
+use crate::ui::format::{avatar_slot, cap_badge, folder_title};
 use crate::ui::theme::Palette;
-use crate::ui::Ui;
+use crate::ui::{AddTab, Ui};
 
-/// Shown when no account is configured.
+/// Shown when no account is configured: what the app is, and the way in.
 pub fn welcome(p: &Palette) -> El {
+    let headline = "Your mail, kept close.";
+    let accent_from = headline.find("kept").unwrap_or(0);
+    let feature = |keys: El, words: &str| {
+        row()
+            .gap(12.0)
+            .center_y()
+            .child(row().w(76.0).gap(4.0).center_y().child(keys))
+            .child(label(words.to_string(), BODY, p.fg))
+    };
+    let caps = |ks: &[&str]| {
+        let mut r = row().gap(4.0);
+        for k in ks {
+            r = r.child(kbd(k, p));
+        }
+        r
+    };
+    let hero = col()
+        .key("welcome-hero")
+        .w(440.0)
+        .shrink()
+        .min_w(0.0)
+        .gap(18.0)
+        .child(eyebrow("Cosmic Mail", p))
+        .child(
+            rich(
+                headline,
+                vec![Span::new(accent_from, headline.len() - 1).color(p.accent)],
+            )
+            .font(display(52.0).lh(54.0))
+            .color(p.fg)
+            .wrap()
+            .w_full(),
+        )
+        .child(
+            text("A keyboard-driven client that keeps your mail on this computer, searches it offline and hears about new mail the moment it lands.")
+                .font(font(15.0, 400.0).lh(23.0))
+                .color(p.muted)
+                .wrap()
+                .w_full(),
+        )
+        .child(
+            col()
+                .gap(12.0)
+                .mt(6.0)
+                .child(feature(caps(&["j", "k", "c"]), "Move, read and compose without the mouse"))
+                .child(feature(caps(&["ctrl", "k"]), "Every command, one search away"))
+                .child(feature(
+                    glyph(&icons::LOCK, 16.0, p.accent),
+                    "Passwords in the keyring; remote images blocked",
+                )),
+        );
+
+    let card = col()
+        .key("welcome-card")
+        .w(380.0)
+        .shrink()
+        .min_w(0.0)
+        .radius(RADIUS_LG)
+        .fill(p.panel)
+        .border(1.0, p.border)
+        .shadow(14.0, 48.0, p.shadow.alpha(if p.dark { 0.45 } else { 0.16 }))
+        .child(
+            col()
+                .w_full()
+                .px(22.0)
+                .pt(20.0)
+                .pb(16.0)
+                .gap(6.0)
+                .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
+                .child(label("Add an account", display(24.0), p.fg))
+                .child(label(
+                    "Gmail signs in with Google. Anything else uses IMAP.",
+                    SMALL,
+                    p.muted,
+                )),
+        )
+        .child(
+            col()
+                .w_full()
+                .px(22.0)
+                .py(20.0)
+                .gap(12.0)
+                .child(
+                    btn(
+                        "welcome-gmail",
+                        "Sign in with Google",
+                        Some(&icons::MAIL),
+                        None,
+                        Kind::Secondary,
+                        true,
+                        p,
+                        |s, _| {
+                            s.open_add_account();
+                            s.set_add_tab(AddTab::Gmail);
+                        },
+                    )
+                    .w_full(),
+                )
+                .child(
+                    row()
+                        .w_full()
+                        .gap(10.0)
+                        .center_y()
+                        .child(el().grow(1.0).h(1.0).fill(p.border))
+                        .child(label("or", SMALL, p.muted))
+                        .child(el().grow(1.0).h(1.0).fill(p.border)),
+                )
+                .child(
+                    btn(
+                        "welcome-add",
+                        "Add an IMAP account",
+                        Some(&icons::PLUS),
+                        None,
+                        Kind::Primary,
+                        true,
+                        p,
+                        |s, _| s.open_add_account(),
+                    )
+                    .w_full(),
+                )
+                .child(
+                    text("Cosmic Mail looks up your provider's settings from the address.")
+                        .font(SMALL)
+                        .color(p.muted)
+                        .wrap()
+                        .w_full(),
+                ),
+        );
+
     col()
         .key("welcome")
         .w_full()
         .grow(1.0)
-        .center()
-        .gap(10.0)
-        .child(label("Cosmic Mail", font(22.0, 700.0), p.fg))
-        .child(label(
-            "No accounts yet. Add one to get started.",
-            BODY,
-            p.muted,
-        ))
         .child(
-            button("welcome-add", "Add account", p, true, true, |s, _| {
-                s.open_add_account()
-            })
-            .mt(6.0),
+            row()
+                .px(32.0)
+                .py(20.0)
+                .gap(10.0)
+                .center_y()
+                .child(mark(p, 28.0))
+                .child(
+                    rich("Cosmic Mail", vec![Span::new(7, 11).color(p.accent)])
+                        .font(display(19.0))
+                        .color(p.fg),
+                ),
+        )
+        .child(
+            row()
+                .w_full()
+                .grow(1.0)
+                .px(32.0)
+                .pb(48.0)
+                .gap(80.0)
+                .center()
+                .flex_wrap()
+                .child(hero)
+                .child(card),
         )
 }
 
-/// One square rail button: an avatar tile with an optional unread badge.
+/// The app's mark: a lower-case c in the display face on the fill.
+fn mark(p: &Palette, size: f32) -> El {
+    row()
+        .size(size, size)
+        .center()
+        .radius(RADIUS)
+        .fill(p.fill)
+        .a11y_hidden()
+        .child(label("c", display(size * 0.68).lh(size * 0.7), p.fill_ink))
+}
+
+/// One square rail button with an optional unread count.
 fn rail_button(
     key: String,
     tip: String,
-    tile: El,
+    content: El,
     active: bool,
     badge: i64,
     p: &Palette,
     on: impl Fn(&mut Ui, &mut Tx) + 'static,
 ) -> El {
-    let marker = el()
-        .w(3.0)
-        .h(18.0)
-        .radius(2.0)
-        .fill(if active {
-            p.accent
-        } else {
-            p.accent.alpha(0.0)
-        })
-        .absolute(-9.0, 8.0);
     let mut b = row()
         .key(key)
         .role("button")
         .label(tip.clone())
         .help(tip)
         .checked(active)
-        .size(34.0, 34.0)
+        .size(40.0, 40.0)
         .center()
-        .radius(6.0)
-        .fill(if active {
-            p.panel_2
-        } else {
-            p.panel_2.alpha(0.0)
-        })
-        .hover(p.fg.alpha(0.07))
+        .radius(RADIUS)
+        .border(
+            1.0,
+            if active {
+                p.border
+            } else {
+                p.border.alpha(0.0)
+            },
+        )
+        .fill(if active { p.panel } else { p.panel.alpha(0.0) })
+        .hover(p.fg.alpha(0.06))
         .focusable(true)
         .cursor(Cursor::Pointer)
         .on_press_tx(on)
-        .child(marker)
-        .child(tile);
+        .child(content);
     let count = cap_badge(badge);
     if !count.is_empty() {
         b = b.child(
             row()
-                .absolute(20.0, -3.0)
-                .min_w(15.0)
-                .h(15.0)
-                .px(3.0)
+                .absolute(26.0, -5.0)
+                .min_w(17.0)
+                .h(17.0)
+                .px(4.0)
                 .center()
-                .radius(8.0)
-                .fill(p.accent)
+                .radius(8.5)
+                .fill(p.fill)
                 .label(format!("{badge} unread"))
-                .child(label(count, font(9.0, 700.0), p.bg)),
+                .child(label(count, font(9.5, 700.0), p.fill_ink)),
         );
     }
     b
-}
-
-fn tile(content: El, fill: rune::Color) -> El {
-    row()
-        .size(26.0, 26.0)
-        .center()
-        .radius(5.0)
-        .fill(fill)
-        .child(content)
 }
 
 /// The account switcher down the left edge.
@@ -107,50 +242,49 @@ pub fn rail(s: &Ui, p: &Palette) -> El {
         .key("rail")
         .role("navigation")
         .label("Account switcher")
-        .w(52.0)
-        .min_w(52.0)
+        .w(60.0)
+        .min_w(60.0)
         .h_full()
-        .py(10.0)
-        .gap(6.0)
+        .pt(12.0)
+        .pb(10.0)
+        .gap(8.0)
         .items_center()
         .fill(p.rail)
         .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
-        .child(
-            row()
-                .size(30.0, 30.0)
-                .center()
-                .radius(6.0)
-                .fill(p.accent)
-                .mb(6.0)
-                .child(label("C", font(15.0, 700.0), p.bg)),
-        );
+        .child(mark(p, 32.0))
+        .child(el().w(26.0).h(1.0).my(4.0).fill(p.border));
 
     rail = rail.child(rail_button(
         "rail-unified".into(),
-        "Unified inbox".into(),
-        tile(label("⇊", font(15.0, 700.0), p.fill_ink), p.fill),
+        "Unified inbox (1)".into(),
+        glyph(&icons::INBOX, 19.0, if s.unified { p.fg } else { p.muted }),
         s.unified,
         s.unified_unread(),
         p,
         |s, _| s.select_unified(),
     ));
-    for acc in &s.accounts {
+    for (i, acc) in s.accounts.iter().enumerate() {
         let id = acc.id.clone();
         let kind = match acc.kind {
-            AccountKind::Gmail => "gmail",
-            AccountKind::Imap => "imap",
+            AccountKind::Gmail => "Gmail",
+            AccountKind::Imap => "IMAP",
         };
+        // The account's tag ("Gmail", "pluscosmic"), as one letter: two accounts of one
+        // person share initials, not tags.
+        let letter = account_tag(s, &acc.id)
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
         rail = rail.child(rail_button(
             format!("rail-account-{}", acc.id),
-            format!("{} — {kind}", acc.email),
-            tile(
-                label(
-                    initials(&acc.display_name, &acc.email),
-                    font(12.0, 700.0),
-                    p.bg,
-                ),
-                p.slot(avatar_slot(&acc.email)),
-            ),
+            format!("{} — {kind} ({})", acc.email, i + 2),
+            row()
+                .size(28.0, 28.0)
+                .center()
+                .radius(14.0)
+                .fill(p.slot(avatar_slot(&acc.email)))
+                .child(label(letter, font(12.0, 700.0), p.bg)),
             !s.unified && s.selected_account.as_deref() == Some(acc.id.as_str()),
             s.account_unread(&acc.id),
             p,
@@ -158,28 +292,27 @@ pub fn rail(s: &Ui, p: &Palette) -> El {
         ));
     }
 
-    let action_tile = |glyph: &str| {
-        row()
-            .size(26.0, 26.0)
-            .center()
-            .radius(5.0)
-            .border(1.0, p.border)
-            .child(label(glyph, font(14.0, 400.0), p.muted))
-    };
     rail.child(el().grow(1.0))
-        .child(rail_button(
-            "rail-compose".into(),
-            "Compose (c)".into(),
-            action_tile("✎"),
-            false,
-            0,
-            p,
-            |s, _| s.open_compose(),
-        ))
+        .child(
+            row()
+                .key("rail-compose")
+                .role("button")
+                .label("Compose (c)")
+                .help("Compose (c)")
+                .size(40.0, 40.0)
+                .center()
+                .radius(RADIUS)
+                .fill(p.fill)
+                .hover(p.fill_ink.alpha(0.1))
+                .focusable(true)
+                .cursor(Cursor::Pointer)
+                .on_press(|s: &mut Ui| s.open_compose())
+                .child(glyph(&icons::PEN, 17.0, p.fill_ink)),
+        )
         .child(rail_button(
             "rail-add".into(),
             "Add account".into(),
-            action_tile("+"),
+            glyph(&icons::PLUS, 17.0, p.muted),
             false,
             0,
             p,
@@ -188,7 +321,7 @@ pub fn rail(s: &Ui, p: &Palette) -> El {
         .child(rail_button(
             "rail-settings".into(),
             "Settings".into(),
-            action_tile("⚙"),
+            glyph(&icons::SLIDERS, 17.0, p.muted),
             false,
             0,
             p,
@@ -212,17 +345,32 @@ pub fn overall_sync(s: &Ui) -> SyncState {
 pub fn sync_color(state: SyncState, p: &Palette) -> rune::Color {
     match state {
         SyncState::Idle => p.ok,
-        SyncState::Syncing => p.accent,
+        SyncState::Syncing => p.warn,
         SyncState::Error => p.error,
     }
+}
+
+/// A short name for an account: "Gmail", or the first part of its domain.
+pub fn account_tag(s: &Ui, account_id: &str) -> String {
+    if s.is_gmail(account_id) {
+        return "Gmail".into();
+    }
+    s.accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .map(|a| {
+            let domain = a.email.split('@').nth(1).unwrap_or(&a.email);
+            domain.split('.').next().unwrap_or(domain).to_string()
+        })
+        .unwrap_or_default()
 }
 
 /// Title, search field, and sync status.
 pub fn header(s: &Ui, p: &Palette) -> El {
     let title = if s.unified {
-        "Unified Inbox".to_string()
+        "Unified inbox".to_string()
     } else if let Some(f) = s.selected_folder() {
-        display_folder_name(&f.name).to_string()
+        folder_title(&f.name, &f.role).to_string()
     } else if let Some(acc) = s
         .selected_account
         .as_ref()
@@ -232,36 +380,60 @@ pub fn header(s: &Ui, p: &Palette) -> El {
     } else {
         "No folder selected".to_string()
     };
-    let n = s.accounts.len();
-    let subtitle = format!(
-        "{n} account{} · {} unread",
-        if n == 1 { "" } else { "s" },
-        s.unified_unread()
-    );
+    let subtitle = if s.unified {
+        let n = s.accounts.len();
+        format!(
+            "{n} account{} · {} unread",
+            if n == 1 { "" } else { "s" },
+            s.unified_unread()
+        )
+    } else {
+        let tag = s
+            .selected_account
+            .as_deref()
+            .map(|id| account_tag(s, id))
+            .unwrap_or_default();
+        match s.selected_folder() {
+            Some(f) => format!("{tag} · {} unread of {}", f.unread_count, f.total_count),
+            None => tag,
+        }
+    };
+    let title_el = if s.unified {
+        rich(title, vec![Span::new(8, 13).color(p.accent)])
+    } else {
+        text(title)
+    };
 
     let mut head = row()
         .key("header")
         .w_full()
-        .px(16.0)
-        .py(9.0)
-        .gap(14.0)
+        .px(22.0)
+        .py(12.0)
+        .gap(18.0)
         .center_y()
         .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
         .child(
-            label(title, font(13.0, 700.0), p.fg)
-                .key("header-title")
-                .truncate()
-                .shrink(),
+            col()
+                .gap(2.0)
+                .shrink()
+                .min_w(0.0)
+                .child(eyebrow(subtitle, p).key("header-subtitle"))
+                .child(
+                    title_el
+                        .font(display(25.0))
+                        .color(p.fg)
+                        .key("header-title")
+                        .truncate(),
+                ),
         )
-        .child(label(subtitle, SMALL, p.muted).key("header-subtitle"))
         .child(el().grow(1.0));
 
     if s.search_active {
         let count = format!(
-            "results for “{}” — {}{}",
-            s.search_query,
+            "{}{} for “{}”",
             s.visible_messages().len(),
-            if s.has_more { "+" } else { "" }
+            if s.has_more { "+" } else { "" },
+            s.search_query,
         );
         head = head.child(
             row()
@@ -270,20 +442,17 @@ pub fn header(s: &Ui, p: &Palette) -> El {
                 .center_y()
                 .child(label(count, SMALL, p.muted).truncate().shrink())
                 .child(
-                    row()
-                        .key("clear-search")
-                        .role("button")
-                        .label("Clear search")
-                        .px(7.0)
-                        .h(18.0)
-                        .center()
-                        .radius(3.0)
-                        .border(1.0, p.border)
-                        .hover(p.fg.alpha(0.07))
-                        .cursor(Cursor::Pointer)
-                        .focusable(true)
-                        .on_press(|s: &mut Ui| s.clear_search())
-                        .child(label("clear", font(10.0, 400.0), p.fg)),
+                    btn(
+                        "clear-search",
+                        "Clear",
+                        Some(&icons::CLOSE),
+                        Some("esc"),
+                        Kind::Ghost,
+                        true,
+                        p,
+                        |s, _| s.clear_search(),
+                    )
+                    .label("Clear search"),
                 ),
         );
     }
@@ -293,7 +462,7 @@ pub fn header(s: &Ui, p: &Palette) -> El {
     } else {
         "Filter loaded messages…"
     };
-    let input = text_input(&s.query, font(12.0, 400.0))
+    let input = text_input(&s.query, font(13.0, 400.0))
         .key("search-input")
         .label("Search messages")
         .color(p.fg)
@@ -317,36 +486,49 @@ pub fn header(s: &Ui, p: &Palette) -> El {
             tx.blur();
             true
         });
+    let focused = s.query.focused || s.search_active;
     let search = row()
         .key("search")
-        .w(320.0)
+        .w(340.0)
         .min_w(200.0)
         .shrink()
-        .h(30.0)
-        .px(11.0)
+        .h(34.0)
+        .px(10.0)
         .gap(8.0)
         .center_y()
         .radius(RADIUS)
-        .fill(p.panel)
-        .border(1.0, if s.query.focused { p.accent } else { p.border })
-        .child(label("⌕", font(12.0, 400.0), p.muted))
+        .fill(p.panel_2)
+        .border(1.0, if focused { p.accent_dim } else { p.border })
+        .child(glyph(&icons::SEARCH, 15.0, p.muted))
         .child(input)
         .child(kbd(if s.search_active { "⏎" } else { "/" }, p));
     head = head.child(search);
 
     let state = overall_sync(s);
     let status = match state {
-        SyncState::Syncing => "syncing",
-        SyncState::Error => "sync error",
-        SyncState::Idle => "synced",
+        SyncState::Syncing => {
+            let names: Vec<String> = s
+                .accounts
+                .iter()
+                .filter(|a| s.sync_state(&a.id) == SyncState::Syncing)
+                .map(|a| account_tag(s, &a.id))
+                .collect();
+            if names.len() == 1 {
+                format!("Syncing {}…", names[0])
+            } else {
+                "Syncing…".to_string()
+            }
+        }
+        SyncState::Error => "Sync error".to_string(),
+        SyncState::Idle => "Up to date".to_string(),
     };
     head.child(
         row()
             .key("sync-status")
-            .gap(6.0)
+            .gap(7.0)
             .center_y()
             .child(el().size(7.0, 7.0).radius(3.5).fill(sync_color(state, p)))
-            .child(label(status, SMALL, p.muted).key("sync-label")),
+            .child(label(status, font(12.5, 400.0), p.muted).key("sync-label")),
     )
 }
 
@@ -356,69 +538,74 @@ pub fn folder_column(s: &Ui, p: &Palette) -> El {
         return el().key("no-folders").w(0.0);
     };
     let folders = s.folders.get(account_id).map(Vec::as_slice).unwrap_or(&[]);
-    let mut col = col()
+    let mut column = col()
         .key("folders")
         .role("list")
         .label("Folders")
-        .w(200.0)
-        .min_w(200.0)
+        .w(210.0)
+        .min_w(210.0)
         .h_full()
         .min_h(0.0)
-        .fill(p.panel)
+        .px(10.0)
+        .py(16.0)
+        .gap(2.0)
         .border_sides([0.0, 1.0, 0.0, 0.0], p.border);
     if let Some(acc) = s.accounts.iter().find(|a| &a.id == account_id) {
-        let name = if acc.display_name.is_empty() {
-            acc.email.clone()
-        } else {
-            acc.display_name.clone()
-        };
-        col = col.child(
-            row()
+        column = column.child(
+            col()
                 .key("folders-head")
-                .px(14.0)
-                .py(10.0)
+                .px(8.0)
+                .pb(12.0)
+                .gap(3.0)
                 .help(acc.email.clone())
-                .child(label(name, font(11.0, 700.0), p.muted).truncate()),
+                .child(eyebrow("Account", p))
+                .child(label(acc.email.clone(), font(13.0, 650.0), p.fg).truncate()),
         );
     }
     let mut list = col_list();
     for folder in folders {
         let id = folder.id;
         let active = s.selected_folder == Some(id);
+        let name = folder_title(&folder.name, &folder.role).to_string();
         let mut b = row()
             .key(format!("folder-{id}"))
             .role("button")
-            .label(display_folder_name(&folder.name).to_string())
+            .label(name.clone())
             .checked(active)
             .w_full()
-            .h(28.0)
-            .px(14.0)
-            .gap(8.0)
+            .h(32.0)
+            .px(8.0)
+            .gap(10.0)
             .center_y()
-            .fill(if active {
-                p.panel_2
-            } else {
-                p.panel_2.alpha(0.0)
-            })
-            .hover(p.fg.alpha(0.06))
+            .radius(RADIUS)
+            .border(
+                1.0,
+                if active {
+                    p.border
+                } else {
+                    p.border.alpha(0.0)
+                },
+            )
+            .fill(if active { p.panel } else { p.panel.alpha(0.0) })
+            .hover(p.fg.alpha(0.05))
             .focusable(true)
             .cursor(Cursor::Pointer)
             .on_press(move |s: &mut Ui| s.select_folder(id))
-            .child(label(role_glyph(&folder.role), font(12.0, 400.0), p.fg).w(18.0))
+            .child(glyph(
+                icons::for_role(&folder.role),
+                15.0,
+                if active { p.fg } else { p.muted },
+            ))
             .child(
-                label(
-                    display_folder_name(&folder.name).to_string(),
-                    font(12.5, if active { 700.0 } else { 400.0 }),
-                    if active { p.fg } else { p.muted },
-                )
-                .truncate()
-                .grow(1.0)
-                .min_w(0.0),
+                label(name, font(13.0, 600.0), if active { p.fg } else { p.muted })
+                    .truncate()
+                    .grow(1.0)
+                    .min_w(0.0),
             );
         if folder.unread_count > 0 {
             b = b.child(label(
                 folder.unread_count.to_string(),
-                font(10.5, 700.0),
+                font(11.5, 650.0),
                 p.accent,
             ));
         }
@@ -426,7 +613,7 @@ pub fn folder_column(s: &Ui, p: &Palette) -> El {
     }
     if folders.is_empty() {
         let syncing = s.sync_state(account_id) == SyncState::Syncing;
-        list = list.child(row().px(14.0).py(8.0).child(label(
+        list = list.child(row().px(8.0).py(8.0).child(label(
             if syncing {
                 "Syncing folders…"
             } else {
@@ -436,7 +623,24 @@ pub fn folder_column(s: &Ui, p: &Palette) -> El {
             p.muted,
         )));
     }
-    col.child(list)
+    let state = s.sync_state(account_id);
+    column.child(list).child(
+        row()
+            .px(8.0)
+            .pt(8.0)
+            .gap(7.0)
+            .center_y()
+            .child(el().size(6.0, 6.0).radius(3.0).fill(sync_color(state, p)))
+            .child(label(
+                match state {
+                    SyncState::Idle => "Up to date",
+                    SyncState::Syncing => "Syncing…",
+                    SyncState::Error => "Sync error",
+                },
+                SMALL,
+                p.muted,
+            )),
+    )
 }
 
 fn col_list() -> El {
@@ -445,6 +649,7 @@ fn col_list() -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
+        .gap(2.0)
         .scroll(rune::ScrollSpec {
             stick_bottom: false,
         })
@@ -453,19 +658,20 @@ fn col_list() -> El {
 /// Shortcut hints, per-account sync dots, and the position readout.
 pub fn footer(s: &Ui, p: &Palette) -> El {
     let hint = |keys: &[&str], what: &str| {
-        let mut r = row().gap(3.0).px(5.0).center_y();
+        let mut r = row().gap(3.0).pr(12.0).center_y();
         for k in keys {
             r = r.child(kbd(k, p));
         }
-        r.child(label(what.to_string(), SMALL, p.muted).ml(2.0))
+        r.child(label(what.to_string(), SMALL, p.muted).ml(3.0))
     };
     let mut f = row()
         .key("footer")
         .w_full()
-        .px(16.0)
+        .px(18.0)
         .py(6.0)
-        .gap(2.0)
+        .gap(14.0)
         .center_y()
+        .fill(p.panel_2)
         .border_sides([1.0, 0.0, 0.0, 0.0], p.border)
         .child(
             row()
@@ -474,40 +680,32 @@ pub fn footer(s: &Ui, p: &Palette) -> El {
                 .shrink()
                 .min_w(0.0)
                 .clip_rounded(0.0)
-                .gap(2.0)
                 .center_y()
                 .child(hint(&["j", "k"], "navigate"))
-                .child(hint(&["enter"], "open"))
-                .child(hint(&["u"], "toggle unread"))
                 .child(hint(&["c"], "compose"))
                 .child(hint(&["r"], "reply"))
                 .child(hint(&["a"], "archive"))
-                .child(hint(&["d"], "delete"))
                 .child(hint(&["f"], "flag"))
                 .child(hint(&["m"], "move"))
+                .child(hint(&["u"], "unread"))
                 .child(hint(&["/"], "filter"))
-                .child(hint(&["g", "g"], "top"))
-                .child(hint(&["G"], "bottom"))
-                .child(hint(&["1"], "unified"))
-                .child(hint(&["2…"], "accounts"))
-                .child(hint(&["⌃", "k"], "palette")),
+                .child(hint(&["ctrl", "k"], "commands")),
         );
     for acc in &s.accounts {
         let state = s.sync_state(&acc.id);
         let name = match state {
-            SyncState::Idle => "idle",
+            SyncState::Idle => "up to date",
             SyncState::Syncing => "syncing",
-            SyncState::Error => "error",
+            SyncState::Error => "sync error",
         };
         f = f.child(
             row()
                 .key(format!("sync-{}", acc.id))
-                .gap(4.0)
-                .px(4.0)
+                .gap(6.0)
                 .center_y()
                 .help(format!("{}: {name}", acc.email))
                 .child(el().size(6.0, 6.0).radius(3.0).fill(sync_color(state, p)))
-                .child(label(short_email(&acc.email).to_string(), SMALL, p.muted)),
+                .child(label(account_tag(s, &acc.id), SMALL, p.muted)),
         );
     }
     let total = s.visible_messages().len();
@@ -516,57 +714,61 @@ pub fn footer(s: &Ui, p: &Palette) -> El {
     } else {
         0
     };
-    let scope = if s.unified {
-        "unified".to_string()
-    } else {
-        s.selected_account
-            .as_ref()
-            .and_then(|id| s.accounts.iter().find(|a| &a.id == id))
-            .map(|a| a.email.clone())
-            .unwrap_or_else(|| "—".to_string())
-    };
     f.child(
         label(
-            format!(
-                "message {pos} of {total}{} · {scope}",
-                if s.has_more { "+" } else { "" }
-            ),
+            format!("{pos} of {total}{}", if s.has_more { "+" } else { "" }),
             SMALL,
             p.muted,
         )
-        .key("footer-meta")
-        .ml(10.0),
+        .key("footer-meta"),
     )
 }
 
-/// Transient notices, bottom-right.
+/// Transient notices, bottom-right: the tooltip colours, or a danger tint for errors.
 pub fn toasts(s: &Ui, p: &Palette) -> El {
     let mut stack = col()
         .key("toasts")
         .role("status")
-        .pin(None, None, Some(16.0), Some(40.0))
-        .w(380.0)
+        .pin(None, None, Some(20.0), Some(48.0))
+        .w(400.0)
         .gap(8.0)
         .items_end()
         .raise();
     for t in &s.toasts {
         let id = t.id;
-        let tone = if t.error { p.error } else { p.accent };
+        let (fill, edge, ink, mark) = if t.error {
+            (
+                rune_theme_foundation::mix(p.error, 0.1, p.bg),
+                rune_theme_foundation::mix(p.error, 0.45, p.border),
+                p.fg,
+                glyph(&icons::ALERT, 16.0, p.error),
+            )
+        } else {
+            (
+                p.tip_bg,
+                p.tip_bg,
+                p.tip_ink,
+                glyph(&icons::CHECK, 16.0, p.tip_ink),
+            )
+        };
         stack = stack.child(
             row()
                 .key(format!("toast-{id}"))
                 .w_full()
-                .px(12.0)
-                .py(8.0)
+                .pl(14.0)
+                .pr(8.0)
+                .py(9.0)
                 .gap(10.0)
                 .center_y()
                 .radius(RADIUS)
-                .fill(p.panel_2)
-                .border(1.0, tone)
+                .fill(fill)
+                .border(1.0, edge)
+                .shadow(10.0, 32.0, p.shadow.alpha(0.25))
+                .child(mark)
                 .child(
                     text(t.message.clone())
-                        .font(font(12.0, 400.0))
-                        .color(p.fg)
+                        .font(font(12.5, 400.0).lh(18.0))
+                        .color(ink)
                         .wrap()
                         .grow(1.0)
                         .min_w(0.0),
@@ -576,11 +778,13 @@ pub fn toasts(s: &Ui, p: &Palette) -> El {
                         .key(format!("toast-{id}-dismiss"))
                         .role("button")
                         .label("Dismiss")
-                        .size(18.0, 18.0)
+                        .size(26.0, 26.0)
                         .center()
+                        .radius(RADIUS)
+                        .hover(ink.alpha(0.1))
                         .cursor(Cursor::Pointer)
                         .on_press(move |s: &mut Ui| s.dismiss_toast(id))
-                        .child(label("×", font(14.0, 400.0), p.muted)),
+                        .child(glyph(&icons::CLOSE, 13.0, ink)),
                 ),
         );
     }

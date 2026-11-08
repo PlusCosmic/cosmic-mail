@@ -414,3 +414,17 @@ fn the_title_bar_setting_toggles() {
     click(&mut rt, "setting-title-bar");
     assert!(rt.state.settings.window_title_bar);
 }
+
+#[test]
+fn without_a_backend_nothing_stays_loading() {
+    // Scenes run `init` with no backend; the welcome scene must still show.
+    let mut s = demo::state();
+    (demo::SCENES
+        .iter()
+        .find(|(n, _)| *n == "welcome")
+        .unwrap()
+        .1)(&mut s);
+    s.init();
+    assert!(!s.loading_accounts);
+    assert!(runtime(s).find("welcome").is_some());
+}

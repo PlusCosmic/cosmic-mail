@@ -1,16 +1,18 @@
 //! The element tree and keyboard handling.
 //!
-//! Layout (as the web UI had it): a 52 pt account rail, then the main column —
-//! header, a split of the optional folder column and the list/reader panes
-//! (resizable), and the shortcut footer. Modals and toasts float above.
+//! Layout: the account rail, then the main column — header, a split of the optional folder
+//! column and the list/reader panes (resizable), and the shortcut footer. Modals and toasts
+//! float above. The look is the UI foundation's: its tokens (through [`Palette`]), Instrument
+//! Sans for text, Fraunces for display, 3 pt corners and small-capital eyebrows.
 
 mod chrome;
+pub mod icons;
 mod list;
 mod modals;
 mod reader;
 
 use rune::tok::TextStyle;
-use rune::{col, el, row, text, Color, Cursor, Cx, El, Key, KeyEvent, Phase, Tx};
+use rune::{col, el, icon, row, text, Color, Cursor, Cx, El, Icon, Key, KeyEvent, Phase, Tx};
 
 use super::pane::{self, PANE_DIVIDER_WIDTH};
 use super::theme::Palette;
@@ -19,6 +21,8 @@ use crate::ui::format::display_folder_name;
 
 /// Corner radius of controls (the foundation's `--radius`).
 pub const RADIUS: f32 = 3.0;
+/// Corner radius of cards (the foundation's `--radius-lg`).
+pub const RADIUS_LG: f32 = 4.0;
 
 /// The app's text style at `size` and `weight`, in the foundation's sans (Instrument Sans).
 pub const fn font(size: f32, weight: f32) -> TextStyle {
@@ -28,43 +32,91 @@ pub const fn font(size: f32, weight: f32) -> TextStyle {
 pub const BODY: TextStyle = font(13.0, 400.0);
 pub const SMALL: TextStyle = font(11.5, 400.0);
 /// Buttons: semibold, as the foundation's.
-pub const BUTTON: TextStyle = font(13.0, 600.0);
+pub const BUTTON: TextStyle = font(12.5, 600.0);
+
+/// The display face (Fraunces) at `size`, for titles.
+pub fn display(size: f32) -> TextStyle {
+    rune_theme_foundation::display(size)
+        .lh(size * 1.15)
+        .tracking(-0.01 * size)
+}
 
 /// A one-line label.
 pub fn label(s: impl Into<String>, style: TextStyle, color: Color) -> El {
     text(s.into()).font(style).color(color)
 }
 
-/// A bordered button. Disabled buttons dim and drop their handler.
-pub fn button(
+/// The small capitals over a heading (`ui-eyebrow`).
+pub fn eyebrow(s: impl Into<String>, p: &Palette) -> El {
+    let s: String = s.into();
+    label(s.to_uppercase(), font(10.5, 650.0).tracking(1.2), p.muted)
+}
+
+/// An icon in a colour.
+pub fn glyph(i: &'static Icon, size: f32, color: Color) -> El {
+    icon(i, size).color(color)
+}
+
+/// How a button draws: filled (the one main action), bordered, or bare.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Primary,
+    Secondary,
+    Ghost,
+}
+
+/// A button with an optional icon before its caption and a shortcut after it. Disabled
+/// buttons dim and drop their handler.
+#[allow(clippy::too_many_arguments)]
+pub fn btn(
     key: impl Into<String>,
     caption: impl Into<String>,
-    p: &Palette,
-    primary: bool,
+    leading: Option<&'static Icon>,
+    shortcut: Option<&str>,
+    kind: Kind,
     enabled: bool,
+    p: &Palette,
     on: impl Fn(&mut Ui, &mut Tx) + 'static,
 ) -> El {
     let caption = caption.into();
-    let b = row()
+    let (fill, edge, ink) = match kind {
+        Kind::Primary => (p.fill, p.fill, p.fill_ink),
+        Kind::Secondary => (p.panel, p.border, p.fg),
+        Kind::Ghost => (p.panel.alpha(0.0), p.border.alpha(0.0), p.muted),
+    };
+    let mut b = row()
         .key(key.into())
         .role("button")
         .label(caption.clone())
-        .h(28.0)
-        .px(10.0)
-        .gap(6.0)
+        .h(30.0)
+        .px(11.0)
+        .gap(7.0)
         .center()
         .radius(RADIUS)
-        .border(1.0, if primary { p.fill } else { p.border })
-        .fill(if primary { p.primary() } else { p.panel })
-        .child(label(
-            caption,
-            BUTTON,
-            if primary { p.fill_ink } else { p.fg },
-        ));
+        .border(1.0, edge)
+        .fill(fill);
+    if let Some(i) = leading {
+        b = b.child(glyph(i, 14.0, ink));
+    }
+    b = b.child(label(caption, BUTTON, ink));
+    if let Some(k) = shortcut {
+        b = b.child(if kind == Kind::Primary {
+            row()
+                .px(4.0)
+                .h(16.0)
+                .min_w(16.0)
+                .center()
+                .radius(RADIUS)
+                .border(1.0, p.fill_ink.alpha(0.4))
+                .child(label(k, font(10.0, 600.0), p.fill_ink))
+        } else {
+            kbd(k, p)
+        });
+    }
     if enabled {
         b.focusable(true)
             .cursor(Cursor::Pointer)
-            .hover(if primary {
+            .hover(if kind == Kind::Primary {
                 p.fill_ink.alpha(0.1)
             } else {
                 p.fg.alpha(0.05)
@@ -75,29 +127,71 @@ pub fn button(
     }
 }
 
-/// A keyboard-key cap (`<kbd>`).
+/// A bordered (or, `primary`, filled) text button.
+pub fn button(
+    key: impl Into<String>,
+    caption: impl Into<String>,
+    p: &Palette,
+    primary: bool,
+    enabled: bool,
+    on: impl Fn(&mut Ui, &mut Tx) + 'static,
+) -> El {
+    let kind = if primary {
+        Kind::Primary
+    } else {
+        Kind::Secondary
+    };
+    btn(key, caption, None, None, kind, enabled, p, on)
+}
+
+/// A square, borderless icon button; `tip` names it for the pointer and screen readers.
+pub fn icon_button(
+    key: impl Into<String>,
+    tip: impl Into<String>,
+    i: &'static Icon,
+    color: Color,
+    p: &Palette,
+    on: impl Fn(&mut Ui, &mut Tx) + 'static,
+) -> El {
+    let tip = tip.into();
+    row()
+        .key(key.into())
+        .role("button")
+        .label(tip.clone())
+        .help(tip)
+        .size(32.0, 32.0)
+        .center()
+        .radius(RADIUS)
+        .hover(p.panel_2)
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .on_press_tx(on)
+        .child(glyph(i, 16.0, color))
+}
+
+/// A keyboard-key cap (`ui-kbd`: a heavier bottom edge).
 pub fn kbd(s: &str, p: &Palette) -> El {
     row()
-        .px(5.0)
-        .h(16.0)
-        .min_w(16.0)
+        .px(4.0)
+        .h(17.0)
+        .min_w(17.0)
         .center()
         .radius(RADIUS)
         .fill(p.panel)
-        .border(1.0, p.border)
-        .child(label(s, font(10.5, 600.0), p.muted))
+        .border_sides([1.0, 1.0, 2.0, 1.0], p.border)
+        .child(label(s, font(10.0, 600.0), p.muted))
 }
 
-/// A text field box around an input element.
+/// A text field box around an input element (`ui-input`: recessed, accent edge when focused).
 pub fn field_box(key: impl Into<String>, focused: bool, p: &Palette, input: El) -> El {
     row()
         .key(key.into())
         .w_full()
-        .h(30.0)
-        .px(8.0)
+        .h(34.0)
+        .px(10.0)
         .center_y()
         .radius(RADIUS)
-        .fill(p.bg)
+        .fill(p.panel_2)
         .border(1.0, if focused { p.accent } else { p.border })
         .child(input)
 }
