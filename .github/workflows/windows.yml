@@ -1,8 +1,8 @@
 name: windows
 
-# Windows build. On every pull request and push it builds natively, runs the
-# test suite (the UI tests run on Rune's headless runtime, no GPU needed) and
-# packages an installer and a portable zip. On pushes to main it also publishes
+# Windows build. On every pull request and push it builds natively and, in
+# parallel, runs the test suite (the UI tests run on Rune's headless runtime, no
+# GPU needed), and packages an installer and a portable zip. On pushes to main it also publishes
 # them as a GitHub Release. See docs/RELEASING.md ("Windows").
 
 on:
@@ -18,15 +18,17 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
+  # Tests and the release build compile different profiles, so they run side
+  # by side; the release job waits for both.
+  test:
     runs-on: windows-latest
     env:
       # aws-lc-sys (via reqwest/oauth2) needs NASM on x86_64 MSVC unless it
       # may use its prebuilt objects; the runner has no NASM.
       AWS_LC_SYS_PREBUILT_NASM: "1"
+      # No debug info in CI test builds: far less to write and link.
+      CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_TERM_COLOR: always
-    outputs:
-      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -37,8 +39,27 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # The library holds every test that runs (unit + UI behaviour tests on
+      # Rune's headless runtime). tests/e2e_greenmail.rs is #[ignore]d and needs
+      # the Linux GreenMail fixture, so it isn't built here.
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked --lib
+
+  build:
+    runs-on: windows-latest
+    env:
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      CARGO_TERM_COLOR: always
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
 
       - name: Build release
         run: cargo build --locked --release
@@ -85,7 +106,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [test, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
