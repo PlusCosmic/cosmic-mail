@@ -1,46 +1,51 @@
 # Cosmic Mail — Architecture Contract
 
-Native Linux mail client for [omarchy](https://omarchy.org), built with Tauri 2 + Svelte 5.
-Supports plain IMAP accounts and Gmail (OAuth2/XOAUTH2 over IMAP — one sync engine for both).
+Native Linux mail client for [omarchy](https://omarchy.org): a Rust backend and a native GPU
+UI built with [Rune](https://github.com/anomalyco/rune), in one crate. Supports plain IMAP
+accounts and Gmail (OAuth2/XOAUTH2 over IMAP — one sync engine for both).
 
-**This document is the contract between the Rust backend and the Svelte frontend. Both sides
-must conform to it exactly.** All serde structs use `#[serde(rename_all = "camelCase")]`.
-Tauri command args arrive camelCase on the Rust side too (Tauri converts JS camelCase args to
-snake_case parameter names automatically — declare Rust params in snake_case as usual).
+**This document is the contract between the backend (`src/`, UI-agnostic) and the Rune UI
+(`src/ui/`). Both sides must conform to it exactly.** The UI calls `Backend` methods
+("commands") and receives `AppEvent`s ("events"); nothing else crosses the boundary. Wire
+types are plain Rust structs; the ones persisted or shared as JSON keep
+`#[serde(rename_all = "camelCase")]`.
 
 ## Module layout
 
 ```
-src-tauri/src/
-  lib.rs            # tauri::Builder wiring, state setup, background task spawn
-  main.rs
-  desktop.rs        # process/window lifecycle, launcher + notification activation
-  tray.rs           # persistent system tray and Open / Sync now / Quit menu
-  error.rs          # AppError (thiserror) -> serialized as String to frontend
-  state.rs          # AppState: db pool, account registry, sync handles
-  commands.rs       # all #[tauri::command] fns (thin; delegate to modules)
+src/
+  main.rs           # calls app::run
+  lib.rs            # module list
+  app.rs            # startup: single instance, tokio runtime, db, backend, tray, Rune App
+  backend.rs        # Backend: every command below (thin; delegates to modules), Db type
+  events.rs         # AppEvent + Events sink (backend -> UI)
+  desktop.rs        # --background, single-instance socket, xdg-open (http/s only), hyprctl focus
+  error.rs          # AppError (thiserror); Display is the string the UI toasts
   store.rs          # rusqlite: schema, migrations, queries
   accounts.rs       # Account model, accounts.json persistence, keyring secrets
-  omarchy.rs        # theme reader + file watcher -> "omarchy:theme-changed" event
-  notifications.rs  # notify-rust wrapper (mako-aware)
-  automation.rs     # DEBUG BUILDS ONLY: loopback E2E bridge (see section below)
+  omarchy.rs        # theme reader + file watcher -> AppEvent::ThemeChanged
+  notifications.rs  # notify-rust wrapper (mako-aware); click -> AppEvent::Activate
   sync/
-    mod.rs          # SyncManager: per-account background task, IDLE loop
+    mod.rs          # SyncManager: per-account background task on the tokio runtime, IDLE loop
     imap.rs         # async-imap + tokio-rustls connector, LOGIN + XOAUTH2
   auth/
     oauth.rs        # Gmail OAuth2 (PKCE + loopback redirect), token refresh
-src/                # SvelteKit (adapter-static, SPA)
-  lib/api.ts        # typed invoke() wrappers — mirrors commands below
-  lib/types.ts      # TS mirrors of the wire types below
-  lib/theme.ts      # applies OmarchyTheme as CSS custom properties
-  lib/palette.ts    # command-palette fuzzy ranking (pure, unit-tested; no backend surface)
-  lib/stores/       # Svelte 5 runes-based state
-  lib/components/   # *.svelte (incl. CommandPalette.svelte — the Ctrl+K overlay)
-  routes/+page.svelte  # app shell
-prototypes/         # static HTML/CSS design mockups (no build step)
+  ui/               # the Rune UI
+    mod.rs          # Ui state, Inbox (backend results -> UI thread), modal state types
+    store.rs        # state transitions (selection, paging, optimistic actions, events)
+    view/           # element tree: mod (root, panes, keys, palette commands), chrome
+                    # (rail, header, folders, footer, toasts), list, reader, modals
+    html.rs         # HTML mail -> styled text lines (see "Reader remote-content policy")
+    images.rs       # inline data: images, consent-gated remote images, opening links
+    theme.rs        # OmarchyTheme -> Palette (derived tones as sRGB color-mix)
+    compose.rs format.rs palette.rs pane.rs   # pure helpers (unit-tested)
+    demo.rs         # demo mailbox + named scenes for headless renders and tests
+    tests.rs        # UI behaviour tests on rune::Runtime
+tests/
+  e2e_greenmail.rs  # real UI + real backend against the GreenMail fixture
 ```
 
-## Wire types (TS names; Rust equivalents in parens)
+## Wire types (shown in TS notation for brevity; Rust structs in `wire.rs` and the named modules)
 
 ```ts
 type AccountKind = "imap" | "gmail";
@@ -88,7 +93,7 @@ interface AttachmentInfo {    // store.rs::AttachmentRow projection
 
 interface MessageBody {
   id: number;
-  html: string | null;        // sanitization happens frontend-side before render;
+  html: string | null;        // never rendered as HTML: the UI converts it to text (see policy);
                               // inline cid: images are inlined as data: URIs at cache time (see policy)
   text: string | null;
   toAddrs: string[];
@@ -100,7 +105,7 @@ type ShipmentCarrier = "ups" | "fedex" | "usps" | "dhl" | "royal_mail" | "amazon
 
 interface Shipment {          // shipments.rs::Carrier + store.rs::ShipmentRow projection
   id: number;                 // shipments.id rowid
-  carrier: ShipmentCarrier;   // stable lowercase code; frontend maps to a display label/glyph
+  carrier: ShipmentCarrier;   // stable lowercase code; the UI maps it to a display label/glyph
   trackingNumber: string | null;
   trackingUrl: string | null; // captured from the email, or a synthesized carrier tracking-page
                               // URL from trackingNumber (never synthesized for Amazon — no
@@ -121,7 +126,7 @@ type SyncState = "idle" | "syncing" | "error";
 type DiscoverySource = "autoconfig" | "ispdb" | "mx" | "srv" | "guess";
 
 interface DiscoveredConfig {      // autoconfig.rs — settings discovery result
-  kind: AccountKind;              // "gmail" ⇒ frontend steers user to the Gmail OAuth tab
+  kind: AccountKind;              // "gmail" ⇒ the UI steers the user to the Gmail OAuth tab
   imapHost: string; imapPort: number;   // implicit-TLS entries only (we don't do IMAP STARTTLS yet)
   smtpHost: string; smtpPort: number;
   username: string;               // %EMAILADDRESS% / %EMAILLOCALPART% already resolved
@@ -151,7 +156,7 @@ interface Settings {                    // settings.rs::Settings — global pref
 }
 ```
 
-## Tauri commands (exact names)
+## Commands (`Backend` methods, exact names)
 
 | command | args | returns |
 |---|---|---|
@@ -181,16 +186,27 @@ interface Settings {                    // settings.rs::Settings — global pref
 | `get_settings` | — | `Settings` (never errors; a missing/malformed settings file yields defaults) |
 | `update_settings` | `settings: Settings` | `Settings` (persists to `settings.json`, returns the stored value) |
 
-Errors: commands return `Result<T, String>` — human-readable message, frontend shows it in a toast.
+Arguments are the method's parameters (snake_case in Rust). Methods that touch the network are
+`async` and run on the backend's tokio runtime; the UI calls every method through
+`Ui::spawn`, which runs it off the UI thread and lands the result back on it. Errors:
+`AppResult<T>` (`Result<T, AppError>`) — the `Display` string is human-readable and the UI
+shows it in a toast. Backend-only helpers used by the shell (not the UI): `start_all_syncs`
+(startup) and `sync_all_accounts` (tray "Sync now").
 
-## Events (backend -> frontend, via `AppHandle::emit`)
+## Events (backend -> UI, `events::AppEvent` through the `Events` sink)
 
-| event | payload |
-|---|---|
-| `omarchy:theme-changed` | `OmarchyTheme` |
-| `mail:new-messages` | `{ accountId: string, folderId: number, messages: MessageSummary[] }` |
-| `mail:messages-updated` | `{ folderId: number }` (flags changed / deletions — frontend refetches page) |
-| `mail:sync-state` | `{ accountId: string, state: SyncState, error: string | null, needsReauth: boolean }` (`needsReauth` is `true` only when the failure is classified `AuthExpired` — see the Gmail section — meaning retrying cannot help and the UI should offer Reconnect) |
+| event | variant | payload |
+|---|---|---|
+| `omarchy:theme-changed` | `ThemeChanged` | `OmarchyTheme` |
+| `mail:new-messages` | `NewMessages` | `{ accountId, folderId, messages: MessageSummary[] }` |
+| `mail:messages-updated` | `MessagesUpdated` | `{ folderId }` (flags changed / deletions — the UI refetches the page) |
+| `mail:sync-state` | `SyncState` | `{ accountId, state: SyncState, error: string \| null, needsReauth: boolean }` (`needsReauth` is `true` only when the failure is classified `AuthExpired` — see the Gmail section — meaning retrying cannot help and the UI should offer Reconnect) |
+| — | `Activate` | none: show and focus the window (notification click). The shell handles it directly with `AppHandle::open` so it works while the window is closed. |
+
+Delivery: `app.rs` installs a sink that forwards every event except `Activate` to the UI's
+`Inbox`, which runs it on the UI thread via `AppHandle::update` (this works while the window is
+hidden, so state stays current). Without a handle (tests, headless runs) the `Inbox` queues
+jobs for `Ui::poll` to drain.
 
 ## SQLite schema (store.rs; db at `$XDG_DATA_HOME/cosmic-mail/mail.db`)
 
@@ -282,7 +298,7 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
 ```
 
 At startup — synchronously in application setup, before any sync task spawns (so it heals even
-when sync cannot run, e.g. a missing OAuth token) and before the webview requests its first
+when sync cannot run, e.g. a missing OAuth token) and before the UI requests its first
 message pages (so no update events are needed) — `store::heal_cached_snippets` recomputes the
 snippet of every row with `body_cached = 1` using the current `snippet_for_body` logic and
 updates only the rows whose snippet actually changes (the FTS `AFTER UPDATE` trigger re-indexes
@@ -313,9 +329,10 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
     (user already has an `[app-name="Betterbird Mail"]` block; ours enables the same pattern).
   - `.hint(Hint::DesktopEntry("dev.pluscosmic.mail".into()))` — icon + association.
   - a `default` action; on activation, focus the main window (and later, select the message).
-    Use Tauri's portable show/unminimize/focus path first; under Hyprland, follow it with a
-    fixed-argument `hyprctl dispatch focuswindow class:^(cosmic-mail)$` fallback because
-    Wayland focus-stealing prevention can ignore a background `set_focus()` call. Never invoke
+    The action emits `AppEvent::Activate`; the shell shows and focuses the window through
+    Rune's `AppHandle::open` first, then under Hyprland follows it with a fixed-argument
+    `hyprctl dispatch focuswindow class:^(cosmic-mail)$` fallback because Wayland
+    focus-stealing prevention can ignore a background focus request. Never invoke
     this through a shell or interpolate notification/message content into the command.
   - summary: `New mail — {fromName}`, body: `{subject}`. Batch: if >3 new messages in one
     sync pass for a folder, send ONE notification: `{n} new messages in {account email}`.
@@ -336,61 +353,63 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   `notify` crate (watch for any event, then debounce ~300ms, re-read, emit
   `omarchy:theme-changed` only if the parsed theme actually changed). Fall back to
   built-in kanagawa values if files are missing.
-- Frontend maps OmarchyTheme onto CSS custom properties (see prototypes): `--bg`, `--fg`,
-  `--accent`, `--cursor`, `--sel-bg`, `--sel-fg`, `--c0`..`--c15`. All UI colors derive from
-  these; no hardcoded colors outside the fallback.
+- The UI maps OmarchyTheme onto `ui::theme::Palette`: `bg`, `fg`, `accent`, `cursor`,
+  `sel_bg`, `sel_fg`, `c[0..16]`, plus derived tones (`border`, `muted`, `panel`, `hover`,
+  `accent_dim`, `rail`, ...) computed like CSS `color-mix(in srgb, …)` on sRGB-encoded channels.
+  All UI colors derive from these; no hardcoded colors outside the kanagawa fallback. A theme
+  change swaps the palette and every color re-renders live.
 
-## Frontend pane layout
+## UI pane layout
 
-- The account rail and optional 190px folder column remain fixed-width. The message list and
-  reader share all remaining shell width, separated by a pointer-draggable, keyboard-focusable
-  vertical separator.
-- The separator constrains both panes to usable minimum widths. The message list also has a
-  readable maximum width so maximized and full-screen windows give surplus space to the reader
-  instead of stretching message rows indefinitely.
-- Persist the preferred message-list proportion in browser local storage under
-  `cosmic-mail:list-pane-ratio`. A proportion, rather than a pixel width, keeps the preference
-  useful when the window is resized or the folder column appears. Re-apply current constraints
-  whenever the available width changes; malformed or unavailable storage falls back safely.
+- The account rail (52 pt) and optional 200 pt folder column remain fixed-width. The message
+  list and reader share all remaining width, separated by a pointer-draggable,
+  keyboard-focusable vertical separator (`role("separator")`).
+- The separator constrains both panes to usable minimum widths (`ui::pane`). The message list
+  also has a readable maximum width so maximized windows give surplus space to the reader.
+- The preferred message-list proportion persists as `listPaneRatio` in
+  `$XDG_CONFIG_HOME/cosmic-mail/ui.json` (Rune `Prefs`). A proportion, rather than a pixel
+  width, keeps the preference useful when the window is resized or the folder column appears.
+  Constraints re-apply whenever the available width changes; malformed values fall back.
 - Left/Right arrows resize the focused separator (Shift uses a larger step), Home/End choose its
-  minimum/maximum, and double-click restores the default 42% split. The separator exposes the
-  current and permitted list widths through ARIA separator values.
+  minimum/maximum, and double-click restores the default 42% split.
 
 ## Process and window lifecycle
 
-- Cosmic Mail has exactly one process/sync-engine owner per desktop session. Tauri's
-  single-instance plugin owns `dev.pluscosmic.mail.SingleInstance` on the session D-Bus; a
-  second process forwards its argv to that owner and exits before application setup can start a
-  second set of sync tasks.
+- Cosmic Mail has exactly one process/sync-engine owner per desktop session. The first process
+  binds `$XDG_RUNTIME_DIR/cosmic-mail.sock` (`desktop::claim_instance`; a stale socket from a
+  crash is reclaimed). A later process connects, writes one line — `activate [token]` or
+  `background` — and exits before opening the database or starting sync. If the socket cannot be
+  bound at all (e.g. a path over the 108-byte Unix limit) the process logs a warning and runs
+  without single-instance protection.
 - The promoted daily build installs `cosmic-mail.service`, a systemd user service bound to
-  `graphical-session.target`. It launches the current promoted binary with `--background`, uses
+  `graphical-session.target`. It launches the binary with `--background`, uses
   `Restart=on-failure` for crash recovery, and stops it with the graphical session. A clean tray
   Quit therefore remains stopped until the service is explicitly started or the next graphical
   session. Development runs do not install or control this service.
-- The configured main webview is initially hidden. A normal first launch shows/focuses it; a
-  `--background` first launch leaves it hidden while sync, IDLE, theme watching, and notification
-  action listeners run normally.
-- Closing the main window prevents destruction and hides it. This does not stop the process or
-  its sync tasks. Session shutdown/systemd stop remains an actual process exit.
-- A second normal launcher invocation is an explicit activation request: the owner shows,
-  unminimizes, and focuses the existing main window. A second `--background` invocation is silent
-  so service restarts cannot steal focus. Notification default actions use the same activation
-  path, including the fixed-argument Hyprland focus fallback described above.
-- Desktop builds create one Tauri tray icon for the process lifetime. Its attached menu is kept
-  for the tray lifetime and contains **Open Cosmic Mail**, **Sync now**, and **Quit**. Open uses
-  the same activation path as launcher and notification actions. Sync now restarts the background
-  sync task for every configured account. Quit requests a clean application exit; it does not
-  merely hide the window.
-- Linux tray interaction is menu-driven. The backend does not depend on tray pointer events,
-  tooltips, or tray-rectangle queries, and it does not remove or replace the attached menu. Linux
-  bundles declare the detected compatible Ayatana/AppIndicator GTK3 runtime through Tauri's
-  built-in packaging path; Cosmic Mail uses only Tauri's tray API rather than calling that library
-  directly.
+- The window is Rune's: borderless, 1280×800, minimum 900×560, Wayland app id / X11 class
+  `cosmic-mail`. A normal first launch opens it; a `--background` first launch starts windowless
+  (`App::windowless`) while sync, IDLE, theme watching, and notification listeners run normally.
+- Closing the window hides it (`App::keep_running`; on Wayland the toplevel is destroyed and
+  recreated on open). This does not stop the process or its sync tasks. Session
+  shutdown/systemd stop and tray Quit are actual process exits.
+- A second normal launch is an explicit activation request: the owner shows and focuses the
+  window, forwarding the launcher's `XDG_ACTIVATION_TOKEN` to `AppHandle::activate` when there is
+  one. A second `--background` launch is silent so service restarts cannot steal focus.
+  Notification default actions and the tray use the same path, followed by the fixed-argument
+  Hyprland focus fallback (`hyprctl dispatch focuswindow class:^(cosmic-mail)$`, only when
+  `HYPRLAND_INSTANCE_SIGNATURE` is set).
+- One tray icon (Rune's StatusNotifierItem tray, `rune::tray`) lives for the process lifetime with
+  **Open Cosmic Mail**, **Sync now**, and **Quit**; a primary click opens the window. Sync now
+  restarts the background sync task for every configured account. Quit requests a clean
+  application exit. A missing tray host (bare session, CI) is logged and non-fatal.
+- Headless Rune runs (`--snap`, `--tree`, `--script`, `--list-scenes`, ...;
+  `rune::tooling::is_headless`) render the built-in demo mailbox (`ui::demo`) and never claim
+  the socket, open the profile, start sync, or touch the network.
 
 ## Gmail (auth/oauth.rs)
 
 - OAuth 2.0 authorization-code + PKCE, loopback redirect (`http://127.0.0.1:<random port>`),
-  per RFC 8252. Open the consent URL with `tauri-plugin-opener`. Scope: `https://mail.google.com/`
+  per RFC 8252. Open the consent URL with `desktop::open_url` (`xdg-open`, http/https only). Scope: `https://mail.google.com/`
   plus `openid email` (to learn the address). Endpoints:
   auth `https://accounts.google.com/o/oauth2/v2/auth`, token `https://oauth2.googleapis.com/token`.
 - Client credentials resolve in order (first hit wins):
@@ -430,7 +449,7 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
 ## Compose and SMTP sending (send.rs)
 
 - The first compose implementation sends plain-text messages. `send_message` requires at least one
-  valid To/Cc/Bcc mailbox and builds all address and message headers with lettre; the frontend never
+  valid To/Cc/Bcc mailbox and builds all address and message headers with lettre; the UI never
   supplies raw headers or SMTP credentials.
 - The selected account supplies the From mailbox and SMTP configuration. Password accounts reuse
   their keyring-held IMAP password with SMTP `PLAIN`/`LOGIN`; Gmail obtains an access token through
@@ -446,12 +465,12 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
 - SMTP acceptance completes the command. Providers such as Gmail normally copy SMTP submissions to
   Sent themselves; Cosmic Mail does not locally insert or IMAP-APPEND the outgoing message.
 
-## Message actions (commands.rs + sync/imap.rs)
+## Message actions (backend.rs + sync/imap.rs)
 
 Flag/archive/delete/move follow the same shape as `mark_read`: locate the row → open a
 per-command IMAP connection → select the source folder → run the server op → update the DB →
-emit events. All are server-authoritative; the local cache is adjusted optimistically on the
-frontend and reconciled by the emitted `mail:messages-updated` events (which refetch the page
+emit events. All are server-authoritative; the local cache is adjusted optimistically in the
+UI and reconciled by the emitted `mail:messages-updated` events (which refetch the page
 and reload folder counts).
 
 - **Mark read/unread** (`mark_read`) — `UID STORE ±FLAGS (\Seen)`, updates the local row, adjusts the
@@ -635,91 +654,64 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 
 ## Reader remote-content policy
 
-- HTML message bodies are sanitized with DOMPurify and rendered in a sandboxed `srcdoc` iframe.
-  Sender scripts, style elements, frames, objects, embeds, forms, and `srcset` remain forbidden.
-- Every generated iframe document places a Content Security Policy before sender content. The
-  default policy denies all network resources while allowing trusted inline reader styles and
-  embedded `data:`/`cid:` images. This also blocks tracking pixels referenced by inline CSS.
+- HTML message bodies are **never rendered as HTML**. `ui::html::render` parses them with
+  `html2text` (rich mode, `raw_mode` so layout tables flatten to one column) into annotated text
+  lines — paragraphs, list items, quotes, preformatted blocks, with strong/emphasis/code/strike
+  and link annotations (`<b>`/`<i>` are rewritten to `<strong>`/`<em>` first). Scripts, style
+  sheets, forms, frames, objects and event handlers produce no output and never execute; there
+  is no DOM, no JavaScript engine, and no CSS. The reader draws the lines as Rune rich text that
+  wraps to the pane and is selectable. Sender colours are ignored: unstyled and styled mail alike
+  adopt the omarchy theme.
 - Inline `cid:` images are resolved to `data:` URIs backend-side at body-cache time — never by a
   network fetch. When a body is parsed, each `image/*` part carrying a Content-ID whose decoded size
   is ≤ 512 KiB, and while a running per-message budget of ≤ 2 MiB is not exceeded, has its stored
   `body_html` `cid:<content-id>` references rewritten (case-insensitive, exact string match) to
   `data:<mime>;base64,<payload>` before caching. Over-cap parts keep their `cid:` reference, which
-  renders blank under the CSP (`cid:` has no resolver in the sandboxed frame) — safe by construction.
-  This happens without rendering HTML or loading any resource.
-- A visible reader action may allow HTTP(S) image resources for the selected message.
-  Consent is keyed by message rowid, kept only for the current frontend session, and never carries
-  over to another message or persists across application restarts. Sanitization and sandboxing are
-  unchanged when remote content is allowed.
+  shows as its alt text. The reader decodes `data:` images locally (Rune `ImageCache`) and always
+  shows them; 1–2 px images (spacers, pixels) are skipped.
+- Remote (`http(s)`, protocol-relative) images are blocked by default and show as their alt text.
+  A visible reader action ("Load remote images") allows them for the selected message. Consent
+  is keyed by message rowid, kept only for the current session, and never carries over to another
+  message or persists across restarts. Allowed images are fetched by the backend runtime with
+  `reqwest` (GET, no cookies, ≤ 5 redirects, 15 s timeout, ≤ 8 MiB each, ≤ 40 per message) and
+  decoded locally. Nothing else in a message ever reaches the network.
 - The global `Settings.alwaysDownloadRemoteImages` preference (off by default; persisted in
-  `settings.json`) relaxes the block for **images only**: when on, every HTML message renders with the
-  same `img-src … http: https:` CSP the per-message opt-in uses, and the per-message consent control is
-  hidden because it is already satisfied. This changes nothing else — DOMPurify sanitization, iframe
-  sandboxing, and every non-image CSP directive (scripts, media, objects, frames, forms) stay exactly
-  as they are with the setting off. When the preference is off, per-message session consent semantics
-  above are unchanged. Turning the preference off applies to subsequently rendered messages.
-- Links never navigate the sandbox or reach the app: the iframe runs with `sandbox="allow-scripts"`
-  only (no `allow-popups`, no `allow-same-origin`), giving it an opaque origin — no parent DOM
-  access, no Tauri IPC, and a new-window request still can't reach the system browser directly.
-  Click handling lives inside the frame rather than being observed from the parent, because
-  WebKitGTK keeps a sandboxed `srcdoc` iframe's `contentDocument` null once the real document
-  loads. `messageFrameDocument` injects `LINK_FORWARDER_SCRIPT` into the frame's `<head>`, ahead
-  of sanitized sender HTML in `<body>` (DOMPurify already strips `<script>`, so sender content
-  can never pre-empt or terminate it — the head `<script>` tag is fully closed in the template
-  before sender markup is inserted into `<body>`). The forwarder listens for `click`/`auxclick` on
-  `a[href]`, calls `preventDefault()` unconditionally, and `postMessage`s
-  `{type: OPEN_LINK_MESSAGE_TYPE, href}` to the parent window. The frame CSP gains
-  `script-src 'unsafe-inline'` to permit only this inline forwarder script; `default-src 'none'`
-  still blocks the network, so the frame cannot fetch or exfiltrate anything else.
-  `Reader.svelte` listens for `message` events in a `$effect`, validates
-  `event.source === iframeEl.contentWindow` and the message shape, then resolves the href with
-  `resolveOpenableLinkUrl(href, "about:srcdoc")` (http/https only, in `message-html.ts`) before
-  forwarding to `@tauri-apps/plugin-opener`'s `openUrl`. The `opener:allow-open-url` capability
-  permission is scoped to `http://*` / `https://*` only — narrower than the plugin's
-  `opener:default` set (which also grants `mailto:`/`tel:` and `reveal_item_in_dir`, unneeded
-  here). Gmail OAuth's own consent-URL open (`auth/oauth.rs`) calls the Rust `OpenerExt::open_url`
-  API directly and is unaffected by this capability, since ACL scoping only gates the JS-invoked
-  command.
+  `settings.json`) allows remote **images only** for every message, and hides the per-message
+  consent bar because it is already satisfied. It changes nothing else.
+- Links never navigate anything inside the app. A click on a link calls `Ui::open_link`, which
+  accepts only absolute `http`/`https` URLs (`desktop::openable_url`) and hands them to
+  `xdg-open` (no shell); `javascript:`, `file:`, `mailto:`, `data:` and relative hrefs are
+  ignored. Shipment tracking chips and the Gmail OAuth consent URL use the same `open_url`.
 
-## Automation bridge (debug builds only — `automation.rs`)
+## Headless tooling and tests
 
-Scripted end-to-end tests drive the real webview through an in-app bridge. Arch/CachyOS
-`webkit2gtk-4.1` ships no `WebKitWebDriver`, so the standard `tauri-driver` route is
-unavailable; the bridge replaces it. **It exists only in `debug_assertions` builds** —
-`lib.rs` gates both `mod automation;` and the `automation::spawn` call on `cfg`, so it is
-compiled out of every release/promoted binary. It never appears in the invoke handler and
-adds no wire types or events.
+There is no automation bridge: the UI is Rust, so tests drive it in-process.
 
-- **Transport.** A raw loopback HTTP/1.1 listener on `127.0.0.1:4127` (override with
-  `COSMIC_MAIL_AUTOMATION_PORT`), on tokio (no new crates). Binds loopback only; one
-  request per `Connection: close`. Bind failure is logged and non-fatal. Never handles
-  secrets.
-- **`GET /health`** → `200 {"ok":true}` once the main webview exists; `503` otherwise. A
-  client's readiness wait gates on this, so it means "UI drivable", not just "socket up".
-- **`POST /eval`**, body = a JS **function body** → runs it in the main webview via
-  `WebviewWindow::eval_with_callback` (WebKitGTK `run_javascript` → `js_value().to_json`)
-  and returns the value. The snippet is wrapped in a try/catch IIFE, so:
-  - success → `{"ok":true,"value":<the JSON value; undefined coerced to null>}`
-  - a throw → `{"ok":false,"error":"<message>"}`
-  Only JSON-serializable return values survive (strings, numbers, booleans, arrays, plain
-  objects) — return element *text*/counts, not DOM nodes.
-- **No promise awaiting.** WebKitGTK evaluates each snippet synchronously and does not
-  await a returned Promise. Waiting for async UI (a click that renders a pane) is the
-  client's job, done by polling `/eval` until a condition holds — never by returning a
-  Promise from the snippet.
-- **Client + tests** live in `e2e/` (`client.mjs` `Bridge`, `*.test.mjs` on `node --test`,
-  `npm run e2e`). See `e2e/README.md` for the run recipe and the single-instance/port
-  constraints.
+- **Unit tests** cover the pure helpers (`ui::format`, `compose`, `palette`, `pane`, `html`,
+  `theme`) and the backend modules.
+- **UI behaviour tests** (`src/ui/tests.rs`) build the real view over the demo mailbox on
+  `rune::Runtime` — Rune's headless runtime with the same layout, hit testing, focus and key
+  routing as a window, on a virtual clock — and drive it with pointer presses, keys and typing
+  (`j`/`k`, `gg`/`G`, `/` + Enter, Ctrl+K, chips, rail, dialogs, optimistic actions, events).
+- **Headless renders**: any Rune tooling flag renders the demo mailbox offscreen with the real
+  renderer: `cosmic-mail --snap out.png [--scene NAME] [--scale 2]`, `--list-scenes`,
+  `--tree tree.json` (element tree), `--script s.json` (scripted input), `--video`. Scenes live
+  in `ui::demo::SCENES`. Without a GPU, use Mesa's lavapipe
+  (`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`).
+- **End to end** (`tests/e2e_greenmail.rs`, `#[ignore]`d unless run with `--ignored`): the
+  real `Backend` over a real database, syncing the GreenMail fixture, with the real view on
+  `rune::Runtime`. It syncs the inbox, opens messages, checks shipment chips, toggles a flag
+  and confirms it persisted, checks the optimistic-delete rollback (the fixture has no Trash),
+  searches the cache, and uses the palette.
 
 ### Hermetic test fixture (debug-only env hooks)
 
-Tests run against a **disposable GreenMail IMAPS server** (`e2e/docker-compose.yml`) seeded
-with fixed fixture emails (`e2e/fixtures/mail/`), not a real mailbox. The app is launched
-against an **isolated XDG profile** — `XDG_CONFIG_HOME`/`XDG_DATA_HOME` pointed at a
-throwaway dir with `e2e/profile/accounts.json` — so a run never touches real accounts or the
-mail DB (both resolve via `dirs::config_dir`/`dirs::data_dir`). Two **`debug_assertions`-only,
-env-gated** hooks bridge the app to the fixture; both are compiled out of release and inert
-unless their env var is set:
+E2E tests run against a **disposable GreenMail IMAPS server** (`e2e/docker-compose.yml`) seeded
+with fixed fixture emails (`e2e/fixtures/mail/`, delivered by `node e2e/seed.mjs`), not a real
+mailbox. The test points `XDG_CONFIG_HOME`/`XDG_DATA_HOME` at a throwaway dir holding
+`e2e/profile/accounts.json`, so a run never touches real accounts or the mail DB (both resolve
+via `dirs::config_dir`/`dirs::data_dir`). Two **`debug_assertions`-only, env-gated** hooks
+bridge the backend to the fixture; both are compiled out of release and inert unless set:
 
 - **`COSMIC_MAIL_EXTRA_CA`** (`sync/imap.rs::tls_config`) — path to a PEM whose certs are
   added to the rustls trust store, so the app accepts the fixture's committed self-signed
@@ -727,13 +719,14 @@ unless their env var is set:
 - **`COSMIC_MAIL_TEST_IMAP_PASSWORD`** (`accounts.rs::get_imap_password`) — returned as the
   IMAP password instead of the keyring, so tests need no Secret Service (e.g. headless CI).
 
-Also: **tray setup is non-fatal** (`lib.rs`) — a missing StatusNotifier host (headless CI
-under Xvfb) logs a warning instead of aborting startup before the webview/bridge come up. CI
-(`.github/workflows/e2e.yml`) builds a debug binary (`tauri build --debug --no-bundle`) and
-runs it under `dbus-run-session -- xvfb-run` via `e2e/ci-run.sh`.
+CI (`.github/workflows/e2e.yml`) starts and seeds the fixture, then runs
+`cargo test --test e2e_greenmail -- --ignored`; no display server or GPU is needed.
 
 ## Conventions
 
-- Rust: edition 2021, `anyhow` internally, `thiserror` at command boundary, `tracing` for logs.
-- No `unwrap()` outside tests/main. Frontend: strict TS, Svelte 5 runes ($state/$derived/$effect).
-- `npm run check` and `cargo check` must pass. Do not commit — the supervisor handles git.
+- Rust: edition 2021, toolchain pinned by `rust-toolchain.toml` (Rune requires it), `anyhow`
+  internally, `thiserror` at the `Backend` boundary, `tracing` for logs.
+- No `unwrap()` outside tests/main. UI state changes only in handlers, `Ui::poll`, and jobs
+  landed through the `Inbox`; views are pure functions of `Ui`.
+- `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` must pass.
+  Do not commit — the supervisor handles git.

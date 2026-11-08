@@ -3,56 +3,67 @@
 ## Commands
 
 ```sh
-# repo root
-npm install            # once
-npm run tauri dev      # run the app (vite on :1420 + cargo build + window)
-npm test               # pure frontend logic tests (node:test)
-npm run check          # svelte-check — must be 0 errors
-npm run build          # static build incl. prerender — must pass
-npm run promote:local  # verify, build, and manually promote the launcher-visible daily build
-
-# src-tauri/
-cargo check
-cargo clippy           # keep at zero warnings
-cargo test --lib       # unit tests (fast, no network)
-cargo test --lib -- --ignored   # live-network tests (ISPDB, provider autoconfig, DNS)
+cargo run                       # run the app (window)
+cargo run -- --background       # no window: tray + background sync only
+cargo test                      # unit tests + UI behaviour tests (fast, no network)
+cargo test -- --ignored         # live-network tests (ISPDB, provider autoconfig, DNS) + E2E
+cargo clippy --all-targets -- -D warnings
 cargo fmt
+cargo build --release           # → target/release/cosmic-mail
 ```
 
-See [RELEASING.md](RELEASING.md) for installation layout, rollback, and the explicit
-promotion policy.
+The toolchain is pinned to 1.99.1 by `rust-toolchain.toml` (Rune requires it); rustup
+installs it on first use. Rune itself is pinned by git rev in `Cargo.toml` — bump the rev
+deliberately, never track `dev`.
 
-Full debug binary: `cargo build` → `src-tauri/target/debug/cosmic-mail` (debug builds
-expect the vite dev server; use `npm run tauri dev` normally).
+Build dependencies: Arch `libxkbcommon wayland vulkan-icd-loader` plus a Vulkan driver;
+Ubuntu `libxkbcommon-dev libwayland-dev libdbus-1-dev` (and `libxkbcommon-x11-0` for
+windowed runs under X11).
 
-The promoted daily build runs as `cosmic-mail.service` for the lifetime of
-`graphical-session.target`. It starts with `--background`, so no window is mapped until the
-launcher or a live notification action activates it. Closing the window hides it without stopping
-sync. Useful checks after promotion:
+### Headless renders (Rune tooling)
+
+The binary doubles as Rune's headless tool. These runs render the built-in demo mailbox
+(`src/ui/demo.rs`) and never touch the profile, the network, or the single-instance
+socket:
 
 ```sh
-systemctl --user status cosmic-mail.service
-systemctl --user restart cosmic-mail.service
+cargo run -- --list-scenes                       # default welcome folder unread search compose
+                                                 # reply palette move add-account settings toasts light
+cargo run -- --snap out.png --scene palette --scale 2
+cargo run -- --tree tree.json --scene default    # element tree: keys, roles, text, rects
+cargo run -- --script s.json --out frames/       # scripted input (see Rune's README)
+```
+
+Without a GPU, install `mesa-vulkan-drivers` and set
+`VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` (lavapipe). Every UI change should
+come with a `--snap` of the affected scene, checked by eye.
+
+### Lifecycle
+
+One process per session: the first launch binds `$XDG_RUNTIME_DIR/cosmic-mail.sock`; a
+later launch (including `--background`) hands its request over the socket and exits, and
+the running process shows and focuses its window. Closing the window hides it without
+stopping sync; **Quit** in the tray ends the process.
+
+If your install runs Cosmic Mail as `cosmic-mail.service` (bound to
+`graphical-session.target`, started with `--background`), a `cargo run` while it is
+active just activates the service's window and exits. Stop it to test a dev build:
+
+```sh
+systemctl --user stop cosmic-mail.service
 journalctl --user -u cosmic-mail.service -f
 ```
 
-Do not run `npm run tauri dev` at the same time as the daily service when testing ownership: both
-builds use the same application identifier, and the first process to own the session D-Bus name is
-the one that receives launcher activations and runs sync.
-
 ## Platform and environment specifics
 
-- On NVIDIA/Wayland systems, WebKitGTK may need `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
-  `main.rs` sets it automatically. Don't remove it.
 - omarchy is installed; mako is the notification daemon; current theme files live at
   `~/.local/state/omarchy/current/theme/` (symlink swapped by `omarchy-theme-set`;
   `~/.config/omarchy/current/` on older releases).
+- The window is borderless (1280×800, min 900×560) with app id / X11 class `cosmic-mail`,
+  which Hyprland rules and the `hyprctl` focus fallback match on.
 - Gmail OAuth credential setup and precedence are documented in [SETUP.md](SETUP.md#gmail).
   Without a credential source, Gmail sign-in and token refresh fail with a clear error;
   `obtaining Gmail access token` warnings mean credentials are missing in that process.
-- Port 1420 is vite's fixed dev port — a stray vite from a previous session blocks new
-  `tauri dev` runs (`pkill -f 'vite dev'`). Also check for orphaned
-  `target/debug/cosmic-mail` processes after killing dev sessions.
 
 ## Local state (wipe these to reset the app)
 
@@ -60,6 +71,7 @@ the one that receives launcher activations and runs sync.
 |---|---|
 | account configs (no secrets) | `~/.config/cosmic-mail/accounts.json` |
 | global preferences (no secrets) | `~/.config/cosmic-mail/settings.json` |
+| UI preferences (pane split) | `~/.config/cosmic-mail/ui.json` |
 | message cache (SQLite, WAL) | `~/.local/share/cosmic-mail/mail.db` |
 | secrets | Secret Service keyring, service `dev.pluscosmic.mail`, keys `imap-password:<id>` / `oauth-refresh-token:<id>` |
 
@@ -71,32 +83,40 @@ Inspect sync progress without the UI:
 - **Theme integration**: run `omarchy-theme-set <name>` while the app is running — expect
   exactly one `emitted omarchy theme change` log line and a full UI re-tint. (Watcher
   events are access-filtered and change-deduped; see GOTCHAS.)
-- **Notifications**: the `test_notification` command sends a sample through mako.
+- **Notifications**: `Backend::test_notification` sends a sample through mako.
   Real-path test: with the app running and synced, send yourself a mail; IDLE should
   produce a mako notification within seconds. Batching: >3 new in one sync pass → one
   summary notification. Test click-to-focus on the live notification before it expires;
   restoring a mako history item cannot reach the original app-side action listener.
-- **Background lifecycle**: promote a build, verify the service is active with no Cosmic Mail
-  window, then launch it twice from Walker (one window, one service PID). Close the window and
+- **Background lifecycle**: start with `--background`, verify there is no Cosmic Mail
+  window, then launch it twice from Walker (one window, one PID). Close the window and
   verify the PID remains; a live notification action or another Walker launch must reveal and
   focus that same window. `pgrep -a cosmic-mail` and `hyprctl clients` are useful corroborating
   checks.
 - **System tray**: with a desktop tray host running, start normally and with `--background`; in
   both cases expect one Cosmic Mail tray icon with **Open Cosmic Mail**, **Sync now**, and **Quit**.
   Open must reveal/focus the existing window. Sync now must emit a new syncing state for every
-  configured account without creating another process. Quit must cleanly stop the process; for a
-  promoted build, verify `cosmic-mail.service` remains inactive rather than restarting it.
+  configured account without creating another process. Quit must cleanly stop the process; under
+  `cosmic-mail.service`, verify it remains inactive rather than restarting.
 - **Pane layout**: drag the separator between the message list and reader, switch between unified
   and account/folder views, and resize or maximize the window. Both panes must remain usable and
-  the reader must receive surplus wide-screen space. Restart the app to verify persistence. With
-  the separator focused, test Left/Right (Shift for larger steps), Home/End, and double-click reset.
+  the reader must receive surplus wide-screen space. Restart the app to verify persistence
+  (`~/.config/cosmic-mail/ui.json`). With the separator focused, test Left/Right (Shift for
+  larger steps), Home/End, and double-click reset.
+- **UI behaviour**: `cargo test` runs `src/ui/tests.rs` — the real view and key handling on
+  Rune's headless `Runtime` over the demo mailbox (j/k/gg/G, filters, search, palette, compose
+  validation, reply seeding, optimistic flag/read/delete, live events, toasts, theme changes,
+  every scene renders). The GreenMail E2E (`tests/e2e_greenmail.rs`, see `e2e/README.md`)
+  drives the same view over the real backend and IMAP.
 - **Compose/send**: automated tests validate construction only and never send external mail. For a
   live check, send through one Gmail and one password account, verify receipt and provider-side Sent
   behavior, then test `c`, `r`, Reply all, Escape, and Ctrl+Enter from the compose dialog.
 - **Body prefetch/privacy**: after an inbox sync, recent/unread messages up to 1 MiB should open
-  immediately without changing unread state before selection. Open an HTML message with a controlled
-  remote image and verify no request occurs until `Load remote images` is pressed; selecting another
-  message must restore the default block. `npm test` covers the generated iframe resource policy.
+  immediately without changing unread state before selection. HTML bodies render as styled text
+  (`src/ui/html.rs`): scripts, styles and forms never run, and only `http(s)` links open, in the
+  browser. Open an HTML message with a controlled remote image and verify no request occurs until
+  `Load remote images` is pressed; selecting another message must restore the default block.
+  `cargo test` covers the HTML conversion and the remote-image banner.
 - **Search**: `cargo test --lib` covers the store layer — FTS5 availability, the MATCH-expression
   builder (quoting/escaping, operators as literals), per-column and prefix matching, account
   scoping, trigger sync (rows appear after `upsert_message`/`set_body`, disappear on delete). For a
@@ -109,14 +129,14 @@ Inspect sync progress without the UI:
   size, inline flag, content-id), the deterministic part index, the cid→data rewrite happening
   under caps and being skipped over the per-part/total budgets, `has_attachments` reconciliation
   from the real parse, filename sanitization, and non-overwriting collision naming (temp dir).
-  `npm test` covers `formatBytes`. For a live check: open a message with an attachment, click its
+  `cargo test` covers `format_bytes`. For a live check: open a message with an attachment, click its
   chip in the reader, and confirm a byte-identical file appears in the downloads directory (a
   second save suffixes `name (1).ext`); confirm an inline `cid:` image renders in the body while an
   over-cap inline image renders blank without any network request.
 - **Message actions**: `cargo test --lib` covers the store layer — `set_flagged`, `remove_message`
   count adjustments (seen vs. unseen, floored at 0) with the FTS delete trigger and attachment
-  cascade, `find_folder_by_role`, and `message_action_context`. `npm test` covers the
-  next-selection helper. The IMAP round-trips cannot be unit-tested without a server. Live check on
+  cascade, `find_folder_by_role`, and `message_action_context`. `cargo test` covers the
+  next-selection helper and the optimistic UI paths (the E2E covers a real failed delete rolling back). The IMAP round-trips cannot be unit-tested without a server. Live check on
   **both** account kinds (Gmail advertises `MOVE`; a plain-IMAP provider such as Purelymail may
   exercise the `UID COPY` + `\Deleted` + `UID EXPUNGE`, or plain-`EXPUNGE`, fallback): with a synced
   account, press `f` to flag (star round-trips to the server), `a` to archive (Gmail: lands in All
@@ -131,5 +151,5 @@ Inspect sync progress without the UI:
 
 ## Logging
 
-`tracing` with env-filter; default `cosmic_mail_lib=info,warn`. Override:
-`RUST_LOG=cosmic_mail_lib=debug npm run tauri dev`. Never log secrets or tokens.
+`tracing` with env-filter; default `cosmic_mail=info,warn`. Override:
+`RUST_LOG=cosmic_mail=debug cargo run`. Never log secrets or tokens.

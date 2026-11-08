@@ -29,7 +29,8 @@ related area. When you learn a new one, add it.
 - **rustls panics at the first TLS connection, not at startup**, when both crypto
   backends are in the tree (`lettre` → `ring`, `reqwest`/`oauth2` → `aws-lc-rs`):
   "Could not automatically determine the process-level CryptoProvider". Fix lives at the
-  top of `lib.rs::run()`: `rustls::crypto::ring::default_provider().install_default()`.
+  top of `app.rs::run()`: `rustls::crypto::ring::default_provider().install_default()`
+  (the E2E harness installs it too).
   If you add/remove TLS-using deps, keep that line, and remember a panic in a tokio
   worker **kills the task silently, not the app** — the UI keeps running while sync is dead.
 - **async-imap base64-encodes SASL authenticator responses itself.** `Authenticator::
@@ -42,18 +43,13 @@ related area. When you learn a new one, add it.
   days.** The failure surfaces as `invalid_grant` on the *refresh exchange*, never at
   IMAP `AUTHENTICATE`. `auth/oauth.rs` tags exactly that case (plus a missing keyring
   entry) with the `AuthExpired` marker so sync emits `needsReauth: true` and Settings
-  offers in-place **Reconnect** (`reauth_gmail_account`). Never tell users to remove and
+  offers in-place **Reconnect** (`Backend::reauth_gmail_account`). Never tell users to remove and
   re-add the account for expired auth — that wipes their local mail cache for nothing.
   Don't broaden the classification: network/server/keyring-outage failures must stay
   plain retryable errors or a flaky network starts demanding pointless re-consents.
 
 ## Platform / desktop
 
-- **WebKitGTK + NVIDIA + Wayland/Hyprland crashes the display connection** (`Gdk Error 71
-  (Protocol error)`) via the DMA-BUF renderer. `main.rs` sets
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` before GTK init (respects an explicit user
-  override). Any secondary webview/window keeps this automatically; don't remove it.
-  Downstream symptom in dev: vite logs "transport was disconnected" when the app dies.
 - **The `notify` crate reports file *access* events on inotify.** A watcher whose
   handler *reads files inside the watched directory* re-triggers itself forever (ours
   looped at exactly the 300ms debounce period). `omarchy.rs` filters
@@ -72,26 +68,18 @@ related area. When you learn a new one, add it.
   the old keys alone leaves the whole palette on the kanagawa fallback while the base
   colours track the theme. See [OMARCHY.md](OMARCHY.md#live-theming) for the mapping;
   check `/usr/share/omarchy/themes/*/colors.toml` before adding a key.
-- **A background Tauri `set_focus()` can be ignored by Hyprland/Wayland focus-stealing
-  prevention.** Notification activation first shows/unminimizes/focuses portably, then uses a
-  fixed-argument (no shell) `hyprctl dispatch focuswindow class:^(cosmic-mail)$` fallback when
-  `HYPRLAND_INSTANCE_SIGNATURE` is present. Test actions on a currently-live notification:
+- **A background client's focus request can be ignored by Hyprland/Wayland focus-stealing
+  prevention.** Activation (notification click, tray, second launch) first goes through
+  `AppHandle::open`/`activate` (with the launcher's XDG activation token when there is one),
+  then `desktop::hyprland_focus` runs a fixed-argument (no shell)
+  `hyprctl dispatch focuswindow class:^(cosmic-mail)$` when `HYPRLAND_INSTANCE_SIGNATURE` is
+  present. The window's app id/class must stay `cosmic-mail` (`rune::tooling::set_app_id`). Test actions on a currently-live notification:
   restored mako history belongs to the old listener and cannot validate the callback.
-- **wry queues `eval` scripts and silently drops their callbacks until the webview's
-  first `LoadEvent::Committed`** (`wry-0.55.1/src/webkitgtk/mod.rs`, `pending_scripts`;
-  the queued scripts later run with a no-op callback, so the results are gone). Through
-  the automation bridge this surfaces as `evaluation callback dropped` on every eval —
-  which is how the whole e2e suite flaked out in 273ms on a slow CI runner. "Window
-  exists" ≠ "webview is scriptable": the bridge's `/health` gates on a real eval
-  round-trip for exactly this reason; never weaken it back to a window-existence check.
-- **WebKitGTK never exposes a sandboxed `srcdoc` iframe's document to its parent** — even
-  with `sandbox="allow-same-origin"`, `contentDocument` goes null once the real document
-  loads (and the frame fires `load` more than once). Chromium happily allows it, so the
-  delegated-click-listener pattern from web articles silently does nothing here. Anything
-  that must observe events inside the reader frame has to run *inside* it (injected
-  script + `postMessage`, with `sandbox="allow-scripts"` for an opaque origin — see the
-  reader links bullet in ARCHITECTURE.md). Verify iframe behavior in a WebKit2GTK
-  harness, not a Chromium browser.
+- **Unix socket paths over 108 bytes fail to bind.** The single-instance socket lives at
+  `$XDG_RUNTIME_DIR/cosmic-mail.sock`; a very long `XDG_RUNTIME_DIR` (seen in test sandboxes)
+  makes `bind` fail, and the app then logs `single-instance socket unavailable` and runs
+  without single-instance handoff rather than refusing to start. Normal sessions
+  (`/run/user/<uid>`) are far below the limit.
 
 ## IMAP sync
 
@@ -139,17 +127,39 @@ related area. When you learn a new one, add it.
 - Our IMAP connector is **implicit-TLS only** — discovery must skip STARTTLS-only IMAP
   entries (returns None if no SSL entry) until STARTTLS support lands.
 
-## Tauri / wire format
+## Rune (UI)
 
-- **Every wire-crossing struct needs `#[serde(rename_all = "camelCase")]`** — including
-  ad-hoc event payload structs in sync code, which is exactly where it was forgotten once
-  (frontend read `accountId`, wire had `account_id`; events silently did nothing).
-  When adding an event, grep the frontend type in `src/lib/types.ts` and match it.
-- Tauri converts JS camelCase invoke args to Rust snake_case params automatically;
-  frontend calls `invoke("add_imap_account", { input })` ↔ Rust `input: ImapAccountInput`.
-- **A plain `cargo build` binary is a dev-mode app, not a standalone debug app.** Without
-  the `custom-protocol` feature (which `npm run tauri build -- --debug` enables), the
-  binary loads `devUrl` instead of embedded assets — and with no Vite server running, the
-  webview sits silently on `about:blank` (bridge evals "work" but see an empty document).
-  Anything that runs a locally built binary (e2e, manual testing) needs the tauri-CLI
-  build, e.g. `npm run tauri build -- --debug --no-bundle`.
+- **Rune is pre-release: pin a git rev, and the toolchain.** `Cargo.toml` pins a `dev` rev
+  (never rewritten upstream); `rust-toolchain.toml` pins 1.99.1, which Rune requires — an older
+  toolchain fails to build it. Its APIs are newer than model memory: read the checkout under
+  `~/.cargo/git/checkouts/rune-*/<rev>/crates/rune/` (its `README.md` is the reference) before
+  writing UI code.
+- **`.grow()` is CSS `flex: g 1 0`** (basis 0). A scroll viewport that grows inside an
+  unbounded column collapses to 0 pt. Bound an ancestor (`.h_full()`) and put `.min_h(0.0)` on
+  every column between it and the viewport, or the content overflows and never scrolls.
+- **`text_input` wraps unless told otherwise.** Single-line fields need `.single_line()` (the
+  placeholder otherwise wraps word by word inside a 30 pt box).
+- **`El::border_sides` takes `[top, right, bottom, left]`** (CSS order) — easy to get the
+  header's bottom rule on its left edge.
+- **`memo(id, version, ..)` reuses the row until `version` changes**, so the version must
+  include everything the row reads — including derived strings like the relative date, or
+  "5m" never ages.
+- **Handlers outlive the commit that built them.** Re-find items by id inside a handler,
+  never by the index they had when the view ran; dialog-field accessors fall back to
+  `Ui::scratch_edit` because an edit can arrive after its dialog closed.
+- **Backend results land through `Inbox`.** In the app it delivers jobs with
+  `AppHandle::update`, which runs on the UI thread even while the window is hidden; in tests
+  and headless runs there is no handle, jobs queue and `Ui::poll` drains them — a test must
+  call `poll` (via `Runtime::update`) to see backend results or events.
+- **A refetch issued before an optimistic removal can land after it** and resurrect the row
+  (the E2E caught this). `Ui::pending_removals` filters rows whose move/delete hasn't been
+  answered out of every refetch and live insert until the server replies.
+- **html2text ignores presentational `<b>`/`<i>`** (it annotates only `<strong>`/`<em>`), and
+  mail uses them constantly. `ui::html` rewrites the tags first, carefully leaving `<br>`,
+  `<body>`, `<blockquote>`, `<img>` alone.
+
+## Wire format
+
+- **Every wire struct keeps `#[serde(rename_all = "camelCase")]`.** `accounts.json` and
+  `settings.json` are persisted in that shape, and the contract in ARCHITECTURE.md describes
+  types in it; renaming a field silently breaks existing profiles.

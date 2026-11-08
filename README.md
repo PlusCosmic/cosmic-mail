@@ -4,7 +4,8 @@ Cosmic Mail is a native Linux mail client built for the
 [Omarchy](https://omarchy.org) desktop. It combines a keyboard-driven interface with
 live Omarchy theming, desktop notifications, and a local-first mail cache.
 
-The application is built with Tauri 2, Rust, Svelte 5, and TypeScript. Gmail and
+The application is written in Rust, with a native GPU-rendered interface built on
+[Rune](https://github.com/anomalyco/rune) (no webview). Gmail and
 password-based IMAP accounts share the same IMAP sync engine; Gmail authenticates with
 OAuth 2.0 rather than an app password.
 
@@ -36,37 +37,34 @@ Open work is tracked in [GitHub issues](https://github.com/PlusCosmic/cosmic-mai
 
 ## Try it from source
 
-Cosmic Mail currently targets Omarchy on Arch Linux. You will need Node.js, Rust, the
-Tauri development prerequisites, and a running Secret Service implementation.
+Cosmic Mail currently targets Omarchy on Arch Linux. You will need Rust (the pinned
+toolchain in `rust-toolchain.toml` installs itself through rustup), a Vulkan driver,
+and a running Secret Service implementation.
 
 ```sh
+sudo pacman -S libxkbcommon wayland vulkan-icd-loader   # plus your GPU's Vulkan driver
 git clone https://github.com/PlusCosmic/cosmic-mail.git
 cd cosmic-mail
-npm install
-npm run tauri dev
+cargo run
 ```
 
-Arch packages required by the application include `webkit2gtk-4.1`, `gtk3`, `librsvg`,
-and `openssl`. Gmail also requires your own Google OAuth desktop client credentials.
-The [setup guide](docs/SETUP.md) covers account configuration, local data, and keyboard
+`cargo run -- --background` starts without a window (tray and sync only). Gmail also
+requires your own Google OAuth desktop client credentials. The
+[setup guide](docs/SETUP.md) covers account configuration, local data, and keyboard
 shortcuts.
 
 ## Development
 
 ```sh
-npm run check
-npm run build
-
-cd src-tauri
-cargo check
-cargo clippy
-cargo test --lib
 cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo run -- --snap out.png --scene default   # headless render of the demo mailbox
 ```
 
 The [development guide](docs/DEVELOPMENT.md) has the complete workflow and subsystem
-test recipes. The [architecture contract](docs/ARCHITECTURE.md) documents every command,
-event, wire type, and database schema shared by the Rust backend and Svelte frontend.
+test recipes. The [architecture contract](docs/ARCHITECTURE.md) documents every backend
+operation, event, wire type, and database schema the Rune UI relies on.
 
 ## Documentation
 
