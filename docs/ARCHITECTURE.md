@@ -23,7 +23,6 @@ src/
   error.rs          # AppError (thiserror); Display is the string the UI toasts
   store.rs          # rusqlite: schema, migrations, queries
   accounts.rs       # Account model, accounts.json persistence, keyring secrets
-  omarchy.rs        # theme reader + file watcher -> AppEvent::ThemeChanged
   notifications.rs  # notify-rust wrapper (mako-aware); click -> AppEvent::Activate
   sync/
     mod.rs          # SyncManager: per-account background task on the tokio runtime, IDLE loop
@@ -37,7 +36,7 @@ src/
                     # (rail, header, folders, footer, toasts), list, reader, modals
     html.rs         # HTML mail -> styled text lines (see "Reader remote-content policy")
     images.rs       # inline data: images, consent-gated remote images, opening links
-    theme.rs        # OmarchyTheme -> Palette (derived tones as sRGB color-mix)
+    theme.rs        # rune-theme-foundation tokens -> Palette; Appearance (system/light/dark)
     compose.rs format.rs palette.rs pane.rs   # pure helpers (unit-tested)
     demo.rs         # demo mailbox + named scenes for headless renders and tests
     tests.rs        # UI behaviour tests on rune::Runtime
@@ -114,13 +113,6 @@ interface Shipment {          // shipments.rs::Carrier + store.rs::ShipmentRow p
   detectedAt: string;         // RFC 3339, when this row was (re)detected
 }
 
-interface OmarchyTheme {
-  name: string;               // e.g. "kanagawa" ($XDG_STATE_HOME/omarchy/current/theme.name)
-  accent: string; foreground: string; background: string; cursor: string;
-  selectionForeground: string; selectionBackground: string;
-  palette: string[];          // color0..color15 as "#rrggbb"
-}
-
 type SyncState = "idle" | "syncing" | "error";
 
 type DiscoverySource = "autoconfig" | "ispdb" | "mx" | "srv" | "guess";
@@ -163,7 +155,6 @@ interface Settings {                    // settings.rs::Settings — global pref
 
 | command | args | returns |
 |---|---|---|
-| `get_theme` | — | `OmarchyTheme` |
 | `list_accounts` | — | `Account[]` |
 | `add_imap_account` | `input: ImapAccountInput` | `Account` (validates by connecting first) |
 | `start_gmail_oauth` | — | `Account` (opens browser, blocks until redirect or 5 min timeout) |
@@ -200,7 +191,6 @@ shows it in a toast. Backend-only helpers used by the shell (not the UI): `start
 
 | event | variant | payload |
 |---|---|---|
-| `omarchy:theme-changed` | `ThemeChanged` | `OmarchyTheme` |
 | `mail:new-messages` | `NewMessages` | `{ accountId, folderId, messages: MessageSummary[] }` |
 | `mail:messages-updated` | `MessagesUpdated` | `{ folderId }` (flags changed / deletions — the UI refetches the page) |
 | `mail:sync-state` | `SyncState` | `{ accountId, state: SyncState, error: string \| null, needsReauth: boolean }` (`needsReauth` is `true` only when the failure is classified `AuthExpired` — see the Gmail section — meaning retrying cannot help and the UI should offer Reconnect) |
@@ -341,26 +331,14 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
     sync pass for a folder, send ONE notification: `{n} new messages in {account email}`.
   - Only notify for folders with role `inbox`, only for UIDs above `last_seen_uid`, never
     during an account's initial sync.
-- Theme: the omarchy `current` dir is `$XDG_STATE_HOME/omarchy/current`
-  (`~/.local/state/omarchy/current`); fall back to the pre-state-dir location
-  `$XDG_CONFIG_HOME/omarchy/current` only when that alone exists. Read
-  `current/theme/colors.toml` and `current/theme.name`. `colors.toml` uses named colours
-  mapped onto the palette as color0=darker_background (else background),
-  color1..6=red,green,yellow,blue,magenta,cyan, color7=foreground, color8=muted,
-  color9..14=bright_red,bright_green,bright_yellow,bright_blue,bright_magenta,bright_cyan,
-  color15=bright_foreground; selectionBackground=selection; cursor and
-  selectionForeground default to foreground. The older dialect (cursor,
-  selection_foreground, selection_background, color0..color15) is honoured as a fallback;
-  an explicit color0/color7 outranks background/foreground. `current/theme` is a symlink
-  swapped by `omarchy-theme-set`; watch the **parent directory** `current` with the
-  `notify` crate (watch for any event, then debounce ~300ms, re-read, emit
-  `omarchy:theme-changed` only if the parsed theme actually changed). Fall back to
-  built-in kanagawa values if files are missing.
-- The UI maps OmarchyTheme onto `ui::theme::Palette`: `bg`, `fg`, `accent`, `cursor`,
-  `sel_bg`, `sel_fg`, `c[0..16]`, plus derived tones (`border`, `muted`, `panel`, `hover`,
-  `accent_dim`, `rail`, ...) computed like CSS `color-mix(in srgb, …)` on sRGB-encoded channels.
-  All UI colors derive from these; no hardcoded colors outside the kanagawa fallback. A theme
-  change swaps the palette and every color re-renders live.
+- Theme: the UI's colours, fonts and type come from `rune-theme-foundation`
+  (PlusCosmic/ui-foundation, generated from `@pluscosmic/ui`'s `tokens.css`). `ui::theme::Palette`
+  names the foundation's tokens by the roles the views use (`bg`, `fg`, `muted` = `fg-soft`,
+  `panel` = `surface`, `panel_2` = `bg-soft`, `fill`/`fill_ink` for primary buttons, `error` =
+  `danger`, ...); no colour is hard-coded outside the foundation. The colour scheme and the
+  appearance (system/light/dark) are UI preferences in `ui.json` (`colorScheme`, `appearance`),
+  not backend settings, and the palette is rebuilt each frame from them and the desktop's
+  light/dark preference, so a change re-renders at once.
 
 ## UI pane layout
 
@@ -393,7 +371,7 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   `Settings.windowTitleBar` is off (for a tiling window manager such as omarchy's Hyprland,
   which draws its own), 1280×800, minimum 900×560, Wayland app id / X11 class
   `cosmic-mail`. A normal first launch opens it; a `--background` first launch starts windowless
-  (`App::windowless`) while sync, IDLE, theme watching, and notification listeners run normally.
+  (`App::windowless`) while sync, IDLE, and notification listeners run normally.
 - Closing the window hides it (`App::keep_running`; on Wayland the toplevel is destroyed and
   recreated on open). This does not stop the process or its sync tasks. Session
   shutdown/systemd stop and tray Quit are actual process exits.
@@ -666,7 +644,7 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   sheets, forms, frames, objects and event handlers produce no output and never execute; there
   is no DOM, no JavaScript engine, and no CSS. The reader draws the lines as Rune rich text that
   wraps to the pane and is selectable. Sender colours are ignored: unstyled and styled mail alike
-  adopt the omarchy theme.
+  adopt the app's colour scheme.
 - Inline `cid:` images are resolved to `data:` URIs backend-side at body-cache time — never by a
   network fetch. When a body is parsed, each `image/*` part carrying a Content-ID whose decoded size
   is ≤ 512 KiB, and while a running per-message budget of ≤ 2 MiB is not exceeded, has its stored

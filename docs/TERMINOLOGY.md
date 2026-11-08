@@ -81,9 +81,9 @@ the folder picker for **move**. `ui/view/modals.rs` renders it; `ui/palette.rs` 
 | **backend** | The UI-agnostic Rust core under `src/` (everything outside `ui/` and `app.rs`), responsible for accounts, secrets, storage, network protocols, sync, notifications, and desktop lifecycle. |
 | **wire type** | A camelCase-serializable data shape in `wire.rs` (and the account/settings types) passed between backend and UI and persisted as JSON. `ARCHITECTURE.md` is its binding contract. |
 | **command** | A `Backend` method the UI calls, such as `list_messages` or `mark_read` (the former Tauri commands, same names). The UI runs it on the backend's tokio runtime and lands the result on the UI thread. |
-| **event** | An `AppEvent` the backend emits through its `Events` sink — theme, new-message, messages-updated, sync-state, and activation updates. |
+| **event** | An `AppEvent` the backend emits through its `Events` sink — new-message, messages-updated, sync-state, and activation updates. |
 | **sync state** | An account's current `idle`, `syncing`, or `error` status exposed to the UI. `idle` means no sync pass is active; background IDLE waiting may still be running. |
 | **process owner** | The single Cosmic Mail process for a desktop session that owns sync tasks, notification listeners, and the main window. Later launches activate this process instead of creating another engine. |
 | **background service** | The systemd user service installed by the Arch package. It starts the process owner hidden and keeps it running for the graphical session. |
 | **activation** | A launcher invocation (handed over the single-instance socket), tray click, or live notification action that reveals and focuses the existing main window. |
-| **Omarchy theme** | The active Omarchy color data read by the backend and mapped to the UI's `Palette` (`ui/theme.rs`). Theme changes re-tint the running app, message bodies included. |
+| **colour scheme** | One of the UI foundation's schemes (Stacks, Oxblood, Ink, Walnut, Graphite), each light and dark, from `rune-theme-foundation` and mapped to the UI's `Palette` (`ui/theme.rs`). Chosen in the settings dialog with the **appearance** (system, light or dark). |

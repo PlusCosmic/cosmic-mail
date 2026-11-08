@@ -5,7 +5,8 @@ keep instructions tool-agnostic unless a section explicitly names a tool.
 
 Native Linux mail client for the omarchy desktop. One Rust crate: the backend
 (`src/`, UI-agnostic) and a native GPU UI built with [Rune](https://github.com/anomalyco/rune)
-(`src/ui/`). IMAP + Gmail (OAuth2→XOAUTH2), mako notifications, live omarchy theming.
+(`src/ui/`). IMAP + Gmail (OAuth2→XOAUTH2), mako notifications, and the PlusCosmic UI
+foundation's look (`rune-theme-foundation`: colour schemes, light/dark, type).
 
 **Start with `docs/README.md`** (2-min overview + reading order). Non-negotiables:
 

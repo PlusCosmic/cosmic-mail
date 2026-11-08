@@ -9,8 +9,6 @@ artifacts and distro packages are planned for a later stage of the project.
 - Arch packages: `libxkbcommon`, `wayland`, `vulkan-icd-loader`, and your GPU's Vulkan driver
   (`vulkan-radeon`, `vulkan-intel`, `nvidia-utils`, ...)
 - A running Secret Service implementation for credential storage
-- Optional: the CaskaydiaMono or JetBrainsMono Nerd Font (Omarchy ships them); otherwise the
-  system monospace font is used
 
 Omarchy's default environment provides the expected Hyprland, Mako, and Secret Service
 integration.

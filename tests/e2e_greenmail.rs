@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 use cosmic_mail::backend::Backend;
 use cosmic_mail::events::Events;
-use cosmic_mail::omarchy::kanagawa_fallback;
 use cosmic_mail::store;
 use cosmic_mail::ui::view::{on_key, view};
 use cosmic_mail::ui::{Inbox, Modal, Ui};
@@ -69,7 +68,7 @@ impl Harness {
         );
         backend.start_all_syncs();
 
-        let ui = Ui::new(Some(backend), inbox, kanagawa_fallback());
+        let ui = Ui::new(Some(backend), inbox);
         let env = Env {
             system_dark: true,
             scale: 1.0,

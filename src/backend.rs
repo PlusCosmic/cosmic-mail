@@ -14,7 +14,6 @@ use rusqlite::Connection;
 use crate::accounts::{self, Account, AccountKind};
 use crate::error::{AppError, AppResult};
 use crate::events::{AppEvent, Events};
-use crate::omarchy::{self, OmarchyTheme};
 use crate::settings::{self, Settings};
 use crate::shipments;
 use crate::store;
@@ -78,11 +77,6 @@ impl Backend {
     fn start_sync(&self, account: Account) {
         self.sync
             .start(self.events.clone(), self.db.clone(), account);
-    }
-
-    /// Read the active omarchy theme.
-    pub fn get_theme(&self) -> OmarchyTheme {
-        omarchy::read_theme()
     }
 
     /// List all configured accounts (public projection).

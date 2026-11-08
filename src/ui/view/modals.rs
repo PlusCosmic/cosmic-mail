@@ -4,7 +4,7 @@ use rune::{col, el, row, text, text_input, Cursor, El, Key, KeyEvent, ScrollSpec
 
 use super::{button, field_box, font, kbd, label, BODY, RADIUS, SMALL};
 use crate::autoconfig::{DiscoveredKind, DiscoverySource};
-use crate::ui::theme::{mix, Palette};
+use crate::ui::theme::{mix, scheme_words, Appearance, Palette};
 use crate::ui::{AddAccountForm, AddTab, ComposeForm, Modal, PaletteState, SettingsState, Ui};
 
 /// The open modal over a dimming scrim.
@@ -668,6 +668,51 @@ fn setting_toggle(
         )
 }
 
+/// The foundation's colour schemes as cards, and light, dark or the desktop's choice.
+fn appearance(s: &Ui, p: &Palette) -> El {
+    let mut modes = row()
+        .key("appearance")
+        .self_start()
+        .role("radiogroup")
+        .label("Appearance")
+        .gap(2.0)
+        .px(3.0)
+        .py(3.0)
+        .radius(RADIUS)
+        .fill(p.panel_2)
+        .border(1.0, p.border);
+    for a in Appearance::ALL {
+        let chosen = a == s.appearance;
+        modes = modes.child(
+            row()
+                .key(format!("appearance-{}", a.name()))
+                .role("radio")
+                .label(a.label())
+                .checked(chosen)
+                .h(26.0)
+                .px(14.0)
+                .center()
+                .radius(RADIUS)
+                .fill(if chosen { p.panel } else { p.panel_2 })
+                .focusable(true)
+                .cursor(Cursor::Pointer)
+                .on_press(move |s: &mut Ui| s.set_appearance(a))
+                .child(label(
+                    a.label(),
+                    font(12.5, 600.0),
+                    if chosen { p.fg } else { p.muted },
+                )),
+        );
+    }
+    let schemes = rune_theme_foundation::parts::scheme_picker(
+        s.scheme,
+        p.dark,
+        scheme_words,
+        |s: &mut Ui, scheme, _tx: &mut Tx| s.set_scheme(scheme),
+    );
+    col().w_full().gap(12.0).child(modes).child(schemes)
+}
+
 fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
     let remote_row = setting_toggle(
         "setting-remote-images",
@@ -788,7 +833,7 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
         .key("settings")
         .role("dialog")
         .label("Settings")
-        .w(560.0)
+        .w(680.0)
         .child(dialog_head("Settings", p, true))
         .child(
             col()
@@ -798,15 +843,8 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                 .gap(18.0)
                 .child(section("Privacy", remote_row))
                 .child(section("Window", title_bar_row))
+                .child(section("Appearance", appearance(s, p)))
                 .child(section("Accounts", accounts))
-                .child(section(
-                    "Theme",
-                    label(
-                        format!("Following omarchy theme “{}”", s.theme_name),
-                        font(12.0, 400.0),
-                        p.muted,
-                    ),
-                ))
                 .child(section(
                     "About",
                     label(

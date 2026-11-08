@@ -32,14 +32,14 @@ use crate::accounts::AccountPublic;
 use crate::autoconfig::DiscoveredConfig;
 use crate::backend::Backend;
 use crate::events::AppEvent;
-use crate::omarchy::OmarchyTheme;
 use crate::settings::Settings;
 use crate::sync::SyncState;
 use crate::wire::{Folder, MessageBody, MessageSummary, Shipment};
 
 use self::compose::ComposeSeed;
 pub use self::images::{short_hash, BodyImage};
-use self::theme::Palette;
+use self::theme::{Appearance, Palette};
+pub use rune_theme_foundation::ColorScheme;
 
 /// Messages fetched per page.
 pub const PAGE_LIMIT: i64 = 50;
@@ -335,8 +335,9 @@ pub struct Ui {
     /// The app's clock at the last `poll`, in seconds.
     pub(crate) now: f64,
 
-    pub palette: Palette,
-    pub theme_name: String,
+    /// The foundation colour scheme, and whether it is light or dark (UI preferences).
+    pub scheme: ColorScheme,
+    pub appearance: Appearance,
 
     pub accounts: Vec<AccountPublic>,
     pub folders: HashMap<String, Vec<Folder>>,
@@ -406,14 +407,14 @@ pub struct Ui {
 
 impl Ui {
     /// UI state over a backend (`None` renders without one: scenes and tests).
-    pub fn new(backend: Option<Arc<Backend>>, inbox: Inbox, theme: OmarchyTheme) -> Self {
+    pub fn new(backend: Option<Arc<Backend>>, inbox: Inbox) -> Self {
         Ui {
             backend,
             inbox,
             window: None,
             now: 0.0,
-            palette: Palette::from_theme(&theme),
-            theme_name: theme.name,
+            scheme: ColorScheme::default(),
+            appearance: Appearance::default(),
             accounts: Vec::new(),
             folders: HashMap::new(),
             sync_states: HashMap::new(),
@@ -456,12 +457,18 @@ impl Ui {
         }
     }
 
-    /// Persist UI preferences here, restoring the saved pane split.
+    /// Persist UI preferences here, restoring the saved pane split, scheme and appearance.
     pub fn set_prefs(&mut self, prefs: rune::prefs::Prefs) {
         if let Some(ratio) = prefs.get::<f32>("listPaneRatio") {
             if pane::is_valid_pane_ratio(ratio) {
                 self.pane_ratio = ratio;
             }
+        }
+        if let Some(name) = prefs.get::<String>("colorScheme") {
+            self.scheme = ColorScheme::from_name(&name);
+        }
+        if let Some(name) = prefs.get::<String>("appearance") {
+            self.appearance = Appearance::from_name(&name);
         }
         self.prefs = Some(prefs);
     }
@@ -512,10 +519,29 @@ impl Ui {
         self.toasts.retain(|t| t.id != id);
     }
 
-    /// Apply a new omarchy theme.
-    pub fn set_theme(&mut self, theme: &OmarchyTheme) {
-        self.palette = Palette::from_theme(theme);
-        self.theme_name = theme.name.clone();
+    /// The colours for this frame, given whether the desktop is dark.
+    pub fn palette(&self, system_dark: bool) -> Palette {
+        Palette::new(self.scheme, self.appearance.is_dark(system_dark))
+    }
+
+    /// Switch the colour scheme and remember it.
+    pub fn set_scheme(&mut self, scheme: ColorScheme) {
+        self.scheme = scheme;
+        self.persist_pref("colorScheme", scheme.name());
+    }
+
+    /// Switch between light, dark and the desktop's choice, and remember it.
+    pub fn set_appearance(&mut self, appearance: Appearance) {
+        self.appearance = appearance;
+        self.persist_pref("appearance", appearance.name());
+    }
+
+    fn persist_pref(&mut self, key: &str, value: &str) {
+        if let Some(prefs) = &mut self.prefs {
+            if let Err(err) = prefs.set(key, &value.to_string()) {
+                tracing::debug!(error = %err, key, "could not persist a UI preference");
+            }
+        }
     }
 
     /// Per frame: land finished work, stamp and expire toasts, and run the

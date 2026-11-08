@@ -265,7 +265,7 @@ fn message_row(
             );
         }
         if m.flagged {
-            meta = meta.child(label("★", font(10.0, 400.0), p.c[3]).label("Flagged"));
+            meta = meta.child(label("★", font(10.0, 400.0), p.warn).label("Flagged"));
         }
         text_col = text_col.child(meta);
     }

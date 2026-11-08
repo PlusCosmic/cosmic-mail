@@ -16,16 +16,13 @@ use crate::desktop;
 #[cfg(unix)]
 use crate::desktop::{Instance, InstanceRequest};
 use crate::events::{AppEvent, Events};
-use crate::omarchy;
 use crate::store;
 use crate::sync;
 use crate::ui::{demo, view, Inbox, Ui};
 
-/// The UI font: the omarchy default terminal font, then common fallbacks.
-pub const FAMILIES: (&str, &str) = (
-    "\"CaskaydiaMono Nerd Font\", \"JetBrainsMono Nerd Font\", ui-monospace",
-    "\"CaskaydiaMono Nerd Font\", \"JetBrainsMono Nerd Font\", ui-monospace",
-);
+/// The UI fonts: the foundation's Instrument Sans for text and Fraunces for display, bundled
+/// so every desktop renders the same face.
+pub use rune_theme_foundation::{FAMILIES, FONTS};
 
 /// The Wayland app id / X11 class (matches the desktop entry and hyprctl rules).
 pub const APP_ID: &str = "cosmic-mail";
@@ -44,6 +41,7 @@ fn poll(s: &mut Ui, now: f64, tx: &mut Tx) -> bool {
 pub fn spec() -> AppSpec<Ui> {
     AppSpec {
         scenes: demo::SCENES,
+        fonts: FONTS,
         families: FAMILIES,
         min_size: Some((900.0, 560.0)),
         setup: Some(setup),
@@ -167,9 +165,6 @@ pub fn run() {
     };
     let backend = Backend::new(conn, events.clone(), runtime.handle().clone());
 
-    let theme = omarchy::read_theme();
-    omarchy::spawn_watcher(events.clone());
-
     #[cfg(unix)]
     if let Some(listener) = listener {
         let handle = handle.clone();
@@ -195,7 +190,7 @@ pub fn run() {
         let backend = backend.clone();
         let handle = handle.clone();
         app = app.init(move || {
-            let mut ui = Ui::new(Some(backend), inbox, theme);
+            let mut ui = Ui::new(Some(backend), inbox);
             ui.set_window(handle);
             if let Some(path) = prefs_path {
                 ui.set_prefs(rune::prefs::Prefs::at(path));
