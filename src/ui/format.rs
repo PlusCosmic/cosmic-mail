@@ -38,19 +38,6 @@ pub fn avatar_slot(seed: &str) -> usize {
     AVATAR_SLOTS[h as usize % AVATAR_SLOTS.len()]
 }
 
-/// Glyph per folder role. Deliberately no icon library.
-pub fn role_glyph(role: &str) -> &'static str {
-    match role {
-        "inbox" => "📥",
-        "sent" => "📤",
-        "drafts" => "✎",
-        "trash" => "🗑",
-        "archive" => "📦",
-        "spam" => "⚠",
-        _ => "📁",
-    }
-}
-
 /// Display label per shipment carrier code.
 pub fn carrier_label(carrier: &str) -> &str {
     match carrier {
@@ -61,14 +48,6 @@ pub fn carrier_label(carrier: &str) -> &str {
         "royal_mail" => "Royal Mail",
         "amazon" => "Amazon",
         other => other,
-    }
-}
-
-/// Glyph per shipment carrier.
-pub fn carrier_glyph(carrier: &str) -> &'static str {
-    match carrier {
-        "amazon" => "🛒",
-        _ => "📦",
     }
 }
 
@@ -144,6 +123,15 @@ pub fn format_bytes(bytes: f64) -> String {
 /// Strip that prefix for display only — every lookup keeps the real name.
 pub fn display_folder_name(name: &str) -> &str {
     name.strip_prefix("[Gmail]/").unwrap_or(name)
+}
+
+/// A folder's name as the UI shows it: "Inbox" for the inbox, whatever the server calls it.
+pub fn folder_title<'a>(name: &'a str, role: &str) -> &'a str {
+    if role == "inbox" {
+        "Inbox"
+    } else {
+        display_folder_name(name)
+    }
 }
 
 /// The local part of an email address (`harry` for `harry@example.com`).

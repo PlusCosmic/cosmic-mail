@@ -2,10 +2,18 @@
 
 use rune::{col, el, row, text, text_input, Cursor, El, Key, KeyEvent, ScrollSpec, TextEdit, Tx};
 
-use super::{button, field_box, font, kbd, label, BODY, RADIUS, SMALL};
+use rune::Icon;
+
+use super::chrome::account_tag;
+use super::{
+    btn, button, display, eyebrow, field_box, font, glyph, icon_button, icons, kbd, label, Kind,
+    BODY, RADIUS, RADIUS_LG, SMALL,
+};
 use crate::autoconfig::{DiscoveredKind, DiscoverySource};
 use crate::ui::theme::{mix, scheme_words, Appearance, Palette};
-use crate::ui::{AddAccountForm, AddTab, ComposeForm, Modal, PaletteState, SettingsState, Ui};
+use crate::ui::{
+    Action, AddAccountForm, AddTab, ComposeForm, Modal, PaletteState, SettingsState, Ui,
+};
 
 /// The open modal over a dimming scrim.
 pub fn modal(s: &Ui, m: &Modal, p: &Palette) -> El {
@@ -17,45 +25,52 @@ pub fn modal(s: &Ui, m: &Modal, p: &Palette) -> El {
     };
     let dialog = dialog
         .fill(p.bg)
-        .border(1.0, p.border_strong)
+        .border(1.0, p.border)
         .radius(RADIUS)
+        .shadow(24.0, 80.0, p.shadow.alpha(if p.dark { 0.6 } else { 0.28 }))
         .modal(true, |s: &mut Ui| s.close_modal());
     let scrim = col()
         .key("scrim")
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .fill(p.bg.alpha(0.6))
+        .fill(p.shadow.alpha(if p.dark { 0.55 } else { 0.38 }))
         .items_center()
         .raise();
     if top {
-        scrim.pt(80.0).child(dialog)
+        scrim.pt(110.0).child(dialog)
     } else {
         scrim.justify_center().child(dialog)
     }
 }
 
-fn dialog_head(title: &str, p: &Palette, enabled: bool) -> El {
-    let mut close = row()
-        .key("dialog-close")
-        .role("button")
-        .label("Close")
-        .size(24.0, 24.0)
-        .center()
-        .radius(RADIUS)
-        .child(label("×", font(16.0, 400.0), p.muted));
-    if enabled {
-        close = close
-            .cursor(Cursor::Pointer)
-            .hover(p.fg.alpha(0.07))
-            .on_press(|s: &mut Ui| s.close_modal());
+fn dialog_head(title: &str, over: Option<String>, p: &Palette, enabled: bool) -> El {
+    let mut words = col().grow(1.0).min_w(0.0).gap(3.0);
+    if let Some(over) = over {
+        words = words.child(eyebrow(over, p));
     }
+    words = words.child(label(title.to_string(), display(23.0), p.fg));
+    let close = if enabled {
+        icon_button(
+            "dialog-close",
+            "Close",
+            &icons::CLOSE,
+            p.muted,
+            p,
+            |s, _| s.close_modal(),
+        )
+    } else {
+        row().size(32.0, 32.0)
+    };
     row()
         .key("dialog-head")
         .w_full()
-        .px(16.0)
-        .py(10.0)
+        .pl(22.0)
+        .pr(14.0)
+        .pt(16.0)
+        .pb(14.0)
+        .gap(12.0)
         .center_y()
         .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
-        .child(label(title.to_string(), font(13.0, 700.0), p.fg).grow(1.0))
+        .child(words)
         .child(close)
 }
 
@@ -87,7 +102,7 @@ fn field(
     col()
         .w_full()
         .gap(4.0)
-        .child(label(caption.to_string(), SMALL, p.muted))
+        .child(label(caption.to_string(), font(12.0, 600.0), p.muted))
         .child(field_box(format!("{key}-box"), edit.focused, p, input))
 }
 
@@ -129,6 +144,14 @@ fn compose(s: &Ui, f: &ComposeForm, p: &Palette) -> El {
         "New message"
     } else {
         "Reply"
+    };
+    let over = if f.seed.reply_to_message_id.is_some() {
+        f.seed
+            .to_addrs
+            .first()
+            .map(|to| format!("Replying to {to}"))
+    } else {
+        Some(format!("From {}", account_tag(s, &f.account_id)))
     };
 
     // From: one chip per account (fixed for replies).
@@ -204,18 +227,18 @@ fn compose(s: &Ui, f: &ComposeForm, p: &Palette) -> El {
         .key("compose")
         .role("dialog")
         .label("Compose message")
-        .w(640.0)
+        .w(680.0)
         .max_w(900.0)
-        .child(dialog_head(title, p, enabled));
+        .child(dialog_head(title, over, p, enabled));
     let mut fields = col()
         .w_full()
-        .px(16.0)
-        .py(12.0)
-        .gap(10.0)
+        .px(22.0)
+        .py(16.0)
+        .gap(12.0)
         .child(
             col()
-                .gap(4.0)
-                .child(label("From", SMALL, p.muted))
+                .gap(5.0)
+                .child(label("From", font(12.0, 600.0), p.muted))
                 .child(from),
         )
         .child(field(
@@ -274,8 +297,8 @@ fn compose(s: &Ui, f: &ComposeForm, p: &Palette) -> El {
         .child(
             col()
                 .w_full()
-                .gap(4.0)
-                .child(label("Message", SMALL, p.muted))
+                .gap(5.0)
+                .child(label("Message", font(12.0, 600.0), p.muted))
                 .child(body_box),
         );
     if let Some(err) = &f.error {
@@ -286,35 +309,31 @@ fn compose(s: &Ui, f: &ComposeForm, p: &Palette) -> El {
         row()
             .key("compose-actions")
             .w_full()
-            .px(16.0)
-            .py(10.0)
+            .px(22.0)
+            .pt(4.0)
+            .pb(18.0)
             .gap(8.0)
             .center_y()
-            .border_sides([1.0, 0.0, 0.0, 0.0], p.border)
-            .child(
-                row()
-                    .gap(3.0)
-                    .center_y()
-                    .child(kbd("ctrl", p))
-                    .child(label("+", SMALL, p.muted))
-                    .child(kbd("enter", p))
-                    .child(label("send", SMALL, p.muted).ml(3.0)),
-            )
+            .child(label("Plain text · sent over SMTP", SMALL, p.muted))
             .child(el().grow(1.0))
-            .child(button(
+            .child(btn(
                 "compose-cancel",
                 "Cancel",
-                p,
-                false,
+                None,
+                None,
+                Kind::Ghost,
                 enabled,
+                p,
                 |s, _| s.close_modal(),
             ))
-            .child(button(
+            .child(btn(
                 "compose-send",
                 if f.busy { "Sending…" } else { "Send" },
-                p,
-                true,
+                Some(&icons::SEND),
+                Some("ctrl ⏎"),
+                Kind::Primary,
                 enabled,
+                p,
                 |s, _| s.send_message(),
             )),
     )
@@ -327,10 +346,10 @@ trait BoxExt {
 
 impl BoxExt for El {
     fn p_box(self, p: &Palette, focused: bool) -> El {
-        self.padding(8.0)
+        self.padding(12.0)
             .radius(RADIUS)
-            .fill(p.bg)
-            .border(1.0, if focused { p.accent } else { p.border })
+            .fill(p.panel)
+            .border(1.0, if focused { p.accent_dim } else { p.border })
     }
 }
 
@@ -368,7 +387,7 @@ fn add_account(_s: &Ui, f: &AddAccountForm, p: &Palette) -> El {
         .key("add-tabs")
         .role("tablist")
         .w_full()
-        .px(16.0)
+        .px(22.0)
         .gap(4.0)
         .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
         .child(tab(
@@ -386,7 +405,7 @@ fn add_account(_s: &Ui, f: &AddAccountForm, p: &Palette) -> El {
             p,
         ));
 
-    let mut body = col().key("add-body").w_full().px(16.0).py(14.0).gap(10.0);
+    let mut body = col().key("add-body").w_full().px(22.0).py(18.0).gap(12.0);
     match f.tab {
         AddTab::Imap => {
             let pair = |a: El, b: El, narrow_b: bool| {
@@ -562,59 +581,68 @@ fn add_account(_s: &Ui, f: &AddAccountForm, p: &Palette) -> El {
         .role("dialog")
         .label("Add account")
         .w(560.0)
-        .child(dialog_head("Add account", p, enabled))
+        .child(dialog_head(
+            "Add an account",
+            Some("Gmail signs in with Google; anything else uses IMAP".into()),
+            p,
+            enabled,
+        ))
         .child(tabs)
         .child(body)
 }
 
-/// The inline autodiscovery status line under the email field.
+/// The inline autodiscovery status: a toned notice under the email field.
 fn discovery_status(f: &AddAccountForm, p: &Palette) -> Option<El> {
-    let line = |msg: &str, color| {
+    let line = |msg: &str, tone: rune::Color, mark: &'static Icon| {
         row()
             .key("discovery")
             .w_full()
-            .px(10.0)
-            .py(6.0)
-            .gap(8.0)
+            .px(12.0)
+            .py(9.0)
+            .gap(10.0)
             .center_y()
-            .radius(RADIUS)
-            .fill(p.panel)
-            .border(1.0, p.border)
+            .radius(RADIUS_LG)
+            .fill(mix(tone, 0.08, p.bg))
+            .border(1.0, mix(tone, 0.4, p.border))
+            .child(glyph(mark, 16.0, tone))
             .child(
                 text(msg.to_string())
-                    .font(font(12.0, 400.0))
-                    .color(color)
+                    .font(font(12.5, 500.0))
+                    .color(p.fg)
                     .wrap()
                     .grow(1.0)
                     .min_w(0.0),
             )
     };
     if f.detecting {
-        return Some(line("Detecting settings…", p.muted));
+        return Some(line("Detecting settings…", p.info, &icons::SEARCH));
     }
     let d = f.discovered.as_ref()?;
     if d.kind == DiscoveredKind::Gmail {
         return Some(
             line(
                 "This address is hosted by Google — use Google sign-in instead",
-                p.fg,
+                p.info,
+                &icons::MAIL,
             )
             .child(button("use-gmail", "Use Gmail", p, true, true, |s, _| {
                 s.set_add_tab(AddTab::Gmail)
             })),
         );
     }
-    let (msg, color) = match d.source {
-        DiscoverySource::Ispdb => ("Settings found (Thunderbird ISPDB)", p.ok),
-        DiscoverySource::Autoconfig => ("Settings found (provider autoconfig)", p.ok),
-        DiscoverySource::Mx => ("Settings found (via MX lookup)", p.ok),
-        DiscoverySource::Srv => ("Settings found (DNS SRV)", p.ok),
+    let found = |m| (m, p.ok, &icons::CHECK);
+    let (msg, tone, mark) = match d.source {
+        DiscoverySource::Ispdb => found("Settings found (Thunderbird ISPDB)"),
+        DiscoverySource::Autoconfig => found("Settings found (provider autoconfig)"),
+        DiscoverySource::Mx => found("Settings found (via MX lookup)"),
+        DiscoverySource::Srv => found("Settings found (DNS SRV)"),
         DiscoverySource::Guess => (
             "Could not verify — guessed common defaults, please check",
             p.warn,
+            &icons::ALERT,
         ),
     };
-    Some(line(msg, color))
+    Some(line(msg, tone, mark))
 }
 
 /// A labelled checkbox row in the settings dialog.
@@ -626,17 +654,15 @@ fn setting_toggle(
     p: &Palette,
     toggle: fn(&mut crate::settings::Settings),
 ) -> El {
-    let check = row()
-        .size(16.0, 16.0)
+    let mut check = row()
+        .size(18.0, 18.0)
         .center()
-        .radius(3.0)
-        .border(1.0, if checked { p.accent } else { p.border_strong })
-        .fill(if checked { p.accent } else { p.bg })
-        .child(label(
-            if checked { "✓" } else { "" },
-            font(11.0, 700.0),
-            p.bg,
-        ));
+        .radius(RADIUS)
+        .border(1.0, if checked { p.fill } else { p.border_strong })
+        .fill(if checked { p.fill } else { p.panel_2 });
+    if checked {
+        check = check.child(glyph(&icons::CHECK, 13.0, p.fill_ink));
+    }
     row()
         .key(key)
         .role("checkbox")
@@ -657,10 +683,10 @@ fn setting_toggle(
                 .grow(1.0)
                 .min_w(0.0)
                 .gap(3.0)
-                .child(label(title, BODY, p.fg))
+                .child(label(title, font(13.5, 600.0), p.fg))
                 .child(
                     text(description)
-                        .font(font(11.5, 400.0))
+                        .font(font(12.5, 400.0).lh(18.0))
                         .color(p.muted)
                         .wrap()
                         .w_full(),
@@ -739,26 +765,64 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
     for acc in &s.accounts {
         let id = acc.id.clone();
         let expired = s.reauth_required.contains(&acc.id);
-        let kind = if s.is_gmail(&acc.id) { "gmail" } else { "imap" };
-        let mut info = row().gap(0.0).child(label(kind, SMALL, p.muted));
+        let kind = if s.is_gmail(&acc.id) { "Gmail" } else { "IMAP" };
+        let mut info = row()
+            .gap(0.0)
+            .child(label(acc.email.clone(), SMALL, p.muted).truncate().shrink());
         if expired {
-            info = info.child(label(" · sign-in expired", SMALL, p.error));
+            info = info.child(label(" · sign-in expired", font(11.5, 600.0), p.error));
         }
+        let name = if acc.display_name.is_empty() {
+            acc.email.clone()
+        } else {
+            acc.display_name.clone()
+        };
+        let tag = account_tag(s, &acc.id);
         let mut r = row()
             .key(format!("settings-account-{}", acc.id))
             .w_full()
-            .px(10.0)
-            .py(8.0)
-            .gap(10.0)
+            .px(12.0)
+            .py(10.0)
+            .gap(12.0)
             .center_y()
-            .radius(RADIUS)
+            .radius(RADIUS_LG)
+            .fill(p.panel)
             .border(1.0, p.border)
+            .child(
+                row()
+                    .size(32.0, 32.0)
+                    .center()
+                    .radius(16.0)
+                    .fill(p.slot(crate::ui::format::avatar_slot(&acc.email)))
+                    .child(label(
+                        tag.chars()
+                            .next()
+                            .map(|c| c.to_uppercase().to_string())
+                            .unwrap_or_default(),
+                        font(12.0, 700.0),
+                        p.bg,
+                    )),
+            )
             .child(
                 col()
                     .grow(1.0)
                     .min_w(0.0)
                     .gap(2.0)
-                    .child(label(acc.email.clone(), BODY, p.fg).truncate())
+                    .child(
+                        row()
+                            .gap(8.0)
+                            .center_y()
+                            .child(label(name, font(13.5, 650.0), p.fg).truncate().shrink())
+                            .child(
+                                row()
+                                    .px(6.0)
+                                    .h(18.0)
+                                    .center()
+                                    .radius(RADIUS)
+                                    .border(1.0, p.border)
+                                    .child(label(kind, font(10.5, 600.0), p.muted)),
+                            ),
+                    )
                     .child(info),
             );
         let armed = st.pending_removal.as_ref().map(|(i, _)| i) == Some(&acc.id);
@@ -807,14 +871,17 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                 ));
             }
             let remove_id = id.clone();
-            r = r.child(button(
-                format!("remove-{id}"),
-                "Remove",
-                p,
-                false,
-                true,
-                move |s, _| s.request_remove_account(remove_id.clone()),
-            ));
+            r = r.child(
+                button(
+                    format!("remove-{id}"),
+                    "Remove",
+                    p,
+                    false,
+                    true,
+                    move |s, _| s.request_remove_account(remove_id.clone()),
+                )
+                .border(1.0, mix(p.error, 0.45, p.border)),
+            );
         }
         accounts = accounts.child(r);
     }
@@ -825,25 +892,25 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
     let section = |title: &str, content: El| {
         col()
             .w_full()
-            .gap(8.0)
-            .child(label(title.to_uppercase(), font(10.5, 700.0), p.muted))
+            .gap(10.0)
+            .child(eyebrow(title, p))
             .child(content)
     };
     col()
         .key("settings")
         .role("dialog")
         .label("Settings")
-        .w(680.0)
-        .child(dialog_head("Settings", p, true))
+        .w(700.0)
+        .child(dialog_head("Settings", None, p, true))
         .child(
             col()
                 .w_full()
-                .px(16.0)
-                .py(14.0)
-                .gap(18.0)
-                .child(section("Privacy", remote_row))
-                .child(section("Window", title_bar_row))
+                .px(22.0)
+                .py(18.0)
+                .gap(22.0)
                 .child(section("Appearance", appearance(s, p)))
+                .child(section("Reading", remote_row))
+                .child(section("Window", title_bar_row))
                 .child(section("Accounts", accounts))
                 .child(section(
                     "About",
@@ -860,7 +927,7 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
 fn command_palette(st: &PaletteState, p: &Palette) -> El {
     let results = st.results();
     let selected = st.selected.min(results.len().saturating_sub(1));
-    let input = text_input(&st.query, BODY)
+    let input = text_input(&st.query, font(16.0, 400.0))
         .key("palette-input")
         .label("Command palette")
         .role("combobox")
@@ -885,7 +952,10 @@ fn command_palette(st: &PaletteState, p: &Palette) -> El {
         .role("listbox")
         .label("Commands")
         .w_full()
-        .max_h(360.0)
+        .max_h(400.0)
+        .px(8.0)
+        .py(8.0)
+        .gap(2.0)
         .scroll(ScrollSpec {
             stick_bottom: false,
         });
@@ -906,18 +976,24 @@ fn command_palette(st: &PaletteState, p: &Palette) -> El {
             .label(cmd.title.clone())
             .checked(on)
             .w_full()
-            .px(14.0)
-            .h(30.0)
-            .gap(10.0)
+            .px(8.0)
+            .h(42.0)
+            .gap(12.0)
             .center_y()
-            .fill(if on {
-                p.accent_soft
-            } else {
-                p.accent_soft.alpha(0.0)
-            })
-            .border_sides(
-                [0.0, 0.0, 0.0, 2.0],
-                if on { p.accent } else { p.accent.alpha(0.0) },
+            .radius(RADIUS)
+            .fill(if on { p.panel } else { p.panel.alpha(0.0) })
+            .border(1.0, if on { p.border } else { p.border.alpha(0.0) })
+            .child(
+                row()
+                    .size(28.0, 28.0)
+                    .center()
+                    .radius(RADIUS)
+                    .fill(if on { p.fill } else { p.panel_2 })
+                    .child(glyph(
+                        action_icon(&cmd.action),
+                        15.0,
+                        if on { p.fill_ink } else { p.muted },
+                    )),
             )
             .cursor(Cursor::Pointer)
             .on_hover(move |s: &mut Ui| {
@@ -930,7 +1006,7 @@ fn command_palette(st: &PaletteState, p: &Palette) -> El {
                 s.run_action(action.clone(), tx);
             })
             .child(
-                label(cmd.title.clone(), BODY, p.fg)
+                label(cmd.title.clone(), font(13.5, 400.0), p.fg)
                     .truncate()
                     .grow(1.0)
                     .min_w(0.0),
@@ -945,37 +1021,68 @@ fn command_palette(st: &PaletteState, p: &Palette) -> El {
         .key("palette")
         .role("dialog")
         .label("Command palette")
-        .w(560.0)
+        .w(620.0)
         .child(
             row()
                 .key("palette-head")
                 .w_full()
-                .px(14.0)
-                .h(42.0)
-                .gap(10.0)
+                .px(16.0)
+                .h(54.0)
+                .gap(12.0)
                 .center_y()
                 .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
-                .child(label("›", font(15.0, 700.0), p.accent))
+                .child(glyph(&icons::CHEVRON, 17.0, p.muted))
                 .child(input)
-                .child(label(
-                    format!("{} / {}", results.len(), st.commands.len()),
-                    SMALL,
-                    p.muted,
-                )),
+                .child(kbd("ctrl k", p)),
         )
         .child(list)
-        .child(
+        .child({
+            let hint = |keys: &[&str], what: &str| {
+                let mut r = row().gap(3.0).center_y();
+                for k in keys {
+                    r = r.child(kbd(k, p));
+                }
+                r.child(label(what.to_string(), SMALL, p.muted).ml(3.0))
+            };
             row()
                 .w_full()
-                .px(14.0)
-                .py(6.0)
-                .gap(14.0)
-                .fill(mix(p.fg, 0.03, p.bg))
+                .px(16.0)
+                .py(8.0)
+                .gap(16.0)
+                .center_y()
+                .fill(p.panel_2)
                 .border_sides([1.0, 0.0, 0.0, 0.0], p.border)
-                .child(label("↑↓ navigate", SMALL, p.muted))
-                .child(label("enter run", SMALL, p.muted))
-                .child(label("esc close", SMALL, p.muted)),
-        )
+                .child(hint(&["↑", "↓"], "select"))
+                .child(hint(&["⏎"], "run"))
+                .child(hint(&["esc"], "close"))
+                .child(el().grow(1.0))
+                .child(label(
+                    format!("{} of {} commands", results.len(), st.commands.len()),
+                    SMALL,
+                    p.muted,
+                ))
+        })
+}
+
+/// The icon a palette command shows, by what it does.
+fn action_icon(a: &Action) -> &'static Icon {
+    match a {
+        Action::Unified => &icons::INBOX,
+        Action::OpenAccount(_) => &icons::MAIL,
+        Action::GoFolder(_) => &icons::FOLDER,
+        Action::Compose => &icons::PEN,
+        Action::Reply { all: false } => &icons::REPLY,
+        Action::Reply { all: true } => &icons::REPLY_ALL,
+        Action::ToggleRead => &icons::MAIL_OPEN,
+        Action::Archive => &icons::ARCHIVE,
+        Action::Delete => &icons::TRASH,
+        Action::ToggleFlag => &icons::FLAG,
+        Action::MovePicker | Action::MoveTo { .. } => &icons::MOVE,
+        Action::SyncFolder | Action::SyncAccount(_) => &icons::SYNC,
+        Action::AddAccount => &icons::PLUS,
+        Action::OpenSettings => &icons::SLIDERS,
+        Action::FocusSearch => &icons::SEARCH,
+    }
 }
 
 /// Palette keys: arrows / Ctrl-N/P move, Enter runs, Escape closes.

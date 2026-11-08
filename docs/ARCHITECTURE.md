@@ -342,7 +342,7 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
 
 ## UI pane layout
 
-- The account rail (52 pt) and optional 200 pt folder column remain fixed-width. The message
+- The account rail (60 pt) and optional 210 pt folder column remain fixed-width. The message
   list and reader share all remaining width, separated by a pointer-draggable,
   keyboard-focusable vertical separator (`role("separator")`).
 - The separator constrains both panes to usable minimum widths (`ui::pane`). The message list

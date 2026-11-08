@@ -156,6 +156,10 @@ impl Ui {
     }
 
     pub fn load_accounts(&mut self) {
+        // Without a backend (scenes, tests) nothing would ever finish loading.
+        if self.backend.is_none() {
+            return;
+        }
         self.loading_accounts = true;
         self.spawn(
             |b| async move {
