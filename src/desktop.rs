@@ -7,11 +7,15 @@
 //! One process per user session: the first launch claims a Unix socket
 //! ([`claim_instance`]); a later launch hands its request to that process over
 //! the socket and exits, so a second `cosmic-mail` from the launcher focuses the
-//! running window instead of starting a second sync engine.
+//! running window instead of starting a second sync engine. On Windows, Rune's
+//! `single_instance` (a per-user named pipe) does the same job; see `app.rs`.
 
 use std::ffi::OsStr;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -28,7 +32,8 @@ where
         .any(|arg| arg.as_ref() == OsStr::new(BACKGROUND_ARG))
 }
 
-/// Open an `http(s)` URL in the user's browser via `xdg-open`.
+/// Open an `http(s)` URL in the user's browser: `xdg-open` on Linux, `open`
+/// on macOS, the shell's URL handler on Windows.
 ///
 /// Anything else (`javascript:`, `file:`, `mailto:`, relative hrefs) is
 /// refused: URLs reach here from untrusted mail content.
@@ -36,13 +41,25 @@ pub fn open_url(url: &str) -> Result<()> {
     let Some(url) = openable_url(url) else {
         bail!("refusing to open a non-http(s) URL");
     };
-    std::process::Command::new("xdg-open")
+    #[cfg(windows)]
+    let mut command = {
+        // url.dll's handler takes the URL as one argument, with no cmd.exe
+        // parsing in between (`cmd /c start` would interpret & and ^).
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
         .arg(url.as_str())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("running xdg-open")?;
+        .context("launching the URL handler")?;
     Ok(())
 }
 
@@ -95,6 +112,7 @@ impl InstanceRequest {
         }
     }
 
+    #[cfg(unix)]
     fn encode(&self) -> String {
         match self {
             InstanceRequest::Background => "background\n".to_string(),
@@ -107,6 +125,7 @@ impl InstanceRequest {
         }
     }
 
+    #[cfg(unix)]
     fn decode(line: &str) -> Option<Self> {
         let mut words = line.split_whitespace();
         match words.next()? {
@@ -120,6 +139,7 @@ impl InstanceRequest {
 }
 
 /// The per-user single-instance socket: `$XDG_RUNTIME_DIR/cosmic-mail.sock`.
+#[cfg(unix)]
 pub fn instance_socket_path() -> PathBuf {
     let dir = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -129,6 +149,7 @@ pub fn instance_socket_path() -> PathBuf {
 }
 
 /// The outcome of [`claim_instance`].
+#[cfg(unix)]
 #[derive(Debug)]
 pub enum Instance {
     /// This process is the only one: serve the listener.
@@ -138,6 +159,7 @@ pub enum Instance {
 }
 
 /// Become the session's only instance, or hand `request` to the one running.
+#[cfg(unix)]
 pub fn claim_instance(path: &Path, request: &InstanceRequest) -> Result<Instance> {
     match UnixStream::connect(path) {
         Ok(mut stream) => {
@@ -159,6 +181,7 @@ pub fn claim_instance(path: &Path, request: &InstanceRequest) -> Result<Instance
 }
 
 /// Serve later launches on a background thread for the process lifetime.
+#[cfg(unix)]
 pub fn serve_instance(
     listener: UnixListener,
     on_request: impl Fn(InstanceRequest) + Send + 'static,
@@ -208,6 +231,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn requests_round_trip() {
         for request in [
             InstanceRequest::Background,
@@ -228,6 +252,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn second_launch_hands_its_request_to_the_first() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("instance.sock");
@@ -251,6 +276,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn stale_socket_is_reclaimed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("instance.sock");

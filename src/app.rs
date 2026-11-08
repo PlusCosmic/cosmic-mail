@@ -12,7 +12,9 @@ use std::sync::Arc;
 use rune::{App, AppSpec, Tx, Waker};
 
 use crate::backend::Backend;
-use crate::desktop::{self, Instance, InstanceRequest};
+use crate::desktop;
+#[cfg(unix)]
+use crate::desktop::{Instance, InstanceRequest};
 use crate::events::{AppEvent, Events};
 use crate::omarchy;
 use crate::store;
@@ -80,18 +82,29 @@ pub fn run() {
 
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let background = desktop::is_background_launch(&args);
-    let request = InstanceRequest::for_launch(&args, std::env::var("XDG_ACTIVATION_TOKEN").ok());
-    let listener = match desktop::claim_instance(&desktop::instance_socket_path(), &request) {
-        Ok(Instance::Primary(listener)) => Some(listener),
-        Ok(Instance::Secondary) => {
-            tracing::info!("cosmic-mail is already running; handed the launch over");
-            return;
-        }
-        Err(err) => {
-            tracing::warn!(error = %err, "single-instance socket unavailable; continuing");
-            None
+    #[cfg(unix)]
+    let listener = {
+        let request =
+            InstanceRequest::for_launch(&args, std::env::var("XDG_ACTIVATION_TOKEN").ok());
+        match desktop::claim_instance(&desktop::instance_socket_path(), &request) {
+            Ok(Instance::Primary(listener)) => Some(listener),
+            Ok(Instance::Secondary) => {
+                tracing::info!("cosmic-mail is already running; handed the launch over");
+                return;
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "single-instance socket unavailable; continuing");
+                None
+            }
         }
     };
+    // Windows: Rune's per-user named pipe. A later launch brings the running
+    // window forward and returns false here.
+    #[cfg(windows)]
+    if !rune::single_instance("dev.pluscosmic.mail") {
+        tracing::info!("cosmic-mail is already running; handed the launch over");
+        return;
+    }
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -151,6 +164,7 @@ pub fn run() {
     let theme = omarchy::read_theme();
     omarchy::spawn_watcher(events.clone());
 
+    #[cfg(unix)]
     if let Some(listener) = listener {
         let handle = handle.clone();
         desktop::serve_instance(listener, move |request| match request {
