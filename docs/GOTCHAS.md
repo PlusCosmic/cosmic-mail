@@ -127,6 +127,23 @@ related area. When you learn a new one, add it.
 - Our IMAP connector is **implicit-TLS only** — discovery must skip STARTTLS-only IMAP
   entries (returns None if no SSL entry) until STARTTLS support lands.
 
+## Windows
+
+- **Cargo.lock can hand `gpu-allocator` a different `windows` crate than `wgpu-hal`.**
+  `gpu-allocator` accepts `windows >=0.53, <=0.62`, and the resolver unified it with the
+  `windows 0.61` that notify-rust's WinRT backend needs, while `wgpu-hal` 30 uses 0.62.
+  wgpu's D3D12 backend then fails to compile on Windows only ("expected `ID3D12Device`,
+  found a different `ID3D12Device`"); Linux builds never notice. The lock points
+  `gpu-allocator` at `windows 0.62.2`, as Rune's own lockfile does. After any
+  `cargo update`, check `cargo check --target x86_64-pc-windows-gnu` (the `windows`
+  workflow does this on every PR).
+- **aws-lc-sys needs NASM on x86_64 MSVC** unless `AWS_LC_SYS_PREBUILT_NASM=1` lets it
+  use its prebuilt objects; the `windows` workflow sets it.
+- **Unix-only pieces are `cfg`-gated**: the single-instance Unix socket (Windows uses
+  `rune::single_instance`, a per-user named pipe), notification actions and the
+  desktop-entry hint (freedesktop only), and `xdg-open` (Windows uses
+  `rundll32 url.dll,FileProtocolHandler`, which takes the URL without `cmd.exe` parsing).
+
 ## Rune (UI)
 
 - **Rune is pre-release: pin a git rev, and the toolchain.** `Cargo.toml` pins a `dev` rev

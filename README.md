@@ -35,6 +35,15 @@ OAuth 2.0 rather than an app password.
 Open work is tracked in [GitHub issues](https://github.com/PlusCosmic/cosmic-mail/issues)
 (labels `roadmap`, `verification`, `papercut`).
 
+## Windows
+
+Cosmic Mail targets Omarchy first, but it also builds for Windows. Every push to
+`main` publishes a [GitHub Release](https://github.com/PlusCosmic/cosmic-mail/releases/latest)
+with a per-user installer (`*-setup.exe`, no administrator prompt, optional start
+at sign-in) and a portable zip. Builds are unsigned, so SmartScreen warns on first run
+(**More info → Run anyway**). On Windows the theme is the built-in Kanagawa palette,
+credentials live in Windows Credential Manager, and mail is cached under `%APPDATA%`.
+
 ## Try it from source
 
 Cosmic Mail currently targets Omarchy on Arch Linux. You will need Rust (the pinned
