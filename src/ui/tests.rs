@@ -399,3 +399,14 @@ fn every_scene_renders() {
         assert!(rt.find("app").is_some(), "scene {name} renders");
     }
 }
+
+#[test]
+fn the_title_bar_setting_toggles() {
+    let mut rt = runtime(demo::state());
+    assert!(rt.state.settings.window_title_bar, "on by default");
+    click(&mut rt, "rail-settings");
+    click(&mut rt, "setting-title-bar");
+    assert!(!rt.state.settings.window_title_bar);
+    click(&mut rt, "setting-title-bar");
+    assert!(rt.state.settings.window_title_bar);
+}

@@ -617,8 +617,15 @@ fn discovery_status(f: &AddAccountForm, p: &Palette) -> Option<El> {
     Some(line(msg, color))
 }
 
-fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
-    let checked = s.settings.always_download_remote_images;
+/// A labelled checkbox row in the settings dialog.
+fn setting_toggle(
+    key: &'static str,
+    title: &'static str,
+    description: &'static str,
+    checked: bool,
+    p: &Palette,
+    toggle: fn(&mut crate::settings::Settings),
+) -> El {
     let check = row()
         .size(16.0, 16.0)
         .center()
@@ -630,18 +637,18 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
             font(11.0, 700.0),
             p.bg,
         ));
-    let remote_row = row()
-        .key("setting-remote-images")
+    row()
+        .key(key)
         .role("checkbox")
-        .label("Always download remote images")
+        .label(title)
         .checked(checked)
         .w_full()
         .gap(10.0)
         .focusable(true)
         .cursor(Cursor::Pointer)
-        .on_press(|s: &mut Ui| {
+        .on_press(move |s: &mut Ui| {
             let mut next = s.settings.clone();
-            next.always_download_remote_images = !next.always_download_remote_images;
+            toggle(&mut next);
             s.update_settings(next);
         })
         .child(check.mt(2.0))
@@ -650,19 +657,38 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                 .grow(1.0)
                 .min_w(0.0)
                 .gap(3.0)
-                .child(label("Always download remote images", BODY, p.fg))
+                .child(label(title, BODY, p.fg))
                 .child(
-                    text(
-                        "Load HTTP(S) images in HTML messages without asking each time. \
-                         Messages still render as text only; no scripts, forms, or other \
-                         remote resources are ever loaded — only images are affected.",
-                    )
-                    .font(font(11.5, 400.0))
-                    .color(p.muted)
-                    .wrap()
-                    .w_full(),
+                    text(description)
+                        .font(font(11.5, 400.0))
+                        .color(p.muted)
+                        .wrap()
+                        .w_full(),
                 ),
-        );
+        )
+}
+
+fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
+    let remote_row = setting_toggle(
+        "setting-remote-images",
+        "Always download remote images",
+        "Load HTTP(S) images in HTML messages without asking each time. \
+         Messages still render as text only; no scripts, forms, or other \
+         remote resources are ever loaded — only images are affected.",
+        s.settings.always_download_remote_images,
+        p,
+        |st| st.always_download_remote_images = !st.always_download_remote_images,
+    );
+    let title_bar_row = setting_toggle(
+        "setting-title-bar",
+        "Show the window title bar",
+        "The system title bar and borders, to move, minimise and close the window. \
+         Turn off under a tiling window manager such as Hyprland, which draws its \
+         own. Takes effect the next time Cosmic Mail starts.",
+        s.settings.window_title_bar,
+        p,
+        |st| st.window_title_bar = !st.window_title_bar,
+    );
 
     let mut accounts = col().key("settings-accounts").w_full().gap(6.0);
     for acc in &s.accounts {
@@ -771,6 +797,7 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                 .py(14.0)
                 .gap(18.0)
                 .child(section("Privacy", remote_row))
+                .child(section("Window", title_bar_row))
                 .child(section("Accounts", accounts))
                 .child(section(
                     "Theme",

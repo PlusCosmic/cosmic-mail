@@ -59,8 +59,9 @@ journalctl --user -u cosmic-mail.service -f
 - omarchy is installed; mako is the notification daemon; current theme files live at
   `~/.local/state/omarchy/current/theme/` (symlink swapped by `omarchy-theme-set`;
   `~/.config/omarchy/current/` on older releases).
-- The window is borderless (1280×800, min 900×560) with app id / X11 class `cosmic-mail`,
-  which Hyprland rules and the `hyprctl` focus fallback match on.
+- The window (1280×800, min 900×560) has the platform title bar unless Settings → Window →
+  "Show the window title bar" is off (read at startup), with app id / X11 class
+  `cosmic-mail`, which Hyprland rules and the `hyprctl` focus fallback match on.
 - Gmail OAuth credential setup and precedence are documented in [SETUP.md](SETUP.md#gmail).
   Without a credential source, Gmail sign-in and token refresh fail with a clear error;
   `obtaining Gmail access token` warnings mean credentials are missing in that process.

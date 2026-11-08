@@ -15,13 +15,26 @@ use serde::{Deserialize, Serialize};
 ///
 /// `#[serde(default)]` tolerates missing keys; unknown keys are ignored, so
 /// older configs load cleanly and forward-compatible fields survive downgrades.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
     /// When true, HTML messages may load HTTP(S) images without per-message
-    /// consent. Sanitization, iframe sandboxing, and all non-image network
-    /// restrictions are unchanged. Defaults to `false`.
+    /// consent. Every other network restriction is unchanged. Defaults to
+    /// `false`.
     pub always_download_remote_images: bool,
+    /// When true, the window has the platform's title bar and borders (move,
+    /// minimise, close). Turn it off under a tiling window manager (omarchy's
+    /// Hyprland) that draws its own. Read at startup. Defaults to `true`.
+    pub window_title_bar: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            always_download_remote_images: false,
+            window_title_bar: true,
+        }
+    }
 }
 
 /// Path to `settings.json`: `$XDG_CONFIG_HOME/cosmic-mail/settings.json`.
@@ -89,6 +102,7 @@ mod tests {
         let path = dir.path().join("settings.json");
         assert_eq!(load_from(&path), Settings::default());
         assert!(!load_from(&path).always_download_remote_images);
+        assert!(load_from(&path).window_title_bar, "title bar on by default");
     }
 
     #[test]
@@ -114,9 +128,20 @@ mod tests {
         let path = dir.path().join("settings.json");
         let settings = Settings {
             always_download_remote_images: true,
+            window_title_bar: false,
         };
         save_to(&path, &settings).expect("save");
         assert_eq!(load_from(&path), settings);
+    }
+
+    #[test]
+    fn existing_files_without_the_title_bar_key_keep_it_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"alwaysDownloadRemoteImages": true}"#).expect("write");
+        let loaded = load_from(&path);
+        assert!(loaded.always_download_remote_images);
+        assert!(loaded.window_title_bar);
     }
 
     #[test]
@@ -127,11 +152,13 @@ mod tests {
             &path,
             &Settings {
                 always_download_remote_images: true,
+                ..Settings::default()
             },
         )
         .expect("save");
         let raw = std::fs::read_to_string(&path).expect("read back");
         assert!(raw.contains("alwaysDownloadRemoteImages"));
         assert!(!raw.contains("always_download_remote_images"));
+        assert!(raw.contains("windowTitleBar"));
     }
 }
