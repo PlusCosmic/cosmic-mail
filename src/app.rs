@@ -136,7 +136,11 @@ pub fn run() {
     let mut app = App::new(spec())
         .keep_running()
         .window_options(rune::WindowOptions {
-            borderless: true,
+            // The platform title bar (move, minimise, close) unless the user
+            // turned it off for a tiling WM that draws its own borders.
+            // Decorations are fixed at window creation: a change in Settings
+            // applies on the next start.
+            borderless: !crate::settings::load_settings().window_title_bar,
             ..Default::default()
         });
     if background {

@@ -49,6 +49,10 @@ same process shows and focuses its window instead of starting another sync engin
 `--background` starts the process without a window, which is how the packaged systemd
 user service (bound to the graphical session) runs it. See [RELEASING.md](RELEASING.md).
 
+The window has a title bar by default, as on any desktop. Under Hyprland you will usually
+want it off: Settings → Window → "Show the window title bar", then restart Cosmic Mail
+(`systemctl --user restart cosmic-mail.service` if the service runs it).
+
 ## System tray
 
 The tray uses Rune's built-in StatusNotifierItem implementation (`rune::tray`, over
