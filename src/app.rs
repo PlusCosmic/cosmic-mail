@@ -74,6 +74,8 @@ pub fn run() {
         )
         .try_init();
 
+    tracing::info!(version = crate::VERSION, "starting Cosmic Mail");
+
     if rune::tooling::is_headless() {
         // Snapshots and scripted runs: the demo mailbox, nothing live.
         App::new(spec()).run();

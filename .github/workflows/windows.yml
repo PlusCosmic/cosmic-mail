@@ -54,6 +54,20 @@ jobs:
       version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # scripts/version.sh counts commits, so it needs the whole history.
+          fetch-depth: 0
+
+      # MAJOR.MINOR from Cargo.toml, PATCH = commit count (scripts/version.sh).
+      # The build embeds it (cosmic_mail::VERSION, the exe's version info).
+      - name: Compute the version
+        id: version
+        shell: bash
+        run: |
+          version=$(scripts/version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "COSMIC_MAIL_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Version: $version"
 
       - name: Install the pinned Rust toolchain
         shell: bash
@@ -63,13 +77,6 @@ jobs:
 
       - name: Build release
         run: cargo build --locked --release
-
-      - name: Read the version
-        id: version
-        shell: bash
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Install Inno Setup if missing
         shell: pwsh
@@ -83,10 +90,9 @@ jobs:
         shell: pwsh
         run: |
           $version = "${{ steps.version.outputs.version }}"
-          $build = "${{ github.run_number }}"
           $dist = Join-Path $PWD "dist"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          & $env:ISCC "/DAppVersion=$version" "/DBuild=$build" `
+          & $env:ISCC "/DAppVersion=$version" `
             "/DSourceExe=$PWD\target\release\cosmic-mail.exe" `
             "/DOutputDir=$dist" packaging\windows\cosmic-mail.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
@@ -96,7 +102,7 @@ jobs:
           Copy-Item target\release\cosmic-mail.exe $portable
           Copy-Item LICENSE (Join-Path $portable "LICENSE.txt")
           Compress-Archive -Path "$portable\*" `
-            -DestinationPath "$dist\cosmic-mail-$version-build$build-windows-x64-portable.zip"
+            -DestinationPath "$dist\cosmic-mail-$version-windows-x64-portable.zip"
           Get-ChildItem $dist | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
@@ -121,11 +127,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
-          BUILD: ${{ github.run_number }}
         run: |
-          # One release per push to main. The run number keeps tags unique and
-          # ordered while Cargo.toml's version stays put between releases.
-          tag="v${VERSION}-build.${BUILD}"
+          # One release per push to main, tagged with its version
+          # (scripts/version.sh: each merge raises the patch).
+          tag="v${VERSION}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists (a re-run); nothing to publish."
+            exit 0
+          fi
           short=$(echo "$GITHUB_SHA" | cut -c1-7)
           notes="Automatic build of \`main\` at ${short} (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}).
 
@@ -136,6 +145,6 @@ jobs:
           gh release create "$tag" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
-            --title "Cosmic Mail ${VERSION} (build ${BUILD})" \
+            --title "Cosmic Mail ${VERSION}" \
             --notes "$notes" \
             --latest

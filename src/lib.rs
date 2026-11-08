@@ -24,3 +24,11 @@ pub mod ui;
 pub mod wire;
 
 pub use app::run;
+
+/// The app version: `COSMIC_MAIL_VERSION` when the build sets it (CI and the
+/// packages, from `scripts/version.sh`: MAJOR.MINOR from Cargo.toml plus the
+/// commit count), else Cargo.toml's version for local builds.
+pub const VERSION: &str = match option_env!("COSMIC_MAIL_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
