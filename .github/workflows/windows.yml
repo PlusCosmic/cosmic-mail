@@ -1,0 +1,120 @@
+name: windows
+
+# Windows build. On every pull request and push it builds natively, runs the
+# test suite (the UI tests run on Rune's headless runtime, no GPU needed) and
+# packages an installer and a portable zip. On pushes to main it also publishes
+# them as a GitHub Release. See docs/RELEASING.md ("Windows").
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Two merges in quick succession each get their own release; never cancel a
+# run that may be publishing.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # aws-lc-sys (via reqwest/oauth2) needs NASM on x86_64 MSVC unless it
+      # may use its prebuilt objects; the runner has no NASM.
+      AWS_LC_SYS_PREBUILT_NASM: "1"
+      CARGO_TERM_COLOR: always
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain comes from rust-toolchain.toml (Rune pins it).
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release
+        run: cargo build --locked --release
+
+      - name: Read the version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install Inno Setup if missing
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after install" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Package the installer and the portable zip
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $build = "${{ github.run_number }}"
+          $dist = Join-Path $PWD "dist"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          & $env:ISCC "/DAppVersion=$version" "/DBuild=$build" `
+            "/DSourceExe=$PWD\target\release\cosmic-mail.exe" `
+            "/DOutputDir=$dist" packaging\windows\cosmic-mail.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+
+          $portable = Join-Path $env:RUNNER_TEMP "portable"
+          New-Item -ItemType Directory -Force -Path $portable | Out-Null
+          Copy-Item target\release\cosmic-mail.exe $portable
+          Copy-Item LICENSE (Join-Path $portable "LICENSE.txt")
+          Compress-Archive -Path "$portable\*" `
+            -DestinationPath "$dist\cosmic-mail-$version-build$build-windows-x64-portable.zip"
+          Get-ChildItem $dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cosmic-mail-windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cosmic-mail-windows
+          path: dist
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          BUILD: ${{ github.run_number }}
+        run: |
+          # One release per push to main. The run number keeps tags unique and
+          # ordered while Cargo.toml's version stays put between releases.
+          tag="v${VERSION}-build.${BUILD}"
+          short=$(echo "$GITHUB_SHA" | cut -c1-7)
+          notes="Automatic build of \`main\` at ${short} (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}).
+
+          - **Installer**: \`*-setup.exe\` (per-user, no administrator prompt; optional start at sign-in).
+          - **Portable**: \`*-portable.zip\` (unzip and run \`cosmic-mail.exe\`).
+
+          Builds are unsigned, so Windows SmartScreen warns on first run (More info → Run anyway)."
+          gh release create "$tag" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Cosmic Mail ${VERSION} (build ${BUILD})" \
+            --notes "$notes" \
+            --latest

@@ -14,6 +14,10 @@ path = "src/lib.rs"
 name = "cosmic-mail"
 path = "src/main.rs"
 
+[build-dependencies]
+# Embeds assets/icon.ico in the Windows executable (build.rs; no-op elsewhere).
+winresource = "0.1"
+
 [dependencies]
 # Native GPU UI (wgpu + winit). Pre-release: pin a rev of `dev` (never rewritten).
 rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }

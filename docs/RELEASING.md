@@ -90,3 +90,33 @@ publishing:
 ```sh
 scripts/build-local.sh cosmic-mail ~/Projects/Mail
 ```
+
+## Windows releases (GitHub Releases)
+
+`.github/workflows/windows.yml` builds Windows natively on `windows-latest`:
+
+- **Every pull request and push**: `cargo test --locked`, `cargo build --locked --release`,
+  then packages `dist/*-setup.exe` (Inno Setup, `packaging/windows/cosmic-mail.iss`) and
+  `dist/*-portable.zip`, uploaded as the `cosmic-mail-windows` workflow artifact. A PR
+  that breaks the Windows build fails here.
+- **Every push to `main`**: the `release` job publishes those files as a GitHub Release
+  tagged `v<Cargo.toml version>-build.<run number>`, marked latest. Bump the version in
+  `Cargo.toml` for anything users should read as a new release; the build number alone
+  keeps tags unique and ordered.
+
+The installer is per-user (`PrivilegesRequired=lowest`: installs under
+`%LOCALAPPDATA%\Programs`, no UAC prompt), adds a Start-menu entry, optionally a
+desktop icon, and optionally a `HKCU\…\Run` entry that starts `cosmic-mail.exe
+--background` at sign-in — the Windows counterpart of `cosmic-mail.service`. It closes a
+running Cosmic Mail before upgrading and stops it on uninstall. **Never change the
+script's `AppId`**: upgrades find the existing install by it.
+
+The release exe is a GUI-subsystem binary (no console window; `src/main.rs`) with
+`assets/icon.ico` embedded by `build.rs` (`winresource`). Builds are not code-signed;
+signing would add an Authenticode step with a certificate in Actions secrets before
+packaging.
+
+To check the Windows build from Linux without a Windows machine:
+`rustup target add x86_64-pc-windows-gnu`, install `gcc-mingw-w64-x86-64`, then
+`cargo build --release --target x86_64-pc-windows-gnu` (CI uses the MSVC target).
+
