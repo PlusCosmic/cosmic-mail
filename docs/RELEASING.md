@@ -95,11 +95,13 @@ scripts/build-local.sh cosmic-mail ~/Projects/Mail
 
 `.github/workflows/windows.yml` builds Windows natively on `windows-latest`:
 
-- **Every pull request and push**: `cargo test --locked`, `cargo build --locked --release`,
-  then packages `dist/*-setup.exe` (Inno Setup, `packaging/windows/cosmic-mail.iss`) and
-  `dist/*-portable.zip`, uploaded as the `cosmic-mail-windows` workflow artifact. A PR
-  that breaks the Windows build fails here.
-- **Every push to `main`**: the `release` job publishes those files as a GitHub Release
+- **Every pull request and push**: two parallel jobs — `test` (`cargo test --locked --lib`,
+  no debug info) and `build` (`cargo build --locked --release`, which then packages `dist/*-setup.exe` (Inno Setup, `packaging/windows/cosmic-mail.iss`) and
+  `dist/*-portable.zip`, uploaded as the `cosmic-mail-windows` workflow artifact). A PR
+  that breaks the Windows build fails here. Each job keeps its own Rust cache; caches
+  saved on `main` are what PRs and later `main` pushes restore, so a cold cache (the
+  first run after a dependency bump) costs ~15 min and a warm one a few minutes.
+- **Every push to `main`**: once both jobs pass, the `release` job publishes those files as a GitHub Release
   tagged `v<Cargo.toml version>-build.<run number>`, marked latest. Bump the version in
   `Cargo.toml` for anything users should read as a new release; the build number alone
   keeps tags unique and ordered.
