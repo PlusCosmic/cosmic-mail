@@ -1,6 +1,6 @@
 //! Backend → UI events.
 //!
-//! The backend (sync engine, theme watcher, notifications) reports changes
+//! The backend (sync engine, notifications) reports changes
 //! through an [`Events`] sink instead of a webview event bus. The UI installs a
 //! sink that queues each event onto its own thread (see `ui::Inbox`); tests
 //! install one that records them. Event names and payloads mirror the contract
@@ -9,7 +9,6 @@
 use std::fmt;
 use std::sync::Arc;
 
-use crate::omarchy::OmarchyTheme;
 use crate::sync::SyncState;
 use crate::wire::MessageSummary;
 
@@ -32,8 +31,6 @@ pub enum AppEvent {
         /// True only for a classified dead-credentials failure (Reconnect, not retry).
         needs_reauth: bool,
     },
-    /// `omarchy:theme-changed`: the active omarchy theme changed.
-    ThemeChanged(OmarchyTheme),
     /// A notification (or a second launch) asked to show and focus the window.
     Activate,
 }

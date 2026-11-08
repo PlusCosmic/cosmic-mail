@@ -25,9 +25,8 @@ webview, no JavaScript).
 Design goals, in priority order:
 
 1. **Native omarchy citizen** — notifications through mako (freedesktop D-Bus, stable
-   app-name, click-to-focus); UI colors live-track the active omarchy theme by watching
-   `~/.local/state/omarchy/current/theme/colors.toml`; keyboard-driven, minimal chrome,
-   monospace aesthetic.
+   app-name, click-to-focus); keyboard-driven, minimal chrome. The look is the UI
+   foundation's (`rune-theme-foundation`): its colour schemes, light and dark, and its type.
 2. **One sync engine for both account kinds** — plain IMAP (password) and Gmail
    (OAuth2 PKCE → SASL XOAUTH2 over IMAP). No Gmail REST API.
 3. **Local-first** — SQLite (WAL) envelope/body cache; lazy body fetch; IMAP IDLE for
@@ -40,7 +39,7 @@ docs/               you are here (ARCHITECTURE.md = the contract)
 src/                backend: backend.rs (the operations the UI calls), events.rs (AppEvent),
                     store.rs, accounts.rs, omarchy.rs, notifications.rs, autoconfig.rs,
                     desktop.rs, sync/{mod,imap}.rs, auth/oauth.rs, wire.rs
-src/app.rs          startup: single instance, tokio runtime, tray, theme watcher, window
+src/app.rs          startup: single instance, tokio runtime, tray, window
 src/ui/             Rune UI: mod.rs (state + Inbox), store.rs (state transitions),
                     view/{mod,chrome,list,reader,modals}.rs, html.rs, images.rs, theme.rs,
                     demo.rs (demo mailbox + headless scenes), tests.rs

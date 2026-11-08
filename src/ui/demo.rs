@@ -4,12 +4,12 @@
 //! profile or the network. Nothing here is reachable from a normal launch.
 
 use crate::accounts::{AccountKind, AccountPublic};
-use crate::omarchy::kanagawa_fallback;
 use crate::sync::SyncState;
 use crate::wire::{AttachmentInfo, Folder, MessageBody, MessageSummary, Shipment};
 
 use super::compose::ComposeSeed;
-use super::{html, AddAccountForm, ComposeForm, Inbox, Modal, SettingsState, Ui};
+use super::theme::Appearance;
+use super::{html, AddAccountForm, ColorScheme, ComposeForm, Inbox, Modal, SettingsState, Ui};
 
 /// A named demo state: a change to [`state`].
 pub type Scene = (&'static str, fn(&mut Ui));
@@ -28,7 +28,15 @@ pub const SCENES: &[Scene] = &[
     ("add-account", add_account),
     ("settings", settings),
     ("toasts", toasts),
-    ("light", light),
+    ("light", |s| s.appearance = Appearance::Light),
+    ("oxblood", |s| s.scheme = ColorScheme::Oxblood),
+    ("ink", |s| s.scheme = ColorScheme::Ink),
+    ("walnut", |s| s.scheme = ColorScheme::Walnut),
+    ("graphite", |s| s.scheme = ColorScheme::Graphite),
+    ("graphite-light", |s| {
+        s.scheme = ColorScheme::Graphite;
+        s.appearance = Appearance::Light;
+    }),
 ];
 
 fn account(id: &str, email: &str, name: &str, kind: AccountKind) -> AccountPublic {
@@ -96,7 +104,9 @@ or reply to this email if anything looks wrong.</p>
 
 /// The demo mailbox: two accounts, a unified inbox, one open message.
 pub fn state() -> Ui {
-    let mut s = Ui::new(None, Inbox::default(), kanagawa_fallback());
+    let mut s = Ui::new(None, Inbox::default());
+    // Fixed, so renders don't depend on the machine's light or dark setting.
+    s.appearance = Appearance::Dark;
     s.loading_accounts = false;
     s.accounts = vec![
         account("a1", "harry@pluscosmic.dev", "Harry", AccountKind::Imap),
@@ -326,14 +336,4 @@ fn toasts(s: &mut Ui) {
         "Sync error: connection refused (imap.example.com:993)",
         true,
     );
-}
-
-fn light(s: &mut Ui) {
-    let mut t = kanagawa_fallback();
-    t.name = "kanagawa-lotus".into();
-    t.background = "#f2ecbc".into();
-    t.foreground = "#545464".into();
-    t.accent = "#4d699b".into();
-    t.selection_background = "#c9cbd1".into();
-    s.set_theme(&t);
 }

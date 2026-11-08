@@ -81,9 +81,9 @@ Inspect sync progress without the UI:
 
 ## Testing each subsystem
 
-- **Theme integration**: run `omarchy-theme-set <name>` while the app is running — expect
-  exactly one `emitted omarchy theme change` log line and a full UI re-tint. (Watcher
-  events are access-filtered and change-deduped; see GOTCHAS.)
+- **Appearance**: Settings → Appearance; each scheme card and System/Light/Dark re-colours
+  the window at once and survives a restart (`ui.json`). `--scene oxblood|ink|walnut|graphite|light`
+  renders the others headless.
 - **Notifications**: `Backend::test_notification` sends a sample through mako.
   Real-path test: with the app running and synced, send yourself a mail; IDLE should
   produce a mako notification within seconds. Batching: >3 new in one sync pass → one
@@ -106,7 +106,7 @@ Inspect sync progress without the UI:
   larger steps), Home/End, and double-click reset.
 - **UI behaviour**: `cargo test` runs `src/ui/tests.rs` — the real view and key handling on
   Rune's headless `Runtime` over the demo mailbox (j/k/gg/G, filters, search, palette, compose
-  validation, reply seeding, optimistic flag/read/delete, live events, toasts, theme changes,
+  validation, reply seeding, optimistic flag/read/delete, live events, toasts, scheme and appearance,
   every scene renders). The GreenMail E2E (`tests/e2e_greenmail.rs`, see `e2e/README.md`)
   drives the same view over the real backend and IMAP.
 - **Compose/send**: automated tests validate construction only and never send external mail. For a

@@ -50,24 +50,9 @@ related area. When you learn a new one, add it.
 
 ## Platform / desktop
 
-- **The `notify` crate reports file *access* events on inotify.** A watcher whose
-  handler *reads files inside the watched directory* re-triggers itself forever (ours
-  looped at exactly the 300ms debounce period). `omarchy.rs` filters
-  `event.kind.is_access()` AND dedupes by comparing the parsed theme to the last one.
-  Apply the same pattern to any new watcher.
-- omarchy's `current/theme` is a **symlink swapped atomically** — watch the parent dir
-  `current` non-recursively; a real theme switch arrives as rename/create events.
-- **omarchy moved `current` from `~/.config/omarchy/current` to
-  `$XDG_STATE_HOME/omarchy/current`** (`~/.local/state/omarchy/current`). Watching only
-  the config-dir path silently logged `omarchy current dir not present; theme watcher
-  inactive` and the app stayed on kanagawa. `omarchy::current_dir` prefers the state dir
-  and falls back to the config dir only when that alone exists.
-- **omarchy's `colors.toml` no longer has `color0..color15` / `cursor` / `selection_*`**;
-  it has named colours (`red`, `bright_red`, `muted`, `darker_background`, `selection`,
-  ...). Only `accent`/`foreground`/`background` overlap with the old dialect, so parsing
-  the old keys alone leaves the whole palette on the kanagawa fallback while the base
-  colours track the theme. See [OMARCHY.md](OMARCHY.md#live-theming) for the mapping;
-  check `/usr/share/omarchy/themes/*/colors.toml` before adding a key.
+- **Rune is pinned to the revision `rune-theme-foundation` pins** (ui-foundation's
+  `rune/Cargo.toml`). Two different revisions build two Runes whose `Color`, `El` and `Theme`
+  don't meet, and nothing from the theme crate type-checks. Move both pins together.
 - **A background client's focus request can be ignored by Hyprland/Wayland focus-stealing
   prevention.** Activation (notification click, tray, second launch) first goes through
   `AppHandle::open`/`activate` (with the launcher's XDG activation token when there is one),

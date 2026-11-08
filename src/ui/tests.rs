@@ -355,15 +355,19 @@ fn toasts_expire() {
 }
 
 #[test]
-fn theme_changes_recolour_live() {
+fn settings_pick_the_scheme_and_appearance() {
     let mut rt = runtime(demo::state());
-    let mut theme = crate::omarchy::kanagawa_fallback();
-    theme.name = "gruvbox".into();
-    theme.background = "#282828".into();
-    rt.state.inbox.event(AppEvent::ThemeChanged(theme));
-    poll(&mut rt, 1.0);
-    assert_eq!(rt.state.theme_name, "gruvbox");
-    assert_eq!(rt.state.palette.bg.hex(), "#282828ff");
+    click(&mut rt, "rail-settings");
+    click(&mut rt, "scheme-oxblood");
+    assert_eq!(rt.state.scheme, super::ColorScheme::Oxblood);
+    click(&mut rt, "appearance-light");
+    assert_eq!(rt.state.appearance, super::theme::Appearance::Light);
+    let p = rt.state.palette(true);
+    assert!(!p.dark, "a fixed light appearance ignores the desktop");
+    assert_eq!(
+        p,
+        super::theme::Palette::new(super::ColorScheme::Oxblood, false)
+    );
 }
 
 #[test]

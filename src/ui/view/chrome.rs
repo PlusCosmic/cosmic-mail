@@ -128,7 +128,7 @@ pub fn rail(s: &Ui, p: &Palette) -> El {
     rail = rail.child(rail_button(
         "rail-unified".into(),
         "Unified inbox".into(),
-        tile(label("⇊", font(15.0, 700.0), p.bg), p.c[5]),
+        tile(label("⇊", font(15.0, 700.0), p.fill_ink), p.fill),
         s.unified,
         s.unified_unread(),
         p,

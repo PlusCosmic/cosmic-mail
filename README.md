@@ -28,7 +28,7 @@ OAuth 2.0 rather than an app password.
 - Delivery-tracking chips for shipments detected in mail
 - Unified inbox and account-specific folder views
 - Vim-style keyboard navigation, command palette, and resizable three-pane layout
-- Live colour updates when the active Omarchy theme changes
+- Five colour schemes in light and dark from the PlusCosmic UI foundation, following the system or fixed
 - Native Mako notifications with click-to-focus, plus a system tray and background mode
 - Passwords and refresh tokens stored in the Secret Service keyring
 
@@ -41,7 +41,7 @@ Cosmic Mail targets Omarchy first, but it also builds for Windows. Every push to
 `main` publishes a [GitHub Release](https://github.com/PlusCosmic/cosmic-mail/releases/latest)
 with a per-user installer (`*-setup.exe`, no administrator prompt, optional start
 at sign-in) and a portable zip. Builds are unsigned, so SmartScreen warns on first run
-(**More info → Run anyway**). On Windows the theme is the built-in Kanagawa palette,
+(**More info → Run anyway**). On Windows the look is the same as on Linux,
 credentials live in Windows Credential Manager, and mail is cached under `%APPDATA%`.
 
 ## Try it from source

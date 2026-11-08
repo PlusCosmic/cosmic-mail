@@ -1042,7 +1042,6 @@ impl Ui {
                 error,
                 needs_reauth,
             } => self.on_sync_state(account_id, state, error, needs_reauth),
-            AppEvent::ThemeChanged(theme) => self.set_theme(&theme),
             AppEvent::Activate => self.activate_requested = true,
         }
     }

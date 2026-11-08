@@ -17,16 +17,18 @@ use super::theme::Palette;
 use super::{Action, Command, Modal, PaletteState, Ui};
 use crate::ui::format::display_folder_name;
 
-/// Corner radius of controls (the omarchy look: sharp, ≤ 4 pt).
-pub const RADIUS: f32 = 4.0;
+/// Corner radius of controls (the foundation's `--radius`).
+pub const RADIUS: f32 = 3.0;
 
-/// The app's text style at `size` and `weight` (the UI family is monospace).
+/// The app's text style at `size` and `weight`, in the foundation's sans (Instrument Sans).
 pub const fn font(size: f32, weight: f32) -> TextStyle {
     TextStyle::new(size, weight)
 }
 
 pub const BODY: TextStyle = font(13.0, 400.0);
-pub const SMALL: TextStyle = font(11.0, 400.0);
+pub const SMALL: TextStyle = font(11.5, 400.0);
+/// Buttons: semibold, as the foundation's.
+pub const BUTTON: TextStyle = font(13.0, 600.0);
 
 /// A one-line label.
 pub fn label(s: impl Into<String>, style: TextStyle, color: Color) -> El {
@@ -52,13 +54,21 @@ pub fn button(
         .gap(6.0)
         .center()
         .radius(RADIUS)
-        .border(1.0, if primary { p.accent_dim } else { p.border })
-        .fill(if primary { p.primary() } else { p.panel_2 })
-        .child(label(caption, BODY, p.fg));
+        .border(1.0, if primary { p.fill } else { p.border })
+        .fill(if primary { p.primary() } else { p.panel })
+        .child(label(
+            caption,
+            BUTTON,
+            if primary { p.fill_ink } else { p.fg },
+        ));
     if enabled {
         b.focusable(true)
             .cursor(Cursor::Pointer)
-            .hover(p.fg.alpha(0.06))
+            .hover(if primary {
+                p.fill_ink.alpha(0.1)
+            } else {
+                p.fg.alpha(0.05)
+            })
             .on_press_tx(on)
     } else {
         b.disabled(true).opacity(0.5)
@@ -72,10 +82,10 @@ pub fn kbd(s: &str, p: &Palette) -> El {
         .h(16.0)
         .min_w(16.0)
         .center()
-        .radius(3.0)
-        .fill(p.panel_2)
+        .radius(RADIUS)
+        .fill(p.panel)
         .border(1.0, p.border)
-        .child(label(s, font(10.5, 400.0), p.fg))
+        .child(label(s, font(10.5, 600.0), p.muted))
 }
 
 /// A text field box around an input element.
@@ -94,7 +104,8 @@ pub fn field_box(key: impl Into<String>, focused: bool, p: &Palette, input: El) 
 
 /// The root view.
 pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
-    let p = &s.palette;
+    let palette = s.palette(cx.system_dark());
+    let p = &palette;
     let mut root = col().key("app").w_full().h_full().fill(p.bg);
 
     if !s.loading_accounts && s.accounts.is_empty() {

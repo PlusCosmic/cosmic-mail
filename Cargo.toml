@@ -19,8 +19,12 @@ path = "src/main.rs"
 winresource = "0.1"
 
 [dependencies]
-# Native GPU UI (wgpu + winit). Pre-release: pin a rev of `dev` (never rewritten).
-rune = { git = "https://github.com/anomalyco/rune", rev = "a7f276c3630f85a06a0230295da4d2bd172d8d3b" }
+# Native GPU UI (wgpu + winit). Pre-release: pin a rev of `dev` (never rewritten). It must be
+# the revision rune-theme-foundation pins (ui-foundation's rune/Cargo.toml), or Cargo builds two
+# Runes whose types don't meet; move both together.
+rune = { git = "https://github.com/anomalyco/rune", rev = "cd36f5a9917ec4a65786caf69213c9cc32919984" }
+# The UI foundation's colour schemes, fonts and type as a Rune theme (PlusCosmic/ui-foundation).
+rune-theme-foundation = { git = "https://github.com/PlusCosmic/ui-foundation", rev = "9d39c0a4f66eb97284c4bee3990bf166ca7657c9" }
 # Decodes the bundled PNG icon into RGBA for the tray.
 png = "0.18"
 # Renders sanitized HTML mail as styled text (Rune has no HTML engine).
@@ -38,7 +42,6 @@ rustls-native-certs = "0.8.4"
 # Used only by the debug-only COSMIC_MAIL_EXTRA_CA hook in sync/imap.rs (E2E tests).
 rustls-pemfile = "2"
 mail-parser = "0.11.5"
-toml = "1.1.2"
 dirs = "6.0.0"
 anyhow = "1.0.103"
 thiserror = "2.0.18"
@@ -46,7 +49,6 @@ base64 = "0.22.1"
 url = "2.5.8"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 notify-rust = "4.18.0"
-notify = "8.2.0"
 chrono = { version = "0.4.45", features = ["serde"] }
 oauth2 = "5.0.0"
 lettre = { version = "0.11.22", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
