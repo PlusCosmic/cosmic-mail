@@ -183,7 +183,7 @@ fn the_ui_syncs_reads_and_acts_on_a_real_mailbox() {
         .all(|subject| s.messages.iter().any(|m| &m.subject == subject))
     });
     assert_eq!(h.rt.state.accounts.len(), 1);
-    assert!(h.text_of("header-title").contains("Unified Inbox"));
+    assert!(h.text_of("header-title").contains("Unified inbox"));
 
     // Clicking a message opens it in the reader with its body.
     let welcome = h.message_id("Welcome to Cosmic Mail");
