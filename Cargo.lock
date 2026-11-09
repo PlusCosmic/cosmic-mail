@@ -977,6 +977,7 @@ dependencies = [
  "reqwest 0.13.4",
  "roxmltree 0.21.1",
  "rune",
+ "rune-kit",
  "rune-theme-foundation",
  "rusqlite",
  "rustls",

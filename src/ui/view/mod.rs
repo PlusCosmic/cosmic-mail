@@ -690,3 +690,16 @@ fn move_selection(s: &mut Ui, delta: isize, tx: &mut Tx) {
     };
     s.select_index(next, tx);
 }
+
+/// `viewport` (an [`El::scroll`] column) with `rune-kit`'s scroll bar over its right
+/// edge, so a long list or mail shows how much is left. It follows the window's
+/// scroll-bar mode (`app::rune_args`: always visible outside macOS).
+#[track_caller]
+pub(crate) fn scroll_bar(viewport: El, p: &Palette) -> El {
+    use rune_kit::{ScrollBar, ScrollBarStyle};
+    viewport.scroll_bar_styled(
+        ScrollBarStyle::neutral(p.dark)
+            .thumb(p.border_strong)
+            .thumb_hover(p.muted),
+    )
+}

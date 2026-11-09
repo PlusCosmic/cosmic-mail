@@ -171,18 +171,23 @@ pub fn list_pane(s: &Ui, p: &Palette) -> El {
         }
     }
 
-    col().key("list").min_w(0.0).child(head).child(
-        col()
-            .key("list-scroll")
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0)
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .scroll_margin(8.0)
-            .child(rows),
-    )
+    col()
+        .key("list")
+        .min_w(0.0)
+        .child(head)
+        .child(super::scroll_bar(
+            col()
+                .key("list-scroll")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_margin(8.0)
+                .child(rows),
+            p,
+        ))
 }
 
 /// One message row: unread dot; sender, account and date; subject; snippet.

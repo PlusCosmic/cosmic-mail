@@ -62,7 +62,24 @@ fn demo_window() -> bool {
 /// (`view::titlebar`) under the window's own controls; Linux keeps its native
 /// frame, which Rune leaves in place.
 fn app() -> App<Ui> {
-    App::new(spec()).titlebar(rune::Titlebar::new(view::TITLEBAR_HEIGHT))
+    App::new(spec())
+        .titlebar(rune::Titlebar::new(view::TITLEBAR_HEIGHT))
+        .args(rune_args(std::env::args().skip(1).collect()))
+}
+
+/// Rune's flags for this launch: the command line, plus scroll bars that stay
+/// visible whenever content overflows. Rune's default outside macOS is overlay
+/// bars that only appear mid-scroll, which leaves a long mail with no sign of
+/// how much is left. macOS follows its own "Show scroll bars" setting, and an
+/// explicit `--scroll-bars` wins everywhere.
+fn rune_args(mut argv: Vec<String>) -> Vec<String> {
+    let given = argv
+        .iter()
+        .any(|a| a == "--scroll-bars" || a.starts_with("--scroll-bars="));
+    if !given && !cfg!(target_os = "macos") {
+        argv.splice(0..0, ["--scroll-bars".to_string(), "always".to_string()]);
+    }
+    argv
 }
 
 /// Application entry point.
