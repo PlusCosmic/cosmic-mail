@@ -14,7 +14,7 @@
 
 use std::ops::Range;
 
-use html2text::render::RichAnnotation;
+use html2text::render::{RichAnnotation, RichDecorator, TextDecorator};
 
 /// Wide enough that html2text never wraps a paragraph itself.
 const UNWRAPPED_WIDTH: usize = 100_000;
@@ -43,7 +43,7 @@ pub struct Line {
     pub text: String,
     /// Byte ranges of `text` with their style, in order.
     pub styles: Vec<(Range<usize>, Style)>,
-    /// Images on this line (their alt text is part of `text`).
+    /// Images on this line (their alt text is not part of `text`).
     pub images: Vec<ImageRef>,
     /// Preformatted (`<pre>`): monospace, whitespace kept.
     pub pre: bool,
@@ -102,10 +102,124 @@ fn normalize_inline_tags(html: &str) -> String {
     out
 }
 
+/// End every CSS declaration inside `<style>` with `;`. html2text 0.15's
+/// stylesheet parser drops a rule's last declaration when it has no trailing
+/// `;` — and minified mail CSS (`.preheader{display:none}`) never has one, so
+/// hidden content would show.
+fn terminate_css_declarations(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() + 64);
+    let mut rest = html;
+    while let Some(open) = find_ascii_ci(rest, "<style") {
+        let Some(body) = rest[open..].find('>').map(|i| open + i + 1) else {
+            break;
+        };
+        let end = find_ascii_ci(&rest[body..], "</style").map_or(rest.len(), |i| body + i);
+        out.push_str(&rest[..body]);
+        let mut last = None;
+        for c in rest[body..end].chars() {
+            if c == '}' && !matches!(last, None | Some(';' | '{' | '}')) {
+                out.push(';');
+            }
+            if !c.is_whitespace() {
+                last = Some(c);
+            }
+            out.push(c);
+        }
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Byte offset of `needle` (ASCII) in `hay`, ignoring ASCII case.
+fn find_ascii_ci(hay: &str, needle: &str) -> Option<usize> {
+    hay.as_bytes()
+        .windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+/// html2text's rich decorator, minus the markdown-ish text it injects: `# `
+/// before headings and `^{…}` around `<sup>` (Amazon prices are `£34<sup>99</sup>`).
+/// The reader draws styles itself, so those markers would show up verbatim.
+/// Colours are dropped too: the reader uses the theme's palette, not the mail's.
+#[derive(Clone, Debug)]
+struct MailDecorator(RichDecorator);
+
+impl TextDecorator for MailDecorator {
+    type Annotation = RichAnnotation;
+
+    fn decorate_link_start(&mut self, url: &str) -> (String, RichAnnotation) {
+        self.0.decorate_link_start(url)
+    }
+    fn decorate_link_end(&mut self) -> String {
+        self.0.decorate_link_end()
+    }
+    fn decorate_em_start(&self) -> (String, RichAnnotation) {
+        self.0.decorate_em_start()
+    }
+    fn decorate_em_end(&self) -> String {
+        self.0.decorate_em_end()
+    }
+    fn decorate_strong_start(&self) -> (String, RichAnnotation) {
+        self.0.decorate_strong_start()
+    }
+    fn decorate_strong_end(&self) -> String {
+        self.0.decorate_strong_end()
+    }
+    fn decorate_strikeout_start(&self) -> (String, RichAnnotation) {
+        self.0.decorate_strikeout_start()
+    }
+    fn decorate_strikeout_end(&self) -> String {
+        self.0.decorate_strikeout_end()
+    }
+    fn decorate_code_start(&self) -> (String, RichAnnotation) {
+        self.0.decorate_code_start()
+    }
+    fn decorate_code_end(&self) -> String {
+        self.0.decorate_code_end()
+    }
+    fn decorate_preformat_first(&self) -> RichAnnotation {
+        self.0.decorate_preformat_first()
+    }
+    fn decorate_preformat_cont(&self) -> RichAnnotation {
+        self.0.decorate_preformat_cont()
+    }
+    fn decorate_image(&mut self, src: &str, title: &str) -> (String, RichAnnotation) {
+        self.0.decorate_image(src, title)
+    }
+    fn header_prefix(&self, _level: usize) -> String {
+        String::new()
+    }
+    fn quote_prefix(&self) -> String {
+        self.0.quote_prefix()
+    }
+    fn unordered_item_prefix(&self) -> String {
+        self.0.unordered_item_prefix()
+    }
+    fn ordered_item_prefix(&self, i: i64) -> String {
+        self.0.ordered_item_prefix(i)
+    }
+    fn make_subblock_decorator(&self) -> Self {
+        self.clone()
+    }
+    fn decorate_superscript_start(&self) -> (String, RichAnnotation) {
+        (String::new(), RichAnnotation::Default)
+    }
+    fn decorate_superscript_end(&self) -> String {
+        String::new()
+    }
+}
+
 /// Render an HTML body to lines. Runs of blank lines collapse to one.
+///
+/// The mail's own CSS is applied (`use_doc_css`) so `display:none` content —
+/// preheaders, screen-reader labels, mobile-only duplicates — stays hidden, as
+/// it does in any other client. `@media` blocks are ignored, i.e. the desktop
+/// layout is what renders.
 pub fn render(html: &str) -> Vec<Line> {
-    let html = normalize_inline_tags(html);
-    let lines = match html2text::config::rich()
+    let html = terminate_css_declarations(&normalize_inline_tags(html));
+    let lines = match html2text::config::with_decorator(MailDecorator(RichDecorator::new()))
+        .use_doc_css()
         .raw_mode(true)
         .no_link_wrapping()
         .allow_width_overflow()
@@ -122,6 +236,19 @@ pub fn render(html: &str) -> Vec<Line> {
     for tagged in lines {
         let mut line = Line::default();
         for piece in tagged.tagged_strings() {
+            // An image's alt text belongs to the image (the reader shows it as the
+            // placeholder for a blocked image), not to the line's text — else a
+            // shown image is followed by its alt ("Completed", "logo") as prose.
+            if let Some(src) = piece.tag.iter().find_map(|t| match t {
+                RichAnnotation::Image(src) => Some(src),
+                _ => None,
+            }) {
+                line.images.push(ImageRef {
+                    src: src.clone(),
+                    alt: piece.s.trim().to_string(),
+                });
+                continue;
+            }
             let start = line.text.len();
             line.text.push_str(&piece.s);
             let range = start..line.text.len();
@@ -134,13 +261,6 @@ pub fn render(html: &str) -> Vec<Line> {
                     RichAnnotation::Link(url) => Some(Style::Link(url.clone())),
                     RichAnnotation::Preformat(_) => {
                         line.pre = true;
-                        None
-                    }
-                    RichAnnotation::Image(src) => {
-                        line.images.push(ImageRef {
-                            src: src.clone(),
-                            alt: piece.s.trim().to_string(),
-                        });
                         None
                     }
                     _ => None,
@@ -273,11 +393,37 @@ mod tests {
     }
 
     #[test]
+    fn no_markdown_markers_for_headings_or_superscripts() {
+        let lines = render("<h2>Your package was dispatched!</h2><p>&pound;34<sup>99</sup></p>");
+        assert_eq!(
+            texts(&lines),
+            vec!["Your package was dispatched!", "", "£34⁹⁹"]
+        );
+    }
+
+    #[test]
+    fn hidden_content_stays_hidden() {
+        assert_eq!(
+            terminate_css_declarations("<STYLE>a{b:c}@media x{d{e:f}}g{h:i;}</style><p>}</p>"),
+            "<STYLE>a{b:c;}@media x{d{e:f;}}g{h:i;}</style><p>}</p>"
+        );
+        let lines = render(
+            r#"<style>.pre{display:none} @media (max-width:600px){.desk{display:none}}</style>
+               <div class="pre">Preheader text</div>
+               <span style="display: none">Completed</span>
+               <p class="desk">Ordered</p>"#,
+        );
+        assert_eq!(texts(&lines), vec!["Ordered"]);
+    }
+
+    #[test]
     fn images_keep_their_source() {
         let lines = render(r#"<p><img src="https://t.example/p.gif" alt="logo"></p>"#);
         let images: Vec<_> = lines.iter().flat_map(|l| l.images.clone()).collect();
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].src, "https://t.example/p.gif");
+        assert_eq!(images[0].alt, "logo");
+        assert!(!texts(&lines).join("").contains("logo"));
         assert!(is_remote(&images[0].src));
         assert!(!is_remote("data:image/png;base64,AAAA"));
     }
