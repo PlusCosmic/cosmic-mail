@@ -395,6 +395,32 @@ fn the_remote_image_banner_only_shows_for_remote_images() {
 }
 
 #[test]
+fn html_mail_is_laid_out_as_a_page_with_its_own_layout() {
+    let rt = runtime(demo::state());
+    let elements = rt.elements();
+    let page = elements
+        .iter()
+        .find(|e| e.key.as_deref() == Some("mail-doc"))
+        .expect("the HTML body draws as a laid-out page");
+    let text: Vec<&str> = elements.iter().filter_map(|e| e.text.as_deref()).collect();
+    assert!(
+        !text.contains(&"Your order #114-5521 has shipped"),
+        "the hidden preheader stays hidden: {text:?}"
+    );
+    // The nav bar's cells sit side by side on one row, inside the page.
+    let rect = |want: &str| {
+        elements
+            .iter()
+            .find(|e| e.text.as_deref() == Some(want))
+            .map(|e| e.rect)
+            .unwrap_or_else(|| panic!("no {want:?} in {text:?}"))
+    };
+    let (orders, help) = (rect("Your orders"), rect("Help"));
+    assert!(help[0] > orders[0] && (help[1] - orders[1]).abs() < 1.0);
+    assert!(orders[0] >= page.rect[0]);
+}
+
+#[test]
 fn every_scene_renders() {
     for (name, scene) in demo::SCENES {
         let mut s = demo::state();

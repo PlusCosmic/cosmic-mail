@@ -16,6 +16,8 @@ pub mod demo;
 pub mod format;
 pub mod html;
 pub mod images;
+pub mod mail;
+pub mod mail_doc;
 pub mod palette;
 pub mod pane;
 pub mod store;
@@ -70,6 +72,11 @@ impl Inbox {
         if let Some(wake) = lock(&self.waker).as_ref() {
             wake();
         }
+    }
+
+    /// Whether jobs go through the app (a window runs), rather than queueing for `poll`.
+    pub fn has_handle(&self) -> bool {
+        lock(&self.handle).is_some()
     }
 
     /// Deliver jobs through the app's handle from now on.
@@ -363,6 +370,8 @@ pub struct Ui {
     pub body: Option<MessageBody>,
     /// `body.html` rendered for the reader.
     pub body_lines: Vec<html::Line>,
+    /// `body.html` laid out by Blitz (see `mail.rs`); drawn instead of `body_lines`.
+    pub(crate) mail: std::cell::RefCell<mail::MailState>,
     pub loading_body: bool,
     pub shipments: Vec<Shipment>,
     /// Messages whose remote images were allowed this session.
@@ -431,6 +440,7 @@ impl Ui {
             pending_removals: HashSet::new(),
             body: None,
             body_lines: Vec::new(),
+            mail: Default::default(),
             loading_body: false,
             shipments: Vec::new(),
             remote_allowed: HashSet::new(),

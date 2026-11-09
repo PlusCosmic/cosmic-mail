@@ -175,6 +175,31 @@ related area. When you learn a new one, add it.
   Its rich decorator also injects `# ` before headings and `^{…}` around `<sup>`;
   `MailDecorator` blanks those.
 
+### Blitz (HTML mail layout, `ui::mail_doc`)
+
+- **Stylo's build script runs Python 3.** Without it: `Can't find python (tried python.exe)`.
+  Linux and the CI runners have it on `PATH`; on Windows the Microsoft Store `python.exe`
+  stub doesn't count — install Python or point `PYTHON3` at one (`uv python find`).
+- **blitz-dom forces taffy's `flexbox_balance` feature** (through `stylo_taffy`'s defaults,
+  not optional), which adds `FlexWrap::Balance*` variants that Rune's `rune-taffy` matches
+  exhaustively — Rune stops compiling. `vendor/rune-taffy` is Rune's crate at the pinned rev
+  plus a catch-all arm, wired in with `[patch."https://github.com/anomalyco/rune"]`. **When
+  bumping the Rune rev, re-copy the crate** (or drop the patch once Rune handles it upstream).
+- **The UA stylesheet list replaces Blitz's default sheet** unless it is included:
+  `vec![UserAgentStylesheet::default_sheet(), ours]`. Without it `<style>` and `<head>`
+  render as text and tables stop being tables.
+- **Stylo/Blitz overflow the 1 MB Windows main-thread stack** on real mail (tests pass:
+  test threads get more). `mail_doc::layout` always runs on a 16 MiB-stack thread.
+- **Blitz loads no resources**, so an `<img>` has no intrinsic size and `width:100%;
+  height:auto` in a shrink-to-fit cell collapses to 0×0. `size_images` gives each decoded
+  image empty `RasterImageData` of its real size (layout reads only the dimensions).
+- **Rune draws only fonts the app embeds**, so Blitz must measure with them too (a UA
+  `* { font-family: … !important }` rule), or runs measured in Arial overlap when drawn in
+  Instrument Sans. System fonts stay in the (shared, built-once) collection as glyph
+  fallback — without them `•` list markers, CJK and emoji vanish.
+- **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
+  root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
+
 ## Wire format
 
 - **Every wire struct keeps `#[serde(rename_all = "camelCase")]`.** `accounts.json` and

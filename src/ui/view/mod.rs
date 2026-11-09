@@ -322,7 +322,7 @@ fn panes(s: &Ui, cx: &mut Cx<Ui>, p: &Palette) -> El {
         .child(list::list_pane(s, p).w(list_width).h_full().min_h(0.0))
         .child(divider)
         .child(
-            reader::reader(s, p)
+            reader::reader(s, p, available - list_width)
                 .grow(1.0)
                 .min_w(0.0)
                 .h_full()

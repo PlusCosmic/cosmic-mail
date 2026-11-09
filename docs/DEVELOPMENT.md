@@ -18,7 +18,9 @@ deliberately, never track `dev`.
 
 Build dependencies: Arch `libxkbcommon wayland vulkan-icd-loader` plus a Vulkan driver;
 Ubuntu `libxkbcommon-dev libwayland-dev libdbus-1-dev` (and `libxkbcommon-x11-0` for
-windowed runs under X11).
+windowed runs under X11). **Python 3** on `PATH` (`python3`; `python.exe` on Windows) —
+Stylo, the CSS engine behind the HTML mail layout, generates code with it at build time;
+set `PYTHON3=/path/to/python` if it lives elsewhere (see GOTCHAS, "Blitz").
 
 ### Demo window (debug builds)
 

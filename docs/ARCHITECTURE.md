@@ -34,7 +34,9 @@ src/
     store.rs        # state transitions (selection, paging, optimistic actions, events)
     view/           # element tree: mod (root, panes, keys, palette commands), chrome
                     # (rail, header, folders, footer, toasts), list, reader, modals
-    html.rs         # HTML mail -> styled text lines (see "Reader remote-content policy")
+    mail_doc.rs     # HTML mail -> Blitz layout -> display list (see "Reader remote-content policy")
+    mail.rs         # per-width layout cache, worker-thread layout for the open message
+    html.rs         # HTML mail -> styled text lines (image list; fallback rendering)
     images.rs       # inline data: images, consent-gated remote images, opening links
     theme.rs        # rune-theme-foundation tokens -> Palette; Appearance (system/light/dark)
     compose.rs format.rs palette.rs pane.rs   # pure helpers (unit-tested)
@@ -92,7 +94,7 @@ interface AttachmentInfo {    // store.rs::AttachmentRow projection
 
 interface MessageBody {
   id: number;
-  html: string | null;        // never rendered as HTML: the UI converts it to text (see policy);
+  html: string | null;        // laid out by Blitz, never executed or fetched from (see policy);
                               // inline cid: images are inlined as data: URIs at cache time (see policy)
   text: string | null;
   toAddrs: string[];
@@ -657,14 +659,24 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 
 ## Reader remote-content policy
 
-- HTML message bodies are **never rendered as HTML**. `ui::html::render` parses them with
-  `html2text` (rich mode, `raw_mode` so layout tables flatten to one column) into annotated text
-  lines — paragraphs, list items, quotes, preformatted blocks, with strong/emphasis/code/strike
-  and link annotations (`<b>`/`<i>` are rewritten to `<strong>`/`<em>` first). Scripts, style
-  sheets, forms, frames, objects and event handlers produce no output and never execute; there
-  is no DOM, no JavaScript engine, and no CSS. The reader draws the lines as Rune rich text that
-  wraps to the pane and is selectable. Sender colours are ignored: unstyled and styled mail alike
-  adopt the app's colour scheme.
+- HTML message bodies are **laid out, never executed or fetched from**. `ui::mail_doc::layout`
+  hands the body to Blitz (`blitz-html`/`blitz-dom`: html5ever parsing, Stylo for the cascade of
+  the mail's own `<style>` blocks and inline styles, Taffy for block/flex/table layout, Parley for
+  text) at the reader's content width, and flattens the result to a display list — element boxes
+  (background, per-side borders, corner radius), images by `src`, list markers, and one text item
+  per line segment with per-run weight/italic/colour/underline/link spans. The reader draws that
+  list as Rune elements on a page in the mail's own colours (white unless the mail sets a
+  background, in either app theme), so table layouts, buttons and colour bars look as they do in
+  other clients. There is no JavaScript engine and no event dispatch; forms and frames draw
+  nothing; Blitz is given no network provider, so `<link>` stylesheets, `@import`, CSS `url()`
+  backgrounds and web fonts are never requested. All text is laid out and drawn in the app's own
+  fonts (system fonts only as glyph fallback), since Rune draws only fonts the app embeds.
+- Layout runs on a worker thread (16 MiB stack; Stylo recurses deeply) and is redone when the
+  reader's width changes (8 px steps) or a body image finishes decoding (its pixel size feeds the
+  layout as the `<img>`'s intrinsic size). Until the first layout lands the body area is empty.
+- `ui::html::render` (`html2text`, rich mode, layout tables flattened to one column) still turns
+  the body into styled text lines: they list the body's images (what `prepare_body_images` loads
+  and what the remote-image notice keys on) and are drawn instead when Blitz produces nothing.
 - Inline `cid:` images are resolved to `data:` URIs backend-side at body-cache time — never by a
   network fetch. When a body is parsed, each `image/*` part carrying a Content-ID whose decoded size
   is ≤ 512 KiB, and while a running per-message budget of ≤ 2 MiB is not exceeded, has its stored
@@ -690,7 +702,7 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 
 There is no automation bridge: the UI is Rust, so tests drive it in-process.
 
-- **Unit tests** cover the pure helpers (`ui::format`, `compose`, `palette`, `pane`, `html`,
+- **Unit tests** cover the pure helpers (`ui::format`, `compose`, `palette`, `pane`, `html`, `mail_doc`,
   `theme`) and the backend modules.
 - **UI behaviour tests** (`src/ui/tests.rs`) build the real view over the demo mailbox on
   `rune::Runtime` — Rune's headless runtime with the same layout, hit testing, focus and key

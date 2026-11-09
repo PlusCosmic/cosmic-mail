@@ -12,6 +12,7 @@ use super::{
 };
 use crate::ui::format::{carrier_label, folder_title, format_bytes, full_date, initials};
 use crate::ui::html::{Line, Style};
+use crate::ui::mail_doc::{Item as MailItem, MailLayout};
 use crate::ui::theme::Palette;
 use crate::ui::{BodyImage, Ui};
 
@@ -19,7 +20,8 @@ use crate::ui::{BodyImage, Ui};
 const MEASURE: f32 = 680.0;
 
 /// The reader pane (its width is set by the caller).
-pub fn reader(s: &Ui, p: &Palette) -> El {
+/// `width` is the pane's (the mail body lays out to fit it).
+pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
     let pane = col()
         .key("reader")
         .role("region")
@@ -330,7 +332,25 @@ pub fn reader(s: &Ui, p: &Palette) -> El {
     if s.loading_body {
         text_body = text_body.child(label("Loading…", font(13.0, 400.0), p.muted));
     } else if let Some(b) = body {
-        if b.html.is_some() && !s.body_lines.is_empty() {
+        // HTML is laid out by Blitz at the content column's width (40px padding each side).
+        // `None` means the first layout is still being computed: draw nothing rather than
+        // flash another rendering. An empty layout (Blitz produced nothing) falls back to
+        // the styled-text lines.
+        let mail_width = (width - 80.0).min(MEASURE);
+        let doc = b.html.as_ref().map(|_| s.mail_layout(mail_width));
+        let remote_blocked =
+            s.body_has_remote_images() && !s.settings.always_download_remote_images;
+        if let Some(Some(doc)) = doc
+            .as_ref()
+            .filter(|d| d.as_ref().is_some_and(|d| !d.items.is_empty()))
+        {
+            if remote_blocked {
+                content = content.child(remote_notice(s, id, p));
+            }
+            text_body = text_body.child(mail_doc_view(s, doc));
+        } else if matches!(doc, Some(None)) {
+            // Laying out.
+        } else if b.html.is_some() && !s.body_lines.is_empty() {
             if s.body_has_remote_images() && !s.settings.always_download_remote_images {
                 content = content.child(remote_notice(s, id, p));
             }
@@ -539,6 +559,132 @@ fn html_line(s: &Ui, index: usize, line: &Line, p: &Palette) -> El {
                 .child(t.color(p.muted)),
         ),
     }
+}
+
+/// An HTML mail laid out by Blitz (`ui::mail_doc`), drawn as a page in the mail's
+/// own colours — white unless it sets a background, in either theme, as other
+/// clients do — with every box, image and line of text where Blitz put it.
+fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
+    let color = |c: [u8; 4]| {
+        rune::color::hex(&format!(
+            "#{:02x}{:02x}{:02x}{:02x}",
+            c[0], c[1], c[2], c[3]
+        ))
+        .unwrap_or(rune::Color::BLACK)
+    };
+    let mut page = el()
+        .key("mail-doc")
+        .w(doc.width)
+        .h(doc.height)
+        .radius(RADIUS)
+        .fill(color(doc.background.unwrap_or([255, 255, 255, 255])));
+    for (i, item) in doc.items.iter().enumerate() {
+        let child = match item {
+            MailItem::Box {
+                x,
+                y,
+                w,
+                h,
+                fill,
+                border,
+                radius,
+            } => {
+                let mut b = el().w(*w).h(*h).radius(*radius);
+                if let Some(f) = fill {
+                    b = b.fill(color(*f));
+                }
+                if let Some((bw, bc)) = border {
+                    b = b.border_sides(*bw, color(*bc));
+                }
+                b.absolute(*x, *y)
+            }
+            MailItem::Image {
+                x,
+                y,
+                w,
+                h,
+                src,
+                alt,
+                link,
+            } => {
+                // Tracking pixels and spacers draw nothing worth showing.
+                if *w <= 2.0 || *h <= 2.0 {
+                    continue;
+                }
+                let mut e = match s.body_images.get(src) {
+                    Some(BodyImage::Ready(img)) if img.size().is_some() => {
+                        el().pixels(img.pixels()).label(alt.clone())
+                    }
+                    // Blocked, loading or failed: a faint frame keeps the layout readable.
+                    _ => el().border(1.0, color([0, 0, 0, 24])),
+                };
+                if let Some(url) = link.clone() {
+                    e = e
+                        .cursor(Cursor::Pointer)
+                        .on_press(move |s: &mut Ui| s.open_link(&url));
+                }
+                e.w(*w).h(*h).absolute(*x, *y)
+            }
+            MailItem::Text {
+                x,
+                y,
+                w,
+                line_height,
+                size,
+                text,
+                spans,
+            } => {
+                let mut rune_spans = Vec::with_capacity(spans.len());
+                let mut links = Vec::new();
+                for sp in spans {
+                    let fg = color(sp.color);
+                    // The foundation ships 400 and 600 faces; Blitz matched the same ones.
+                    let mut span = Span::new(sp.range.start, sp.range.end)
+                        .color(fg)
+                        .weight(if sp.weight >= 600.0 { 600.0 } else { 400.0 });
+                    if sp.italic {
+                        span = span.italic();
+                    }
+                    if sp.underline {
+                        span = span.underline(fg);
+                    }
+                    rune_spans.push(span);
+                    if let Some(url) = &sp.link {
+                        links.push(Link::new(sp.range.clone(), url.clone()));
+                    }
+                }
+                let mut t = rich(text.clone(), rune_spans)
+                    .font(font(*size, 400.0).lh(*line_height))
+                    .selectable(true);
+                if !links.is_empty() {
+                    for link in links {
+                        t = t.link(link);
+                    }
+                    t = t.on_link(|s: &mut Ui, url: &str, _tx: &mut Tx| s.open_link(url));
+                }
+                // Blitz broke the line; at its measured width (plus rounding slack) Rune
+                // never breaks it again, even where it runs past a narrow page.
+                t.w(*w + 1.0).absolute(*x, *y)
+            }
+        };
+        page = page.child(child.key(format!("md-{i}")));
+    }
+    // Mail with fixed-width tables wider than the pane is drawn scaled down to fit,
+    // as other clients do, rather than clipped. Layout keeps the unscaled size, so
+    // the wrapper takes the scaled one and the page sits in it out of flow.
+    let k = (doc.width / doc.content_width).min(1.0);
+    if k >= 1.0 {
+        return page;
+    }
+    el().key("mail-doc-fit")
+        .w(doc.content_width * k)
+        .h(doc.height * k)
+        .child(
+            page.w(doc.content_width)
+                .origin(0.0, 0.0)
+                .scale(k)
+                .absolute(0.0, 0.0),
+        )
 }
 
 /// How an HTML line is laid out.
