@@ -92,14 +92,53 @@ fn message(
     }
 }
 
-const DEMO_HTML: &str = r#"
-<p>Hi Harry,</p>
-<p>Your order <b>#114-5521</b> has shipped and is on its way. You can
-<a href="https://www.ups.com/track?tracknum=1Z999AA10123456784">track the parcel here</a>
-or reply to this email if anything looks wrong.</p>
-<ul><li>Mechanical keyboard (tactile)</li><li>Spare keycaps</li></ul>
-<blockquote>Estimated delivery: Thursday, before 7pm.</blockquote>
-<p>Thanks for shopping with us,<br><i>The Parts Shop team</i></p>
+/// A table-layout order mail, the shape most transactional mail takes: a hidden
+/// preheader, a coloured bar, a step tracker, a button, item rows and a footer.
+const DEMO_HTML: &str = r#"<!doctype html>
+<html><head><style>
+.pre{display:none}
+body{margin:0;font-family:Helvetica,Arial,sans-serif;color:#1d2321}
+.bar td{background:#1f3a2e;color:#e6efe9;font-weight:700;font-size:14px;padding:10px 12px}
+.dot{width:14px;height:14px;border-radius:7px;background:#2f8f5b}
+.dot.todo{background:#dde3df}
+.btn{display:inline-block;background:#2f8f5b;color:#ffffff;border-radius:18px;padding:8px 18px;text-decoration:none;font-size:14px}
+.muted{color:#5f6b66;font-size:13px}
+.foot{background:#f1f4f2;color:#5f6b66;font-size:12px;padding:16px}
+</style></head>
+<body>
+<div class="pre">Your order #114-5521 has shipped</div>
+<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center">
+<table width="560" cellpadding="0" cellspacing="0">
+  <tr class="bar"><td align="center">Your orders</td><td align="center">Your account</td><td align="center">Help</td></tr>
+  <tr><td colspan="3" style="padding:18px 16px 6px;font-size:18px;font-weight:700" align="center">Your order has shipped!</td></tr>
+  <tr><td colspan="3" style="padding:8px 16px">
+    <table width="100%"><tr>
+      <td align="center"><div class="dot"></div><div class="muted">Ordered</div></td>
+      <td align="center"><div class="dot"></div><div style="font-size:13px;font-weight:700">Shipped</div></td>
+      <td align="center"><div class="dot todo"></div><div class="muted">Out for delivery</div></td>
+      <td align="center"><div class="dot todo"></div><div class="muted">Delivered</div></td>
+    </tr></table>
+  </td></tr>
+  <tr><td colspan="3" style="padding:12px 16px">
+    <p style="margin:0 0 4px">Hi Harry,</p>
+    <p style="margin:0 0 12px">Order <b>#114-5521</b> is on its way and should arrive <b>Thursday, before 7pm</b>.</p>
+    <a class="btn" href="https://www.ups.com/track?tracknum=1Z999AA10123456784">Track parcel</a>
+  </td></tr>
+  <tr><td colspan="3" style="padding:8px 16px">
+    <table width="100%" style="border-top:1px solid #dde3df">
+      <tr><td style="padding:10px 0">Mechanical keyboard (tactile)<div class="muted">Qty 1</div></td>
+          <td align="right">&pound;89<sup style="font-size:10px">00</sup></td></tr>
+      <tr><td style="padding:10px 0">Spare keycaps<div class="muted">Qty 2</div></td>
+          <td align="right">&pound;24<sup style="font-size:10px">50</sup></td></tr>
+      <tr><td style="padding:10px 0;border-top:1px solid #dde3df"><b>Total</b></td>
+          <td align="right" style="border-top:1px solid #dde3df"><b>&pound;113.50</b></td></tr>
+    </table>
+  </td></tr>
+  <tr><td colspan="3" class="foot">Thanks for shopping with us. Questions?
+    <a href="https://partsshop.example/help" style="color:#2f8f5b">Contact the Parts Shop team</a>.</td></tr>
+</table>
+</td></tr></table>
+</body></html>
 "#;
 
 /// The demo mailbox: two accounts, a unified inbox, one open message.
@@ -249,6 +288,7 @@ pub fn state() -> Ui {
     };
     s.body_lines = body.html.as_deref().map(html::render).unwrap_or_default();
     s.body = Some(body);
+    s.reset_mail_layout();
     s.shipments = vec![Shipment {
         id: 1,
         carrier: "ups".into(),

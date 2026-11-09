@@ -1,0 +1,14 @@
+[package]
+name = "rune-taffy"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+
+[features]
+default = []
+# Use upstream `taffy::TaffyTree` instead of `LayoutStore` for A/B benchmarks and parity checks.
+baseline-taffy = []
+
+[dependencies]
+taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "content_size"] }
+

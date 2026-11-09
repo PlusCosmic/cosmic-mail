@@ -68,7 +68,20 @@ hickory-resolver = "0.26.1"
 # setters are gated per-platform; this project only targets Linux, where all three
 # (time/interval/retries) are available.
 socket2 = { version = "0.6.4", features = ["all"] }
+# HTML mail layout (ui::mail_doc). Beta: pinned exactly. stylo's build script needs Python 3.
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
+blitz-html = "=0.3.0-beta.4"
+blitz-traits = "=0.3.0-beta.4"
+parley = { version = "0.12", default-features = false }
+taffy = { version = "0.15", default-features = false }
+stylo = { version = "=0.22.0", default-features = false }
 
 [profile.dev.package."*"]
 # Dependencies (wgpu, parley, ...) build without debug info: much faster links.
 debug = false
+
+# blitz-dom forces taffy's `flexbox_balance` feature, which adds FlexWrap variants rune-taffy
+# matches exhaustively. Rune's crate at the pinned rev plus a catch-all arm; re-copy it when
+# bumping the Rune rev (GOTCHAS, "Blitz").
+[patch."https://github.com/anomalyco/rune"]
+rune-taffy = { path = "vendor/rune-taffy" }

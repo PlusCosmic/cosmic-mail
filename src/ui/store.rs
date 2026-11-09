@@ -475,6 +475,7 @@ impl Ui {
         self.selected_message = None;
         self.body = None;
         self.body_lines.clear();
+        self.reset_mail_layout();
         self.body_images.clear();
         self.shipments.clear();
         self.loading_body = false;
@@ -708,6 +709,7 @@ impl Ui {
         self.selected_message = Some(id);
         self.body = None;
         self.body_lines.clear();
+        self.reset_mail_layout();
         self.body_images.clear();
         self.shipments.clear();
         self.loading_body = true;
@@ -729,6 +731,7 @@ impl Ui {
                         ui.body = Some(body);
                         ui.shipments = shipments;
                         ui.prepare_body_images();
+                        ui.reset_mail_layout();
                     }
                     Err(err) => ui.error("Failed to load message", err),
                 }
