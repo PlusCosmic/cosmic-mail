@@ -20,6 +20,13 @@ Build dependencies: Arch `libxkbcommon wayland vulkan-icd-loader` plus a Vulkan 
 Ubuntu `libxkbcommon-dev libwayland-dev libdbus-1-dev` (and `libxkbcommon-x11-0` for
 windowed runs under X11).
 
+### Demo window (debug builds)
+
+`COSMIC_MAIL_DEMO=1 cargo run [-- --scene NAME]` opens a real window on the demo mailbox,
+with no profile, network, tray or single-instance hand-off, so it runs beside an installed
+Cosmic Mail. Use it to try window behaviour by hand (titlebar drag, snap layouts, caption
+buttons, resizing). Release builds ignore the variable.
+
 ### Headless renders (Rune tooling)
 
 The binary doubles as Rune's headless tool. These runs render the built-in demo mailbox
@@ -59,7 +66,8 @@ journalctl --user -u cosmic-mail.service -f
 - omarchy is installed; mako is the notification daemon; current theme files live at
   `~/.local/state/omarchy/current/theme/` (symlink swapped by `omarchy-theme-set`;
   `~/.config/omarchy/current/` on older releases).
-- The window (1280×800, min 900×560) has the platform title bar unless Settings → Window →
+- The window (1280×800, min 900×560) draws its own titlebar band on Windows and macOS (search
+  lives in it there). On Linux it has the platform title bar unless Settings → Window →
   "Show the window title bar" is off (read at startup), with app id / X11 class
   `cosmic-mail`, which Hyprland rules and the `hyprctl` focus fallback match on.
 - Gmail OAuth credential setup and precedence are documented in [SETUP.md](SETUP.md#gmail).

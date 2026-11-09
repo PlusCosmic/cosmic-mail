@@ -51,6 +51,20 @@ pub fn spec() -> AppSpec<Ui> {
     }
 }
 
+/// Debug builds only: `COSMIC_MAIL_DEMO=1` opens a real window on the demo mailbox (`--scene`
+/// picks the state), with no profile, network, tray or single-instance hand-off, so it runs
+/// beside an installed Cosmic Mail. For trying window behaviour (the titlebar, resizing) by hand.
+fn demo_window() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("COSMIC_MAIL_DEMO").is_some_and(|v| v == "1")
+}
+
+/// The app around [`spec`]: on Windows and macOS the view draws the titlebar
+/// (`view::titlebar`) under the window's own controls; Linux keeps its native
+/// frame, which Rune leaves in place.
+fn app() -> App<Ui> {
+    App::new(spec()).titlebar(rune::Titlebar::new(view::TITLEBAR_HEIGHT))
+}
+
 /// Application entry point.
 pub fn run() {
     rune::tooling::set_app_id(APP_ID);
@@ -74,9 +88,9 @@ pub fn run() {
 
     tracing::info!(version = crate::VERSION, "starting Cosmic Mail");
 
-    if rune::tooling::is_headless() {
-        // Snapshots and scripted runs: the demo mailbox, nothing live.
-        App::new(spec()).run();
+    if rune::tooling::is_headless() || demo_window() {
+        // Snapshots and scripted runs, or a debug demo window: the demo mailbox, nothing live.
+        app().run();
         return;
     }
 
@@ -133,16 +147,16 @@ pub fn run() {
         Err(err) => tracing::warn!(error = %err, "snippet healing failed"),
     }
 
-    let mut app = App::new(spec())
-        .keep_running()
-        .window_options(rune::WindowOptions {
-            // The platform title bar (move, minimise, close) unless the user
-            // turned it off for a tiling WM that draws its own borders.
-            // Decorations are fixed at window creation: a change in Settings
-            // applies on the next start.
-            borderless: !crate::settings::load_settings().window_title_bar,
-            ..Default::default()
-        });
+    let mut app = app().keep_running().window_options(rune::WindowOptions {
+        // Linux keeps the platform title bar (move, minimise, close) unless
+        // the user turned it off for a tiling WM that draws its own borders.
+        // Decorations are fixed at window creation: a change in Settings
+        // applies on the next start. Windows and macOS always have a frame:
+        // the app draws its titlebar into it (`view::titlebar`).
+        borderless: crate::settings::HAS_TITLE_BAR_SETTING
+            && !crate::settings::load_settings().window_title_bar,
+        ..Default::default()
+    });
     if background {
         app = app.windowless();
     }
@@ -211,7 +225,7 @@ pub fn run() {
 
     backend.start_all_syncs();
 
-    let prefs_path = dirs::config_dir().map(|d| d.join("cosmic-mail").join("ui.json"));
+    let prefs_path = crate::paths::config_dir().map(|d| d.join("cosmic-mail").join("ui.json"));
     {
         let backend = backend.clone();
         let handle = handle.clone();

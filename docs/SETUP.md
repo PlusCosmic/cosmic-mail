@@ -70,7 +70,8 @@ changes save immediately.
   without the per-message "Load remote images" prompt. This relaxes **images only**: HTML mail is
   always rendered as styled text, so scripts, styles, forms, and every other remote resource are
   never loaded. Leave it off if you want tracking-pixel protection on a per-message basis.
-- **Show the window title bar** — on by default: the system title bar and borders, to move,
+- **Show the window title bar** (Linux only; Windows and macOS always use Cosmic Mail's own
+  titlebar) — on by default: the system title bar and borders, to move,
   minimise and close the window. Turn it off under a tiling window manager such as omarchy's
   Hyprland, which draws its own. Takes effect the next time Cosmic Mail starts (restart the
   `cosmic-mail.service` if it runs in the background).

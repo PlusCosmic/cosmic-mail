@@ -11,6 +11,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Whether [`Settings::window_title_bar`] means anything here. Windows and macOS always draw
+/// the app's own titlebar into a framed window; only Linux (and other freedesktop systems)
+/// offers going frameless for a tiling window manager.
+pub const HAS_TITLE_BAR_SETTING: bool = cfg!(not(any(target_os = "windows", target_os = "macos")));
+
 /// User-facing global preferences.
 ///
 /// `#[serde(default)]` tolerates missing keys; unknown keys are ignored, so
@@ -25,6 +30,7 @@ pub struct Settings {
     /// When true, the window has the platform's title bar and borders (move,
     /// minimise, close). Turn it off under a tiling window manager (omarchy's
     /// Hyprland) that draws its own. Read at startup. Defaults to `true`.
+    /// Linux only ([`HAS_TITLE_BAR_SETTING`]); ignored on Windows and macOS.
     pub window_title_bar: bool,
 }
 
@@ -39,7 +45,7 @@ impl Default for Settings {
 
 /// Path to `settings.json`: `$XDG_CONFIG_HOME/cosmic-mail/settings.json`.
 pub fn settings_path() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
+    let dir = crate::paths::config_dir()
         .context("could not determine config dir (XDG_CONFIG_HOME)")?
         .join("cosmic-mail");
     Ok(dir.join("settings.json"))

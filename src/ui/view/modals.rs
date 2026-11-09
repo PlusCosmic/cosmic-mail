@@ -750,16 +750,19 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
         p,
         |st| st.always_download_remote_images = !st.always_download_remote_images,
     );
-    let title_bar_row = setting_toggle(
-        "setting-title-bar",
-        "Show the window title bar",
-        "The system title bar and borders, to move, minimise and close the window. \
-         Turn off under a tiling window manager such as Hyprland, which draws its \
-         own. Takes effect the next time Cosmic Mail starts.",
-        s.settings.window_title_bar,
-        p,
-        |st| st.window_title_bar = !st.window_title_bar,
-    );
+    // Windows and macOS always draw the app's titlebar: nothing to choose there.
+    let title_bar_row = crate::settings::HAS_TITLE_BAR_SETTING.then(|| {
+        setting_toggle(
+            "setting-title-bar",
+            "Show the window title bar",
+            "The system title bar and borders, to move, minimise and close the window. \
+             Turn off under a tiling window manager such as Hyprland, which draws its \
+             own. Takes effect the next time Cosmic Mail starts.",
+            s.settings.window_title_bar,
+            p,
+            |st| st.window_title_bar = !st.window_title_bar,
+        )
+    });
 
     let mut accounts = col().key("settings-accounts").w_full().gap(6.0);
     for acc in &s.accounts {
@@ -910,7 +913,7 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                 .gap(22.0)
                 .child(section("Appearance", appearance(s, p)))
                 .child(section("Reading", remote_row))
-                .child(section("Window", title_bar_row))
+                .children(title_bar_row.map(|row| section("Window", row)))
                 .child(section("Accounts", accounts))
                 .child(section(
                     "About",
