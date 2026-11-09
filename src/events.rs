@@ -33,6 +33,9 @@ pub enum AppEvent {
     },
     /// A notification (or a second launch) asked to show and focus the window.
     Activate,
+    /// `accounts:changed`: an account was added or removed from outside the UI (Postmaster,
+    /// over the single-instance socket); reload the account list.
+    AccountsChanged,
 }
 
 /// Where backend events go. Cheap to clone; callable from any thread.

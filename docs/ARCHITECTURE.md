@@ -133,7 +133,7 @@ interface ImapAccountInput {
   smtpHost: string; smtpPort: number;   // STARTTLS (587) or implicit (465)
   username: string;                     // often == email
   password: string;                     // goes straight to keyring, never to db/json
-}
+}                                       // Debug prints the password as <redacted>
 
 interface SendMessageInput {
   accountId: string;                    // sending identity; SMTP details stay backend-only
@@ -160,6 +160,8 @@ interface Settings {                    // settings.rs::Settings — global pref
 | `start_gmail_oauth` | — | `Account` (opens browser, blocks until redirect or 5 min timeout) |
 | `reauth_gmail_account` | `accountId: string` | `Account` (re-runs the same interactive consent for an **existing** Gmail account, in place — cache/folders/settings untouched; errors without storing anything if the completed consent belongs to a different address than the account's) |
 | `remove_account` | `accountId: string` | `void` |
+| `add_handed_over_account` | `input: ImapAccountInput` | `Account` (Postmaster's hand-off over the instance socket: refused if an account already has `input.email`, compared case-insensitively; otherwise exactly `add_imap_account`, then emits `AccountsChanged`) |
+| `remove_account_by_email` | `email: string` | `void` (Postmaster's removal: the account with that address, compared case-insensitively, exactly as `remove_account`, then emits `AccountsChanged`; errors if there's none) |
 | `list_folders` | `accountId: string` | `Folder[]` |
 | `list_messages` | `folderId: number, offset: number, limit: number` | `MessageSummary[]` (date DESC) |
 | `list_unified_messages` | `offset: number, limit: number` | `MessageSummary[]` (date DESC across all folders with role 'inbox', all accounts) |
@@ -195,6 +197,7 @@ shows it in a toast. Backend-only helpers used by the shell (not the UI): `start
 | `mail:messages-updated` | `MessagesUpdated` | `{ folderId }` (flags changed / deletions — the UI refetches the page) |
 | `mail:sync-state` | `SyncState` | `{ accountId, state: SyncState, error: string \| null, needsReauth: boolean }` (`needsReauth` is `true` only when the failure is classified `AuthExpired` — see the Gmail section — meaning retrying cannot help and the UI should offer Reconnect) |
 | — | `Activate` | none: show and focus the window (notification click). The shell handles it directly with `AppHandle::open` so it works while the window is closed. |
+| `accounts:changed` | `AccountsChanged` | none: an account was added or removed from outside the UI (Postmaster); the UI reloads the account list, and if it was showing a removed account it falls back to the unified inbox as Remove in Settings does. |
 
 Delivery: `app.rs` installs a sink that forwards every event except `Activate` to the UI's
 `Inbox`, which runs it on the UI thread via `AppHandle::update` (this works while the window is
@@ -358,10 +361,23 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
 
 - Cosmic Mail has exactly one process/sync-engine owner per desktop session. The first process
   binds `$XDG_RUNTIME_DIR/cosmic-mail.sock` (`desktop::claim_instance`; a stale socket from a
-  crash is reclaimed). A later process connects, writes one line — `activate [token]` or
+  crash is reclaimed). A later launch connects, writes one line — `activate [token]` or
   `background` — and exits before opening the database or starting sync. If the socket cannot be
   bound at all (e.g. a path over the 108-byte Unix limit) the process logs a warning and runs
   without single-instance protection.
+- The socket also takes requests from [Postmaster](https://github.com/PlusCosmic/postmaster),
+  the Purelymail admin app, which **wait for a one-line reply on the same connection**:
+  - `add-account <ImapAccountInput as compact JSON>` → `add_handed_over_account`, run on the
+    tokio runtime (it validates by connecting); replies `ok <accountId>` or `error <message>`.
+    The password is Postmaster's app password for the mailbox, never its main one; it goes to
+    the keyring like any other, and the request's `Debug` shows only the address.
+  - `remove-account <email>` → `remove_account_by_email`; replies `ok` or `error <message>`.
+
+  Replies are one line (`ok [detail]` / `error <message>`, whitespace collapsed). A verb a
+  version doesn't know is dropped without a reply, so the sender sees the connection close and
+  can say Cosmic Mail needs updating. A request line is read up to 16 KiB. Because requests can
+  carry a password, the socket is `chmod 600` straight after `bind`, which matters when
+  `XDG_RUNTIME_DIR` is unset and it falls back to the shared temp folder.
 - The promoted daily build installs `cosmic-mail.service`, a systemd user service bound to
   `graphical-session.target`. It launches the binary with `--background`, uses
   `Restart=on-failure` for crash recovery, and stops it with the graphical session. A clean tray

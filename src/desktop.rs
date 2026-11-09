@@ -12,13 +12,15 @@
 
 use std::ffi::OsStr;
 #[cfg(unix)]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+
+use crate::wire::ImapAccountInput;
 
 pub const BACKGROUND_ARG: &str = "--background";
 
@@ -89,13 +91,39 @@ pub fn hyprland_focus() {
     }
 }
 
-/// What a second launch asks of the running process.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a second launch, or another app, asks of the running process.
+#[derive(Clone, PartialEq, Eq)]
 pub enum InstanceRequest {
     /// Show and focus the window, with the launcher's XDG activation token if any.
     Activate { token: Option<String> },
     /// A `--background` launch: the process already runs, nothing to show.
     Background,
+    /// Add an IMAP account, as Add account does (it's validated by connecting first). Sent by
+    /// Postmaster after it makes the mailbox an app password; replied to with the account id.
+    AddAccount(Box<ImapAccountInput>),
+    /// Remove the account with this address, as Settings' Remove does. Sent by Postmaster after
+    /// it deletes the mailbox.
+    RemoveAccount { email: String },
+}
+
+/// The password in an `AddAccount` must never reach a log through `{:?}`.
+impl std::fmt::Debug for InstanceRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InstanceRequest::Activate { token } => f
+                .debug_struct("Activate")
+                .field("token", &token.as_ref().map(|_| "<token>"))
+                .finish(),
+            InstanceRequest::Background => f.write_str("Background"),
+            InstanceRequest::AddAccount(input) => {
+                f.debug_tuple("AddAccount").field(&input.email).finish()
+            }
+            InstanceRequest::RemoveAccount { email } => f
+                .debug_struct("RemoveAccount")
+                .field("email", email)
+                .finish(),
+        }
+    }
 }
 
 impl InstanceRequest {
@@ -112,8 +140,9 @@ impl InstanceRequest {
         }
     }
 
+    /// One line, ending in a newline. Account JSON is compact, so it never contains one.
     #[cfg(unix)]
-    fn encode(&self) -> String {
+    pub fn encode(&self) -> String {
         match self {
             InstanceRequest::Background => "background\n".to_string(),
             InstanceRequest::Activate { token: None } => "activate\n".to_string(),
@@ -122,20 +151,81 @@ impl InstanceRequest {
                 let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
                 format!("activate {t}\n")
             }
+            InstanceRequest::AddAccount(input) => {
+                // Serializing plain strings and numbers can't fail.
+                let json = serde_json::to_string(input).unwrap_or_default();
+                format!("add-account {json}\n")
+            }
+            InstanceRequest::RemoveAccount { email } => {
+                let email: String = email.chars().filter(|c| !c.is_whitespace()).collect();
+                format!("remove-account {email}\n")
+            }
         }
     }
 
     #[cfg(unix)]
-    fn decode(line: &str) -> Option<Self> {
-        let mut words = line.split_whitespace();
-        match words.next()? {
+    pub fn decode(line: &str) -> Option<Self> {
+        let line = line.trim_end_matches(['\r', '\n']);
+        let (verb, rest) = line.split_once(' ').unwrap_or((line, ""));
+        match verb {
             "background" => Some(InstanceRequest::Background),
             "activate" => Some(InstanceRequest::Activate {
-                token: words.next().map(str::to_string),
+                token: rest.split_whitespace().next().map(str::to_string),
             }),
+            "add-account" => serde_json::from_str(rest)
+                .ok()
+                .map(|input| InstanceRequest::AddAccount(Box::new(input))),
+            "remove-account" => {
+                rest.split_whitespace()
+                    .next()
+                    .map(|email| InstanceRequest::RemoveAccount {
+                        email: email.to_string(),
+                    })
+            }
             _ => None,
         }
     }
+
+    /// Whether the sender waits for a reply on the same connection.
+    pub fn wants_reply(&self) -> bool {
+        matches!(
+            self,
+            InstanceRequest::AddAccount(_) | InstanceRequest::RemoveAccount { .. }
+        )
+    }
+}
+
+/// The answer to a request that [wants one](InstanceRequest::wants_reply): `ok [detail]` or
+/// `error <message>`, one line on the same connection. Dropping it unanswered closes the
+/// connection, which the sender reads as "this Cosmic Mail doesn't do that".
+#[cfg(unix)]
+pub struct Reply(Option<UnixStream>);
+
+#[cfg(unix)]
+impl Reply {
+    pub fn send(mut self, result: std::result::Result<String, String>) {
+        let Some(mut stream) = self.0.take() else {
+            return;
+        };
+        let line = match result {
+            Ok(detail) if detail.is_empty() => "ok\n".to_string(),
+            Ok(detail) => format!("ok {}\n", one_line(&detail)),
+            Err(message) => format!("error {}\n", one_line(&message)),
+        };
+        if let Err(err) = stream.write_all(line.as_bytes()) {
+            tracing::warn!(error = %err, "could not answer an instance request");
+        }
+    }
+
+    /// A reply nobody reads, for tests and requests that don't want one.
+    pub fn none() -> Reply {
+        Reply(None)
+    }
+}
+
+#[cfg(unix)]
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The per-user single-instance socket: `$XDG_RUNTIME_DIR/cosmic-mail.sock`.
@@ -177,22 +267,46 @@ pub fn claim_instance(path: &Path, request: &InstanceRequest) -> Result<Instance
     }
     let listener =
         UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
+    // Requests can carry a password, so only this user may connect, even when the socket falls
+    // back to a shared temp folder.
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("restricting {}", path.display()))?;
+    }
     Ok(Instance::Primary(listener))
 }
 
-/// Serve later launches on a background thread for the process lifetime.
+/// The longest request line read; an account is well under 2 KiB.
+#[cfg(unix)]
+const MAX_REQUEST: u64 = 16 * 1024;
+
+/// Serve later launches, and Postmaster, on a background thread for the process lifetime.
+/// `on_request` must not block: a request that wants a reply carries a [`Reply`] to answer
+/// whenever its work is done.
 #[cfg(unix)]
 pub fn serve_instance(
     listener: UnixListener,
-    on_request: impl Fn(InstanceRequest) + Send + 'static,
+    on_request: impl Fn(InstanceRequest, Reply) + Send + 'static,
 ) {
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
+            let Ok(reader) = stream.try_clone() else {
+                continue;
+            };
             let mut line = String::new();
-            if BufReader::new(stream).read_line(&mut line).is_ok() {
+            if BufReader::new(reader.take(MAX_REQUEST))
+                .read_line(&mut line)
+                .is_ok()
+            {
                 if let Some(request) = InstanceRequest::decode(&line) {
-                    on_request(request);
+                    let reply = if request.wants_reply() {
+                        Reply(Some(stream))
+                    } else {
+                        Reply(None)
+                    };
+                    on_request(request, reply);
                 }
             }
         }
@@ -262,7 +376,7 @@ mod tests {
             panic!("first claim must be primary");
         };
         let (tx, rx) = std::sync::mpsc::channel();
-        serve_instance(listener, move |r| tx.send(r).unwrap());
+        serve_instance(listener, move |r, _| tx.send(r).unwrap());
 
         let request = InstanceRequest::Activate {
             token: Some("tok".into()),
@@ -273,6 +387,110 @@ mod tests {
         ));
         let got = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert_eq!(got, request);
+    }
+
+    #[cfg(unix)]
+    fn account() -> ImapAccountInput {
+        ImapAccountInput {
+            email: "lucy@leach.family".into(),
+            display_name: "Lucy".into(),
+            imap_host: "imap.purelymail.com".into(),
+            imap_port: 993,
+            smtp_host: "smtp.purelymail.com".into(),
+            smtp_port: 465,
+            username: "lucy@leach.family".into(),
+            password: "hqvt 8rmw\nzx2p".into(),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn account_requests_round_trip_on_one_line() {
+        for request in [
+            InstanceRequest::AddAccount(Box::new(account())),
+            InstanceRequest::RemoveAccount {
+                email: "lucy@leach.family".into(),
+            },
+        ] {
+            let line = request.encode();
+            assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+            assert!(request.wants_reply());
+            assert_eq!(InstanceRequest::decode(&line), Some(request));
+        }
+        assert_eq!(InstanceRequest::decode("add-account {not json"), None);
+        assert_eq!(InstanceRequest::decode("remove-account"), None);
+        assert!(!InstanceRequest::Background.wants_reply());
+    }
+
+    #[test]
+    fn debug_never_shows_a_password_or_token() {
+        let printed = format!(
+            "{:?} {:?} {:?}",
+            InstanceRequest::AddAccount(Box::new(account())),
+            account(),
+            InstanceRequest::Activate {
+                token: Some("secret-token".into())
+            }
+        );
+        assert!(!printed.contains("hqvt"), "{printed}");
+        assert!(!printed.contains("secret-token"), "{printed}");
+        assert!(printed.contains("lucy@leach.family"));
+    }
+
+    /// Plays Postmaster: sends one request and reads the one-line reply, if any.
+    #[cfg(unix)]
+    fn ask(path: &Path, request: &str) -> String {
+        let mut stream = UnixStream::connect(path).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply).unwrap();
+        reply
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn account_requests_are_answered_on_the_same_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("instance.sock");
+        let Instance::Primary(listener) =
+            claim_instance(&path, &InstanceRequest::Background).unwrap()
+        else {
+            panic!("first claim must be primary");
+        };
+        serve_instance(listener, |request, reply| match request {
+            InstanceRequest::AddAccount(input) => {
+                // Answered later, from another thread, as the app does.
+                std::thread::spawn(move || reply.send(Ok(format!("id-for {}", input.email))));
+            }
+            InstanceRequest::RemoveAccount { email } => {
+                reply.send(Err(format!("{email} isn't\nin Cosmic Mail")))
+            }
+            _ => {}
+        });
+
+        let added = ask(
+            &path,
+            &InstanceRequest::AddAccount(Box::new(account())).encode(),
+        );
+        assert_eq!(added, "ok id-for lucy@leach.family\n");
+        let removed = ask(&path, "remove-account sam@leach.family\n");
+        assert_eq!(removed, "error sam@leach.family isn't in Cosmic Mail\n");
+        // A verb this version doesn't know gets no answer: the connection just closes.
+        assert_eq!(ask(&path, "rename-account a@b.c\n"), "");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn only_this_user_can_connect() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("instance.sock");
+        let _instance = claim_instance(&path, &InstanceRequest::Background).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

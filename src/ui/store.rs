@@ -186,6 +186,22 @@ impl Ui {
                 }
                 ui.folders
                     .retain(|id, _| accounts.iter().any(|a| &a.id == id));
+                // An account removed from outside the UI (Postmaster) takes its view with it,
+                // as Remove in Settings does.
+                ui.sync_states
+                    .retain(|id, _| accounts.iter().any(|a| &a.id == id));
+                ui.reauth_required
+                    .retain(|id| accounts.iter().any(|a| &a.id == id));
+                let gone = |id: &str| !accounts.iter().any(|a| a.id == id);
+                let showing_gone = ui.selected_account.as_deref().is_some_and(gone)
+                    || ui.messages.iter().any(|m| gone(&m.account_id));
+                if showing_gone {
+                    ui.selected_account = None;
+                    ui.selected_folder = None;
+                    ui.unified = true;
+                    ui.clear_reader();
+                    ui.messages.clear();
+                }
                 for a in &accounts {
                     ui.sync_states
                         .entry(a.id.clone())
@@ -1047,6 +1063,7 @@ impl Ui {
                 needs_reauth,
             } => self.on_sync_state(account_id, state, error, needs_reauth),
             AppEvent::Activate => self.activate_requested = true,
+            AppEvent::AccountsChanged => self.load_accounts(),
         }
     }
 
