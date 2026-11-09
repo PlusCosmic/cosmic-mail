@@ -145,7 +145,8 @@ interface SendMessageInput {
 
 interface Settings {                    // settings.rs::Settings — global preferences
   alwaysDownloadRemoteImages: boolean;  // off by default; see "Reader remote-content policy"
-  windowTitleBar: boolean;              // on by default; the platform title bar and borders.
+  windowTitleBar: boolean;              // on by default; the platform title bar and borders (Linux
+                                        // only: Windows and macOS always draw the app's titlebar).
                                         // Read at startup (decorations are fixed at window
                                         // creation), so a change applies on the next start.
 }
@@ -383,7 +384,10 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   `Restart=on-failure` for crash recovery, and stops it with the graphical session. A clean tray
   Quit therefore remains stopped until the service is explicitly started or the next graphical
   session. Development runs do not install or control this service.
-- The window is Rune's: it has the platform title bar and borders unless
+- The window is Rune's. On Windows and macOS it draws its own 40 pt titlebar band
+  (`App::titlebar`, `view::titlebar`: the mark, the search field, `.window_drag()`) under the
+  native controls (macOS traffic lights; Windows caption buttons Rune draws, with snap layouts),
+  and `Settings.windowTitleBar` is ignored. On Linux it has the platform title bar and borders unless
   `Settings.windowTitleBar` is off (for a tiling window manager such as omarchy's Hyprland,
   which draws its own), 1280×800, minimum 900×560, Wayland app id / X11 class
   `cosmic-mail`. A normal first launch opens it; a `--background` first launch starts windowless

@@ -405,6 +405,23 @@ fn every_scene_renders() {
 }
 
 #[test]
+fn without_a_drawn_titlebar_search_stays_in_the_header() {
+    // A test runtime reports no chrome insets, as a Linux window with its native frame does.
+    let rt = runtime(demo::state());
+    assert!(rt.find("titlebar").is_none(), "no band without insets");
+    assert!(rt.find("search-input").is_some(), "search in the header");
+}
+
+#[test]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn windows_and_macos_offer_no_title_bar_setting() {
+    let mut rt = runtime(demo::state());
+    click(&mut rt, "rail-settings");
+    assert!(rt.find("setting-title-bar").is_none());
+}
+
+#[test]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn the_title_bar_setting_toggles() {
     let mut rt = runtime(demo::state());
     assert!(rt.state.settings.window_title_bar, "on by default");

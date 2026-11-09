@@ -14,6 +14,7 @@ pub mod desktop;
 pub mod error;
 pub mod events;
 pub mod notifications;
+pub mod paths;
 pub mod send;
 pub mod settings;
 pub mod shipments;

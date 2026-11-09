@@ -75,7 +75,7 @@ impl Account {
 
 /// Path to `accounts.json`: `$XDG_CONFIG_HOME/cosmic-mail/accounts.json`.
 pub fn accounts_path() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
+    let dir = crate::paths::config_dir()
         .context("could not determine config dir (XDG_CONFIG_HOME)")?
         .join("cosmic-mail");
     Ok(dir.join("accounts.json"))

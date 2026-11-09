@@ -196,13 +196,26 @@ pub fn field_box(key: impl Into<String>, focused: bool, p: &Palette, input: El) 
         .child(input)
 }
 
+/// The titlebar band's height in points (`App::titlebar`), on Windows and macOS.
+pub const TITLEBAR_HEIGHT: f32 = 40.0;
+
 /// The root view.
 pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
     let palette = s.palette(cx.system_dark());
     let p = &palette;
     let mut root = col().key("app").w_full().h_full().fill(p.bg);
 
-    if !s.loading_accounts && s.accounts.is_empty() {
+    // Where the app draws its own titlebar (Windows, macOS), search moves into it; Linux keeps
+    // the native frame (or none) and the search field stays in the header.
+    let insets = cx.chrome_insets();
+    let drawn_titlebar = insets.height > 0.0;
+    let welcome = !s.loading_accounts && s.accounts.is_empty();
+    if drawn_titlebar {
+        cx.caption_color(p.fg);
+        root = root.child(chrome::titlebar(s, p, insets, !welcome));
+    }
+
+    if welcome {
         root = root.child(chrome::welcome(p));
     } else {
         let main = col()
@@ -211,7 +224,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
             .min_w(0.0)
             .h_full()
             .min_h(0.0)
-            .child(chrome::header(s, p))
+            .child(chrome::header(s, p, !drawn_titlebar))
             .child(
                 row()
                     .key("split")

@@ -124,6 +124,12 @@ related area. When you learn a new one, add it.
   workflow does this on every PR).
 - **aws-lc-sys needs NASM on x86_64 MSVC** unless `AWS_LC_SYS_PREBUILT_NASM=1` lets it
   use its prebuilt objects; the `windows` workflow sets it.
+- **`dirs` ignores `XDG_CONFIG_HOME`/`XDG_DATA_HOME` on Windows** (it returns `%APPDATA%`),
+  so tests that point those at a throwaway profile silently used the real one: the handoff
+  test read the real `accounts.json`, missed its fixture's duplicate, and went on to write a
+  keyring secret and dial TLS (the rustls provider panic). Profile paths go through
+  `paths::config_dir()`/`paths::data_dir()`, which honour the variables everywhere; don't
+  call `dirs::config_dir()`/`data_dir()` directly.
 - **Unix-only pieces are `cfg`-gated**: the single-instance Unix socket (Windows uses
   `rune::single_instance`, a per-user named pipe), notification actions and the
   desktop-entry hint (freedesktop only), and `xdg-open` (Windows uses
@@ -131,6 +137,10 @@ related area. When you learn a new one, add it.
 
 ## Rune (UI)
 
+- **Test runtimes report zero chrome insets.** `ui::tests` builds a bare `Runtime`, so it sees
+  the Linux layout (no titlebar band, search in the header) on every OS. `--snap` goes through
+  `app::app()` and its `App::titlebar`, so a Windows or macOS render shows that platform's band
+  and caption buttons. Check both layouts when moving things between the band and the header.
 - **Rune is pre-release: pin a git rev, and the toolchain.** `Cargo.toml` pins a `dev` rev
   (never rewritten upstream); `rust-toolchain.toml` pins 1.99.1, which Rune requires — an older
   toolchain fails to build it. Its APIs are newer than model memory: read the checkout under

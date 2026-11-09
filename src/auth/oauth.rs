@@ -78,7 +78,7 @@ struct GoogleOAuthFile {
 }
 
 fn credentials_path() -> Result<PathBuf> {
-    let dir = dirs::config_dir()
+    let dir = crate::paths::config_dir()
         .context("could not determine config dir (XDG_CONFIG_HOME)")?
         .join("cosmic-mail");
     Ok(dir.join("google-oauth.json"))

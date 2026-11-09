@@ -2,7 +2,7 @@
 //! toasts, and the no-accounts welcome screen.
 
 use rune::text::Span;
-use rune::{col, el, rich, row, text, text_input, Cursor, El, Key, KeyEvent, Tx};
+use rune::{col, el, rich, row, text, text_input, ChromeInsets, Cursor, El, Key, KeyEvent, Tx};
 
 use super::icons;
 use super::{btn, display, eyebrow, font, glyph, kbd, label, Kind, BODY, RADIUS, RADIUS_LG, SMALL};
@@ -365,8 +365,8 @@ pub fn account_tag(s: &Ui, account_id: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Title, search field, and sync status.
-pub fn header(s: &Ui, p: &Palette) -> El {
+/// Title, search field (`with_search`: unless the titlebar has it), and sync status.
+pub fn header(s: &Ui, p: &Palette, with_search: bool) -> El {
     let title = if s.unified {
         "Unified inbox".to_string()
     } else if let Some(f) = s.selected_folder() {
@@ -457,52 +457,9 @@ pub fn header(s: &Ui, p: &Palette) -> El {
         );
     }
 
-    let placeholder = if s.search_active {
-        "Search all mail…"
-    } else {
-        "Filter loaded messages…"
-    };
-    let input = text_input(&s.query, font(13.0, 400.0))
-        .key("search-input")
-        .label("Search messages")
-        .color(p.fg)
-        .placeholder(placeholder, p.muted_2)
-        .single_line()
-        .grow(1.0)
-        .min_w(0.0)
-        .on_edit(|s: &mut Ui| &mut s.query)
-        .on_submit(|s: &mut Ui, tx: &mut Tx| {
-            // Search the whole cache, then hand keys back to j/k.
-            s.run_search();
-            tx.blur();
-        })
-        .on_input_key(|s: &mut Ui, ev: &KeyEvent, tx: &mut Tx| {
-            if ev.key != Key::Escape {
-                return false;
-            }
-            // Escape leaves an active search; either way it clears and blurs.
-            s.clear_search();
-            s.query.replace_text("");
-            tx.blur();
-            true
-        });
-    let focused = s.query.focused || s.search_active;
-    let search = row()
-        .key("search")
-        .w(340.0)
-        .min_w(200.0)
-        .shrink()
-        .h(34.0)
-        .px(10.0)
-        .gap(8.0)
-        .center_y()
-        .radius(RADIUS)
-        .fill(p.panel_2)
-        .border(1.0, if focused { p.accent_dim } else { p.border })
-        .child(glyph(&icons::SEARCH, 15.0, p.muted))
-        .child(input)
-        .child(kbd(if s.search_active { "⏎" } else { "/" }, p));
-    head = head.child(search);
+    if with_search {
+        head = head.child(search_field(s, p, false));
+    }
 
     let state = overall_sync(s);
     let status = match state {
@@ -530,6 +487,102 @@ pub fn header(s: &Ui, p: &Palette) -> El {
             .child(el().size(7.0, 7.0).radius(3.5).fill(sync_color(state, p)))
             .child(label(status, font(12.5, 400.0), p.muted).key("sync-label")),
     )
+}
+
+/// The search field: in the header, or (`in_titlebar`) shorter and on the page colour in the
+/// titlebar band, where it stands out from the band's rail colour.
+fn search_field(s: &Ui, p: &Palette, in_titlebar: bool) -> El {
+    let placeholder = match (s.search_active, in_titlebar) {
+        (true, _) => "Search all mail…",
+        (false, true) => "Search mail…",
+        (false, false) => "Filter loaded messages…",
+    };
+    let input = text_input(&s.query, font(13.0, 400.0))
+        .key("search-input")
+        .label("Search messages")
+        .color(p.fg)
+        .placeholder(placeholder, p.muted_2)
+        .single_line()
+        .grow(1.0)
+        .min_w(0.0)
+        .on_edit(|s: &mut Ui| &mut s.query)
+        .on_submit(|s: &mut Ui, tx: &mut Tx| {
+            // Search the whole cache, then hand keys back to j/k.
+            s.run_search();
+            tx.blur();
+        })
+        .on_input_key(|s: &mut Ui, ev: &KeyEvent, tx: &mut Tx| {
+            if ev.key != Key::Escape {
+                return false;
+            }
+            // Escape leaves an active search; either way it clears and blurs.
+            s.clear_search();
+            s.query.replace_text("");
+            tx.blur();
+            true
+        });
+    let focused = s.query.focused || s.search_active;
+    let (width, height, fill) = if in_titlebar {
+        (TITLEBAR_SEARCH_WIDTH, 28.0, p.bg)
+    } else {
+        (340.0, 34.0, p.panel_2)
+    };
+    row()
+        .key("search")
+        .w(width)
+        .min_w(160.0)
+        .shrink()
+        .h(height)
+        .px(10.0)
+        .gap(8.0)
+        .center_y()
+        .radius(RADIUS)
+        .fill(fill)
+        .border(1.0, if focused { p.accent_dim } else { p.border })
+        .child(glyph(
+            &icons::SEARCH,
+            if in_titlebar { 14.0 } else { 15.0 },
+            p.muted,
+        ))
+        .child(input)
+        .child(kbd(if s.search_active { "⏎" } else { "/" }, p))
+}
+
+/// The search field's width in the titlebar band.
+const TITLEBAR_SEARCH_WIDTH: f32 = 360.0;
+
+/// The band across the top of the window on Windows and macOS (`App::titlebar`): it moves the
+/// window, carries the app's mark and name after the macOS traffic lights, and centres the
+/// search field (`with_search`, once there are accounts) between them and the Windows caption
+/// buttons, which `insets` keeps it clear of.
+pub fn titlebar(s: &Ui, p: &Palette, insets: ChromeInsets, with_search: bool) -> El {
+    let brand = row()
+        .key("titlebar-brand")
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(8.0)
+        .center_y()
+        .child(mark(p, 16.0))
+        .child(
+            label("Cosmic Mail", font(12.5, 600.0), p.muted)
+                .truncate()
+                .shrink(),
+        );
+    row()
+        .key("titlebar")
+        .w_full()
+        .h(insets.height)
+        .min_h(insets.height)
+        .pl(insets.leading + 12.0)
+        .pr(insets.trailing + 12.0)
+        .gap(12.0)
+        .center_y()
+        .fill(p.rail)
+        .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
+        .window_drag()
+        .child(brand)
+        .children(with_search.then(|| search_field(s, p, true)))
+        .child(el().grow(1.0).min_w(0.0))
 }
 
 /// The selected account's folders (per-account mode only).

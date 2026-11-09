@@ -38,7 +38,7 @@ impl FolderRole {
 
 /// Path to the SQLite database file.
 pub fn db_path() -> Result<PathBuf> {
-    let dir = dirs::data_dir()
+    let dir = crate::paths::data_dir()
         .context("could not determine data dir (XDG_DATA_HOME)")?
         .join("cosmic-mail");
     Ok(dir.join("mail.db"))
