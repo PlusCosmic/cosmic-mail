@@ -169,6 +169,11 @@ related area. When you learn a new one, add it.
 - **html2text ignores presentational `<b>`/`<i>`** (it annotates only `<strong>`/`<em>`), and
   mail uses them constantly. `ui::html` rewrites the tags first, carefully leaving `<br>`,
   `<body>`, `<blockquote>`, `<img>` alone.
+- **html2text's CSS parser drops a rule's last declaration without a trailing `;`**, so
+  minified `.preheader{display:none}` is ignored and hidden mail text shows. `ui::html`
+  adds the `;` inside `<style>` before parsing (`use_doc_css` needs the `css` feature).
+  Its rich decorator also injects `# ` before headings and `^{…}` around `<sup>`;
+  `MailDecorator` blanks those.
 
 ## Wire format
 
