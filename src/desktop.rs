@@ -389,7 +389,6 @@ mod tests {
         assert_eq!(got, request);
     }
 
-    #[cfg(unix)]
     fn account() -> ImapAccountInput {
         ImapAccountInput {
             email: "lucy@leach.family".into(),
