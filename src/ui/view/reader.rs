@@ -19,6 +19,11 @@ use crate::ui::{BodyImage, Ui};
 /// The widest a line of body text runs, for reading.
 const MEASURE: f32 = 680.0;
 
+/// The widest the reader column runs (headers and HTML mail). Mail is laid out at the
+/// column's full width, so fixed-width newsletters centre themselves in it as they do in
+/// other clients, and fluid ones spread out.
+const COLUMN: f32 = 960.0;
+
 /// The reader pane (its width is set by the caller).
 /// `width` is the pane's (the mail body lays out to fit it).
 pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
@@ -213,7 +218,6 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
     let head = col()
         .key("reader-head")
         .w_full()
-        .max_w(MEASURE + 80.0)
         .gap(10.0)
         .child(eyebrow(place, p))
         .child(
@@ -231,12 +235,7 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
         .child(sender.mt(4.0));
 
     // Shipments and listed (non-inline) attachments, as cards; inline cid images already render.
-    let mut cards = row()
-        .key("reader-cards")
-        .w_full()
-        .max_w(MEASURE + 80.0)
-        .gap(10.0)
-        .flex_wrap();
+    let mut cards = row().key("reader-cards").w_full().gap(10.0).flex_wrap();
     let mut any_card = false;
     if !s.shipments.is_empty() {
         let mut ships = row()
@@ -319,6 +318,8 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
     let mut content = col()
         .key("reader-content")
         .w_full()
+        .max_w(COLUMN + 80.0)
+        .self_center()
         .px(40.0)
         .pt(26.0)
         .pb(40.0)
@@ -336,7 +337,7 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
         // `None` means the first layout is still being computed: draw nothing rather than
         // flash another rendering. An empty layout (Blitz produced nothing) falls back to
         // the styled-text lines.
-        let mail_width = (width - 80.0).min(MEASURE);
+        let mail_width = (width - 80.0).min(COLUMN);
         let doc = b.html.as_ref().map(|_| s.mail_layout(mail_width));
         let remote_blocked =
             s.body_has_remote_images() && !s.settings.always_download_remote_images;
@@ -347,7 +348,7 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
             if remote_blocked {
                 content = content.child(remote_notice(s, id, p));
             }
-            text_body = text_body.child(mail_doc_view(s, doc));
+            text_body = text_body.max_w(COLUMN).child(mail_doc_view(s, doc));
         } else if matches!(doc, Some(None)) {
             // Laying out.
         } else if b.html.is_some() && !s.body_lines.is_empty() {
@@ -373,7 +374,7 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
     }
     content = content.child(text_body);
 
-    pane.child(actions).child(
+    pane.child(actions).child(super::scroll_bar(
         col()
             .key("reader-body")
             .w_full()
@@ -383,7 +384,8 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
                 stick_bottom: false,
             })
             .child(content),
-    )
+        p,
+    ))
 }
 
 /// A parcel detected in the mail: carrier, tracking number and order, and a way to track it.
@@ -464,17 +466,12 @@ fn remote_notice(s: &Ui, id: i64, p: &Palette) -> El {
         p,
         move |s, _| s.toggle_remote_images(id),
     );
-    col()
-        .key("remote-content")
-        .role("status")
-        .w_full()
-        .max_w(MEASURE + 80.0)
-        .child(
-            Notice::new(Tone::Info)
-                .body(words)
-                .action(toggle)
-                .build(look),
-        )
+    col().key("remote-content").role("status").w_full().child(
+        Notice::new(Tone::Info)
+            .body(words)
+            .action(toggle)
+            .build(look),
+    )
 }
 
 /// One rendered HTML line: styled text with links, plus its images.
