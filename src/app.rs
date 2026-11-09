@@ -168,7 +168,8 @@ pub fn run() {
     #[cfg(unix)]
     if let Some(listener) = listener {
         let handle = handle.clone();
-        desktop::serve_instance(listener, move |request| match request {
+        let backend = backend.clone();
+        desktop::serve_instance(listener, move |request, reply| match request {
             InstanceRequest::Activate { token: Some(token) } => {
                 handle.activate(token);
                 desktop::hyprland_focus();
@@ -178,6 +179,31 @@ pub fn run() {
                 desktop::hyprland_focus();
             }
             InstanceRequest::Background => {}
+            // Postmaster's hand-off. The add validates by connecting, so it runs on the runtime
+            // and answers when done; the serving thread moves on to the next connection.
+            InstanceRequest::AddAccount(input) => {
+                let backend = backend.clone();
+                backend.runtime().clone().spawn(async move {
+                    let email = input.email.clone();
+                    let result = backend.add_handed_over_account(*input).await;
+                    match &result {
+                        Ok(_) => {
+                            tracing::info!(%email, "added an account handed over by Postmaster")
+                        }
+                        Err(err) => {
+                            tracing::warn!(%email, error = %err, "refused a handed-over account")
+                        }
+                    }
+                    reply.send(result.map(|a| a.id).map_err(|e| e.to_string()));
+                });
+            }
+            InstanceRequest::RemoveAccount { email } => {
+                let result = backend.remove_account_by_email(&email);
+                if result.is_ok() {
+                    tracing::info!(%email, "removed an account at Postmaster's request");
+                }
+                reply.send(result.map(|()| String::new()).map_err(|e| e.to_string()));
+            }
         });
     }
 

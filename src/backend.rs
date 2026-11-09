@@ -122,6 +122,40 @@ impl Backend {
         Ok(account.public())
     }
 
+    /// Add an IMAP account handed over by Postmaster: refused if Cosmic Mail already has the
+    /// address, otherwise exactly [`Backend::add_imap_account`], then the UI is told to reload.
+    pub async fn add_handed_over_account(
+        &self,
+        input: ImapAccountInput,
+    ) -> AppResult<accounts::AccountPublic> {
+        let exists = accounts::load_accounts()
+            .map_err(AppError::from)?
+            .iter()
+            .any(|a| a.email.eq_ignore_ascii_case(&input.email));
+        if exists {
+            return Err(AppError::msg(format!(
+                "{} is already in Cosmic Mail",
+                input.email
+            )));
+        }
+        let account = self.add_imap_account(input).await?;
+        self.events.emit(AppEvent::AccountsChanged);
+        Ok(account)
+    }
+
+    /// Remove the account with this address, for Postmaster after it deletes the mailbox:
+    /// exactly [`Backend::remove_account`], then the UI is told to reload.
+    pub fn remove_account_by_email(&self, email: &str) -> AppResult<()> {
+        let account = accounts::load_accounts()
+            .map_err(AppError::from)?
+            .into_iter()
+            .find(|a| a.email.eq_ignore_ascii_case(email))
+            .ok_or_else(|| AppError::msg(format!("{email} isn't in Cosmic Mail")))?;
+        self.remove_account(account.id)?;
+        self.events.emit(AppEvent::AccountsChanged);
+        Ok(())
+    }
+
     /// Run the interactive Gmail OAuth flow and register the account.
     pub async fn start_gmail_oauth(&self) -> AppResult<accounts::AccountPublic> {
         let outcome = crate::auth::oauth::run_oauth_flow()

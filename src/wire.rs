@@ -143,8 +143,9 @@ pub struct MessageBody {
     pub attachments: Vec<AttachmentInfo>,
 }
 
-/// Input for adding a plain IMAP account.
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+/// Input for adding a plain IMAP account: from Add account, or from Postmaster over the
+/// single-instance socket (which is why it also serializes).
+#[derive(Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImapAccountInput {
     pub email: String,
@@ -155,6 +156,22 @@ pub struct ImapAccountInput {
     pub smtp_port: u16,
     pub username: String,
     pub password: String,
+}
+
+/// The password never reaches a log through `{:?}`.
+impl std::fmt::Debug for ImapAccountInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImapAccountInput")
+            .field("email", &self.email)
+            .field("display_name", &self.display_name)
+            .field("imap_host", &self.imap_host)
+            .field("imap_port", &self.imap_port)
+            .field("smtp_host", &self.smtp_host)
+            .field("smtp_port", &self.smtp_port)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 /// A plain-text message submitted through an account's SMTP server.
