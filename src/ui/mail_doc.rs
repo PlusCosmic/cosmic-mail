@@ -164,6 +164,7 @@ fn layout_inner(
         },
     );
     size_images(&mut doc, &image_size);
+    table_heights_as_minimums(&mut doc);
     doc.resolve(0.0);
     let doc: &BaseDocument = &doc;
 
@@ -218,6 +219,53 @@ fn size_images(doc: &mut BaseDocument, image_size: &impl Fn(&str) -> Option<(u32
                 RasterImageData::new(w, h, std::sync::Arc::new(Vec::new())),
             )));
         }
+    }
+}
+
+/// Browsers treat a table's (or a row's) `height` as a minimum and grow it to fit
+/// its content; Blitz applies it as a fixed height, so mail that sets
+/// `<table height=1>` around a block of text overflows it and the next table is
+/// drawn over the text. Rewrite those attributes as `min-height` before styles
+/// resolve. The element's own inline style comes after, so it still wins.
+fn table_heights_as_minimums(doc: &mut BaseDocument) {
+    use blitz_dom::{ns, QualName};
+    let tags = [
+        local_name!("table"),
+        local_name!("thead"),
+        local_name!("tbody"),
+        local_name!("tfoot"),
+        local_name!("tr"),
+    ];
+    let mut found = Vec::new();
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else {
+            continue;
+        };
+        stack.extend(node.children.iter().copied());
+        if !tags.iter().any(|t| node.data.is_element_with_tag_name(t)) {
+            continue;
+        }
+        if let Some(height) = node.attr(local_name!("height")) {
+            let style = node.attr(local_name!("style")).unwrap_or("").to_string();
+            found.push((id, height.trim().to_string(), style));
+        }
+    }
+    let mut m = doc.mutate();
+    for (id, height, style) in found {
+        m.clear_attribute(id, QualName::new(None, ns!(), local_name!("height")));
+        let min = if height.ends_with('%') {
+            height
+        } else if height.parse::<f32>().is_ok_and(|h| h > 0.0) {
+            format!("{height}px")
+        } else {
+            continue;
+        };
+        m.set_attribute(
+            id,
+            QualName::new(None, ns!(), local_name!("style")),
+            &format!("min-height:{min};{style}"),
+        );
     }
 }
 
@@ -638,6 +686,28 @@ mod tests {
             .iter()
             .find(|i| matches!(i, Item::Text { text, .. } if text == want))
             .unwrap_or_else(|| panic!("no text {want:?} in {:?}", texts(l)))
+    }
+
+    #[test]
+    fn a_short_table_height_grows_to_fit_its_content() {
+        // Twitch's notices: `height=0`/`height=1` tables around the body text,
+        // then a footer table that browsers draw below it, not over it.
+        let l = lay(
+            r#"<table height=1 width=100%><tr><td><div style="padding:20px 0;line-height:1.5">One</div></td></tr>
+               <tr><td><div style="padding:20px 0;line-height:1.5">Two</div></td></tr></table>
+               <table><tr height=2><td>Footer</td></tr></table>"#,
+        );
+        let y = |s| match text_item(&l, s) {
+            Item::Text { y, .. } => *y,
+            _ => unreachable!(),
+        };
+        assert!(y("One") < y("Two"), "rows stack");
+        assert!(
+            y("Footer") > y("Two") + 20.0,
+            "footer {} drawn over the body (Two at {})",
+            y("Footer"),
+            y("Two")
+        );
     }
 
     #[test]
