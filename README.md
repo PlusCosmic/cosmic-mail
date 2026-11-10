@@ -35,14 +35,22 @@ OAuth 2.0 rather than an app password.
 Open work is tracked in [GitHub issues](https://github.com/PlusCosmic/cosmic-mail/issues)
 (labels `roadmap`, `verification`, `papercut`).
 
-## Windows
+## Windows and macOS
 
-Cosmic Mail targets Omarchy first, but it also builds for Windows. Every push to
-`main` publishes a [GitHub Release](https://github.com/PlusCosmic/cosmic-mail/releases/latest)
-with a per-user installer (`*-setup.exe`, no administrator prompt, optional start
-at sign-in) and a portable zip. Builds are unsigned, so SmartScreen warns on first run
-(**More info → Run anyway**). On Windows the look is the same as on Linux,
-credentials live in Windows Credential Manager, and mail is cached under `%APPDATA%`.
+Cosmic Mail targets Omarchy first, but it also builds for Windows and macOS. Every push
+to `main` publishes a [GitHub Release](https://github.com/PlusCosmic/cosmic-mail/releases/latest)
+with both platforms' files. The look is the same as on Linux.
+
+- **Windows**: a per-user installer (`*-setup.exe`, no administrator prompt, optional
+  start at sign-in) and a portable zip. Builds are unsigned, so SmartScreen warns on first
+  run (**More info → Run anyway**). Credentials live in Windows Credential Manager, and
+  mail is cached under `%APPDATA%`.
+- **macOS**: a disk image (`*-macos-universal.dmg`, Apple Silicon and Intel, macOS 13 or
+  later); open it and drag Cosmic Mail to Applications. Builds are not notarized, so macOS
+  blocks the first launch: open **System Settings → Privacy & Security** and choose
+  **Open Anyway**. Credentials live in the login Keychain, and mail is cached under
+  `~/Library/Application Support/cosmic-mail`. There is no menu-bar icon yet: closing the
+  window keeps the app running in the Dock.
 
 ## Try it from source
 

@@ -22,6 +22,15 @@ windowed runs under X11). **Python 3** on `PATH` (`python3`; `python.exe` on Win
 Stylo, the CSS engine behind the HTML mail layout, generates code with it at build time;
 set `PYTHON3=/path/to/python` if it lives elsewhere (see GOTCHAS, "Blitz").
 
+On macOS the build needs only the Xcode command line tools (`xcode-select --install`).
+`cargo run` starts a bare binary; to get the app as it ships (icon, bundle identifier),
+package a release build into `target/macos/*.dmg`:
+
+```sh
+cargo build --release
+packaging/macos/package.sh "$(scripts/version.sh)" target/macos target/release/cosmic-mail
+```
+
 ### Demo window (debug builds)
 
 `COSMIC_MAIL_DEMO=1 cargo run [-- --scene NAME]` opens a real window on the demo mailbox,

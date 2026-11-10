@@ -1,0 +1,155 @@
+name: macos
+
+# macOS build. On every pull request and push it runs the test suite (the UI tests run on
+# Rune's headless runtime, no GPU needed) and, in parallel, builds a universal binary (Apple
+# Silicon + Intel), packages it as "Cosmic Mail.app" in a disk image, and checks the image.
+# On pushes to main it also publishes the image to the commit's GitHub Release, beside the
+# Windows files. See docs/RELEASING.md ("macOS").
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Two merges in quick succession each get their own release; never cancel a
+# run that may be publishing.
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Tests and the release build compile different profiles, so they run side
+  # by side; the release job waits for both.
+  test:
+    runs-on: macos-latest
+    env:
+      # No debug info in CI test builds: far less to write and link.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain comes from rust-toolchain.toml (Rune pins it).
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The library holds every test that runs (unit + UI behaviour tests on
+      # Rune's headless runtime). tests/e2e_greenmail.rs is #[ignore]d and needs
+      # the Linux GreenMail fixture, so it isn't built here.
+      - name: Test
+        run: cargo test --locked --lib
+
+  build:
+    runs-on: macos-latest
+    env:
+      CARGO_TERM_COLOR: always
+      # The oldest macOS the binary runs on; packaging/macos/Info.plist says the
+      # same (LSMinimumSystemVersion).
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # scripts/version.sh counts commits, so it needs the whole history.
+          fetch-depth: 0
+
+      # MAJOR.MINOR from Cargo.toml, PATCH = commit count (scripts/version.sh).
+      # The build embeds it (cosmic_mail::VERSION); so does the bundle's Info.plist.
+      - name: Compute the version
+        id: version
+        run: |
+          version=$(scripts/version.sh)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "COSMIC_MAIL_VERSION=$version" >> "$GITHUB_ENV"
+          echo "Version: $version"
+
+      # Both architectures, whichever one the runner is.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release (Apple Silicon + Intel)
+        run: |
+          cargo build --locked --release \
+            --target aarch64-apple-darwin --target x86_64-apple-darwin
+
+      - name: Package the app and the disk image
+        run: |
+          packaging/macos/package.sh "$COSMIC_MAIL_VERSION" dist \
+            target/aarch64-apple-darwin/release/cosmic-mail \
+            target/x86_64-apple-darwin/release/cosmic-mail
+          ls -l dist
+
+      # Check what ships, from the image itself: both architectures, an intact
+      # signature, the right version, and a binary that starts on each architecture
+      # and draws the demo mailbox (headless, on the runner's Metal device).
+      - name: Check the disk image
+        run: |
+          dmg="dist/cosmic-mail-$COSMIC_MAIL_VERSION-macos-universal.dmg"
+          mount="$RUNNER_TEMP/cosmic-mail-image"
+          hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount"
+          trap 'hdiutil detach "$mount" -force' EXIT
+          app="$mount/Cosmic Mail.app"
+          exe="$app/Contents/MacOS/cosmic-mail"
+
+          test -L "$mount/Applications"
+          archs=$(lipo -archs "$exe")
+          echo "Architectures: $archs"
+          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
+          codesign --verify --deep --strict --verbose=2 "$app"
+          bundled=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
+          echo "Bundle version: $bundled"
+          [ "$bundled" = "$COSMIC_MAIL_VERSION" ]
+          test -s "$app/Contents/Resources/AppIcon.icns"
+
+          # The Intel half runs under Rosetta.
+          arch -x86_64 /usr/bin/true 2>/dev/null \
+            || sudo softwareupdate --install-rosetta --agree-to-license
+          arch -arm64 "$exe" --list-scenes
+          arch -x86_64 "$exe" --list-scenes
+          "$exe" --snap snapshot.png --scale 2
+          test -s snapshot.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cosmic-mail-macos
+          path: dist/*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-macos
+          path: snapshot.png
+
+  release:
+    needs: [test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # The Windows workflow publishes to the same release: one at a time per commit.
+    concurrency:
+      group: github-release-${{ github.sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: cosmic-mail-macos
+          path: dist
+
+      # One release per push to main, tagged with its version (scripts/version.sh:
+      # each merge raises the patch), shared with the Windows build of the commit.
+      - name: Publish to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: scripts/publish-release.sh "$VERSION" dist/*

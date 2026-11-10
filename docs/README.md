@@ -11,7 +11,7 @@ Documentation for agents and humans picking up this project without prior contex
 | [OMARCHY.md](OMARCHY.md) | Live theming, Mako notifications, and the background application lifecycle |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **The binding contract** between the backend and the Rune UI: backend operations, events, wire types, DB schema, module layout, sync/notification/oauth/discovery specs. Conform to it exactly; update it in the same change that alters the API surface. |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build/run/test commands, verification workflow, local state paths, how to test each subsystem |
-| [RELEASING.md](RELEASING.md) | How a merge to `main` becomes an Arch package |
+| [RELEASING.md](RELEASING.md) | How a merge to `main` becomes an Arch package, a Windows installer and a macOS disk image |
 | [GOTCHAS.md](GOTCHAS.md) | Hard-won, non-obvious lessons (each one cost real debugging time — read before touching deps, TLS, SASL, or file watchers) |
 | [ROADMAP.md](ROADMAP.md) | Frozen archive of pre-issues history (all work tracking — open and done — lives in GitHub issues) |
 
