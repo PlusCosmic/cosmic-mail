@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  The app bundle's Info.plist. packaging/macos/package.sh copies it into
+  "Cosmic Mail.app/Contents/" with @VERSION@ replaced by the build's version.
+
+  Never change CFBundleIdentifier: macOS keys the app's Keychain access, notification
+  settings and saved window state on it. It is the id the rest of the app already uses
+  (the keyring service, the desktop entry, the Windows single-instance pipe).
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Cosmic Mail</string>
+	<key>CFBundleExecutable</key>
+	<string>cosmic-mail</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.pluscosmic.mail</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Cosmic Mail</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
+	<!-- Matches MACOSX_DEPLOYMENT_TARGET in .github/workflows/macos.yml. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Harry Leach. All rights reserved.</string>
+</dict>
+</plist>

@@ -3,7 +3,8 @@ name: windows
 # Windows build. On every pull request and push it builds natively and, in
 # parallel, runs the test suite (the UI tests run on Rune's headless runtime, no
 # GPU needed), and packages an installer and a portable zip. On pushes to main it also publishes
-# them as a GitHub Release. See docs/RELEASING.md ("Windows").
+# them to the commit's GitHub Release, beside the macOS disk image. See docs/RELEASING.md
+# ("Windows").
 
 on:
   push:
@@ -117,34 +118,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # The macOS workflow publishes to the same release: one at a time per commit.
+    concurrency:
+      group: github-release-${{ github.sha }}
+      cancel-in-progress: false
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: cosmic-mail-windows
           path: dist
 
-      - name: Publish the GitHub Release
+      # One release per push to main, tagged with its version (scripts/version.sh:
+      # each merge raises the patch), shared with the macOS build of the commit.
+      - name: Publish to the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          # One release per push to main, tagged with its version
-          # (scripts/version.sh: each merge raises the patch).
-          tag="v${VERSION}"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $tag already exists (a re-run); nothing to publish."
-            exit 0
-          fi
-          short=$(echo "$GITHUB_SHA" | cut -c1-7)
-          notes="Automatic build of \`main\` at ${short} (${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA}).
-
-          - **Installer**: \`*-setup.exe\` (per-user, no administrator prompt; optional start at sign-in).
-          - **Portable**: \`*-portable.zip\` (unzip and run \`cosmic-mail.exe\`).
-
-          Builds are unsigned, so Windows SmartScreen warns on first run (More info → Run anyway)."
-          gh release create "$tag" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "Cosmic Mail ${VERSION}" \
-            --notes "$notes" \
-            --latest
+        run: scripts/publish-release.sh "$VERSION" dist/*
