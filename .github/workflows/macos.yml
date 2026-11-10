@@ -49,6 +49,10 @@ jobs:
       # The oldest macOS the binary runs on; packaging/macos/Info.plist says the
       # same (LSMinimumSystemVersion).
       MACOSX_DEPLOYMENT_TARGET: "13.0"
+      # With the Developer ID secrets (docs/RELEASING.md, "Signing and notarization")
+      # the app is signed with the certificate and the image notarized. Without them,
+      # as on a pull request from a fork, the signature is ad hoc.
+      SIGNED: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -80,6 +84,38 @@ jobs:
           cargo build --locked --release \
             --target aarch64-apple-darwin --target x86_64-apple-darwin
 
+      # A throwaway keychain holding the certificate; package.sh signs with the
+      # identity this names (CODESIGN_IDENTITY).
+      - name: Import the Developer ID certificate
+        if: env.SIGNED == 'true'
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          certificate="$RUNNER_TEMP/certificate.p12"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$certificate"
+
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -P "$MACOS_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$keychain"
+          rm "$certificate"
+          # Let codesign use the key without a prompt nobody can answer.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+
+          identity=$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/Developer ID Application/ { print $2; exit }')
+          if [ -z "$identity" ]; then
+            echo "MACOS_CERTIFICATE_P12 holds no Developer ID Application identity" >&2
+            exit 1
+          fi
+          echo "CODESIGN_IDENTITY=$identity" >> "$GITHUB_ENV"
+
       - name: Package the app and the disk image
         run: |
           packaging/macos/package.sh "$COSMIC_MAIL_VERSION" dist \
@@ -87,12 +123,40 @@ jobs:
             target/x86_64-apple-darwin/release/cosmic-mail
           ls -l dist
 
+      # Apple scans the image and issues a ticket; stapling attaches it, so the
+      # image verifies offline. A refusal prints Apple's log of what it found.
+      - name: Notarize the disk image
+        if: env.SIGNED == 'true'
+        env:
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          dmg="dist/cosmic-mail-$COSMIC_MAIL_VERSION-macos-universal.dmg"
+          key="$RUNNER_TEMP/notary-key.p8"
+          printf '%s\n' "$MACOS_NOTARY_KEY" > "$key"
+          trap 'rm -f "$key"' EXIT
+          auth=(--key "$key" --key-id "$MACOS_NOTARY_KEY_ID" --issuer "$MACOS_NOTARY_ISSUER_ID")
+
+          result=$(xcrun notarytool submit "$dmg" "${auth[@]}" \
+            --wait --timeout 30m --output-format json)
+          echo "$result"
+          if [ "$(jq -r .status <<< "$result")" != Accepted ]; then
+            xcrun notarytool log "$(jq -r .id <<< "$result")" "${auth[@]}" || true
+            echo "Apple did not accept $dmg for notarization" >&2
+            exit 1
+          fi
+          xcrun stapler staple "$dmg"
+
       # Check what ships, from the image itself: both architectures, an intact
       # signature, the right version, and a binary that starts on each architecture
       # and draws the demo mailbox (headless, on the runner's Metal device).
       - name: Check the disk image
         run: |
           dmg="dist/cosmic-mail-$COSMIC_MAIL_VERSION-macos-universal.dmg"
+          if [ "$SIGNED" = true ]; then
+            xcrun stapler validate "$dmg"
+          fi
           mount="$RUNNER_TEMP/cosmic-mail-image"
           hdiutil attach "$dmg" -nobrowse -readonly -mountpoint "$mount"
           trap 'hdiutil detach "$mount" -force' EXIT
@@ -104,6 +168,7 @@ jobs:
           echo "Architectures: $archs"
           [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
           codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -E '^(Authority|Signature|TeamIdentifier|Runtime)' || true
           bundled=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
           echo "Bundle version: $bundled"
           [ "$bundled" = "$COSMIC_MAIL_VERSION" ]

@@ -159,14 +159,17 @@ the Windows workflow:
 `packaging/macos/package.sh VERSION OUT_DIR BINARY...` is the whole packaging step, and
 runs by hand on a Mac too (see [DEVELOPMENT.md](DEVELOPMENT.md)). It merges the binaries
 with `lipo`, lays out `Cosmic Mail.app` around `packaging/macos/Info.plist`, builds
-`AppIcon.icns` from the repository's `icon.png` (`sips` + `iconutil`), signs the bundle ad
-hoc, and writes a compressed disk image holding the app and an `/Applications` link to
-drag it onto. The binary is built for macOS 13 or later (`MACOSX_DEPLOYMENT_TARGET` in the
+`AppIcon.icns` from the repository's `icon.png` (`sips` + `iconutil`), signs the bundle
+(see [Signing and notarization](#signing-and-notarization)), and writes a compressed disk
+image holding the app and an `/Applications` link to drag it onto. The binary is built for macOS 13 or later (`MACOSX_DEPLOYMENT_TARGET` in the
 workflow, `LSMinimumSystemVersion` in `Info.plist`; keep the two equal). **Never change
 the bundle identifier** (`dev.pluscosmic.mail`): macOS keys the app's Keychain access and
 notification settings on it.
 
-Builds are signed ad hoc and not notarized, which has two consequences:
+### Signing and notarization
+
+Without the secrets below, builds are signed ad hoc and not notarized, which has two
+consequences:
 
 - **Gatekeeper blocks the first launch** of a downloaded copy. Open System Settings →
   Privacy & Security and choose **Open Anyway**, or clear the download flag:
@@ -175,10 +178,45 @@ Builds are signed ad hoc and not notarized, which has two consequences:
   build, so after each update macOS asks again before Cosmic Mail may read its stored
   passwords and tokens.
 
-Both go away with a Developer ID certificate (an Apple Developer Program membership): sign
-with it and the hardened runtime in `package.sh` instead of `--sign -`, with the
-certificate in Actions secrets, then notarize and staple the disk image
-(`xcrun notarytool submit --wait`, `xcrun stapler staple`) before it is uploaded.
+Both go away once the repository has a Developer ID certificate and a notary key (an Apple
+Developer Program membership provides both). The `build` job then imports the certificate
+into a throwaway keychain, `package.sh` signs the app with it and the hardened runtime
+(`CODESIGN_IDENTITY`) and signs the image, and the job submits the image to Apple's notary
+service, staples the ticket to it, and validates the staple before anything is uploaded.
+The switch is the certificate secret: with it set, a build that cannot sign or notarize
+fails. Pull requests from forks never see secrets, so they stay ad hoc.
+
+| secret | what it holds |
+|---|---|
+| `MACOS_CERTIFICATE_P12` | the Developer ID Application certificate and its private key, as a base64-encoded `.p12` |
+| `MACOS_CERTIFICATE_PASSWORD` | the `.p12`'s password |
+| `MACOS_NOTARY_KEY` | an App Store Connect API key: the whole `AuthKey_<id>.p8` file |
+| `MACOS_NOTARY_KEY_ID` | that key's ID |
+| `MACOS_NOTARY_ISSUER_ID` | the issuer ID shown above the keys list |
+
+The certificate (any machine with OpenSSL; no Mac needed):
+
+```sh
+openssl genrsa -out developer-id.key 2048
+openssl req -new -key developer-id.key -out developer-id.csr -subj "/CN=Cosmic Mail Developer ID"
+# developer.apple.com → Certificates → + → Developer ID Application: upload the .csr,
+# download developerID_application.cer.
+openssl x509 -inform DER -in developerID_application.cer -out developer-id.pem
+openssl pkcs12 -export -legacy -inkey developer-id.key -in developer-id.pem -out developer-id.p12
+base64 -w0 developer-id.p12   # the value of MACOS_CERTIFICATE_P12
+```
+
+`-legacy` matters: macOS cannot import the encryption OpenSSL 3 uses for a `.p12` by
+default, and reports it as a wrong password. Only the account holder can create a
+Developer ID certificate. Keep `developer-id.key` somewhere safe and out of the repository
+(`.gitignore` already excludes `*.key`, `*.pem` and `*.p12`); the certificate lasts five
+years.
+
+The notary key: App Store Connect → Users and Access → Integrations → App Store Connect
+API → Team Keys → generate a key with the **Developer** role. The `.p8` downloads once.
+
+After the first notarized build, drop the "not notarized" sentences from the release notes
+in `scripts/publish-release.sh` and from `README.md`.
 
 What the macOS build does not have yet:
 

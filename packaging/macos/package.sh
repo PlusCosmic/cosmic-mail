@@ -7,6 +7,10 @@
 # One BINARY per architecture; two are merged into a universal binary. Writes
 # OUT_DIR/cosmic-mail-VERSION-macos-{universal,arm64,x86_64}.dmg and prints its path.
 #
+# Signs ad hoc unless CODESIGN_IDENTITY names a Developer ID Application identity in the
+# keychain (its name or SHA-1): then the app is signed with it and the hardened runtime,
+# and the image is signed too, ready to notarize.
+#
 # Run by .github/workflows/macos.yml; by hand, for a build of this Mac's architecture:
 #   cargo build --release
 #   packaging/macos/package.sh "$(scripts/version.sh)" target/macos target/release/cosmic-mail
@@ -60,9 +64,15 @@ for size in 16 32 128 256 512; do
 done
 iconutil --convert icns --output "$app/Contents/Resources/AppIcon.icns" "$iconset"
 
-# An ad-hoc signature over the whole bundle. Apple Silicon runs nothing unsigned, and
-# without it a downloaded copy is reported as damaged rather than merely unidentified.
-codesign --force --sign - "$app"
+identity=${CODESIGN_IDENTITY:-}
+if [ -n "$identity" ]; then
+  # Developer ID: the hardened runtime and a secure timestamp are what notarization asks for.
+  codesign --force --options runtime --timestamp --sign "$identity" "$app"
+else
+  # An ad-hoc signature over the whole bundle. Apple Silicon runs nothing unsigned, and
+  # without it a downloaded copy is reported as damaged rather than merely unidentified.
+  codesign --force --sign - "$app"
+fi
 codesign --verify --strict "$app"
 
 mkdir -p "$out_dir"
@@ -79,4 +89,7 @@ for attempt in 1 2 3; do
   fi
   sleep 5
 done
+if [ -n "$identity" ]; then
+  codesign --force --timestamp --sign "$identity" "$dmg"
+fi
 echo "$dmg"
