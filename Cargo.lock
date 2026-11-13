@@ -539,8 +539,7 @@ dependencies = [
 [[package]]
 name = "blitz-dom"
 version = "0.3.0-beta.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a814bfd3ad19e6d8d26f99c75188062baca499564f9abe44250230962427d183"
+source = "git+https://github.com/PlusCosmic/blitz?rev=405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d#405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -583,8 +582,7 @@ dependencies = [
 [[package]]
 name = "blitz-html"
 version = "0.3.0-beta.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd638e05f3f3efb9f2d37f0406e7834ea023727e1678524488aa70eb639615"
+source = "git+https://github.com/PlusCosmic/blitz?rev=405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d#405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d"
 dependencies = [
  "blitz-dom",
  "blitz-traits",
@@ -595,8 +593,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.3.0-beta.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d339c3ff7fe8bed623e27695a4c15dd1ec8faa9bf9158b7475bf180280e4018c"
+source = "git+https://github.com/PlusCosmic/blitz?rev=405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d#405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.2",
@@ -1169,8 +1166,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 [[package]]
 name = "debug_timer"
 version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
+source = "git+https://github.com/PlusCosmic/blitz?rev=405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d#405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d"
 
 [[package]]
 name = "deranged"
@@ -5277,8 +5273,7 @@ dependencies = [
 [[package]]
 name = "stylo_taffy"
 version = "0.3.0-beta.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d932deb3145f9e1c4159d09237f7999a29632fba9125896abb364dab080e0c0"
+source = "git+https://github.com/PlusCosmic/blitz?rev=405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d#405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d"
 dependencies = [
  "bitflags 2.13.2",
  "stylo",

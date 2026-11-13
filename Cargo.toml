@@ -109,3 +109,16 @@ debug = false
 # bumping the Rune rev (GOTCHAS, "Blitz").
 [patch."https://github.com/anomalyco/rune"]
 rune-taffy = { path = "vendor/rune-taffy" }
+
+# Blitz from our fork: the v0.3.0-beta.4 tag plus upstream's open table column-width PRs
+# (DioxusLabs/blitz#1387, #1345, #1482, #1486) and small fixes on top, listed in the branch's
+# COSMIC_MAIL.md (branch `cosmic-mail/0.3.0-beta.4` of PlusCosmic/blitz). Every crate of the
+# Blitz workspace in our graph is patched, at one rev, or it would exist twice (`cargo tree -d`).
+# The `=0.3.0-beta.4` pins above must match the fork's versions. Drop this table once a Blitz
+# release includes DioxusLabs/blitz#1370 (real table layout); GOTCHAS, "Blitz", says how to move it.
+[patch.crates-io]
+blitz-dom = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
+blitz-html = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
+blitz-traits = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
+stylo_taffy = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
+debug_timer = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }

@@ -202,9 +202,22 @@ related area. When you learn a new one, add it.
   crate depends on the same `image` 0.25 with `gif` and `webp` so feature unification turns
   them on inside Rune's decoder. Bumping Rune to another `image` major silently drops GIF
   again (`images::tests::gif_and_webp_mail_images_decode` catches it). AVIF: not decoded.
-- **Blitz's auto table layout ignores percentage cell widths** (`layout/table.rs`: "only
-  take effect in the fixed table layout"), so `<td style="width:35%">` sizes from content —
-  e.g. a `width:100%` logo with 1904 natural px widens its column far past Chrome's.
+- **Blitz comes from our fork, for table column widths.** Blitz lays tables out as a CSS grid
+  with column sizes from the first row only (percentages ignored, a `width` a rigid track), so
+  mail columns came out the wrong width. `[patch.crates-io]` points every Blitz-workspace crate
+  (`blitz-dom`, `blitz-html`, `blitz-traits`, `stylo_taffy`, `debug_timer`) at one commit of
+  branch `cosmic-mail/0.3.0-beta.4` of [PlusCosmic/blitz](https://github.com/PlusCosmic/blitz):
+  the `v0.3.0-beta.4` tag plus upstream's open table PRs DioxusLabs/blitz#1387, #1345, #1482,
+  #1486, plus small fixes on top (among them: cells ignore `min`/`max-height`, as in Chrome, so
+  Stripe's `<td height=32 style="max-height:1px">` spacers keep their height). The branch's
+  `COSMIC_MAIL.md` lists every patch.
+  Patch *every* crate of that workspace in our graph, by `rev`, or a crate exists twice and
+  `blitz-traits` types stop matching (`cargo tree -d` must show none of them). Keep the
+  `=0.3.0-beta.4` pins: a patch only replaces the matching version. **Moving it**: for a new
+  Blitz release, rebase the branch onto the new tag as `cosmic-mail/<version>`, drop patches
+  upstream merged, bump the pins and the revs; **drop the fork** (and the `[patch.crates-io]`
+  table) once a release includes DioxusLabs/blitz#1370, upstream's real table layout. Check any
+  change with `tools/render-corpus/tablecases.py` (Chrome's column widths, 23 cases).
 - **Chrome image boxes in the corpus harness are border boxes**; `Item::Image` is the content
   box. An icon with `padding:8px` reads as "40×40 vs 24×24" — not a sizing bug.
 - **Rune draws only fonts the app embeds**, so Blitz must measure with them too (a UA
@@ -254,8 +267,6 @@ related area. When you learn a new one, add it.
   Blitz's `td`/`table` defaults, and values reach the CSS only parsed (Stylo's
   `servo::attr` has the HTML microsyntaxes — `parse_legacy_color` panics on an all-space
   value) or escaped. Blitz's own hints (`PresHints`) outrank any UA rule.
-- **Blitz applies `min`/`max-height` to table cells**; Chrome ignores them there. Stripe's
-  spacers (`<td height=32 style="max-height:1px">`) collapse; cellspacing no longer hides it.
 - **Blitz lays out `overflow` but clipping is ours** (the walk is the painter). Unclipped,
   `max-height:0;overflow:hidden` preheaders and footers draw over what follows, and a `nowrap`
   ticker in a narrow `overflow:hidden` box counts towards `content_width` and shrinks the whole
@@ -263,11 +274,17 @@ related area. When you learn a new one, add it.
   crosses an edge. Tables and cells never clip vertically: browsers grow them to their content,
   Blitz keeps the `height`, so clipping to it hides text. `overflow` on inline boxes and rows does
   nothing; on an `<li>` it hides the outside marker (as in Chrome).
-- **Blitz's table widths are not Chrome's** (left for later; the page is fit-scaled): a cell's
-  fixed `width` is a hard minimum (Chrome shrinks it, down to min-content, to fit the table);
-  `table-layout:fixed` adds a cell's padding on top of its percentage width; a `width=100%`
-  table contributes no min-content, so a `width=1` cell around one ends up 1px wide.
-  For the same reason an inline element's background/border/padding has no box: Parley gives
+- **Blitz's table widths are still not all Chrome's** (fork or not): `auto` columns share
+  leftover width equally, not in proportion to their content (two long texts, one 3× the
+  other: Chrome 147/453, we 300/300; `tablecases.py` 02, 17, 19); when several rows give a
+  column a pixel width the first wins, not the largest; and in a
+  table between its columns' minimum and preferred widths, `width` columns do not get their
+  width before `auto` columns grow. `table-layout:fixed` adds a cell's padding on top of its
+  percentage width, and percentages plus padding over the table's width overflow it (Chrome
+  scales them to fit: PostHog's 40%/60% list). A `colspan` cell spreads its width over empty
+  spanned columns too. `min-width`/`max-width` on cells: 20. Upstream's table
+  layout (DioxusLabs/blitz#1370) is the fix for all of these, not more grid tricks.
+- **An inline element's background/border/padding has no layout box**: Parley gives
   only runs tagged with their element (`brush.id`). `mail_doc::paint::inline_boxes` rebuilds
   one box per line from the runs; Blitz reserves no space for inline horizontal padding.
 - **Collapsed table borders are gutters, not cell borders.** With `border-collapse:collapse`
