@@ -179,9 +179,14 @@ async function renderOne(browser, id) {
       for (const img of document.querySelectorAll('img')) {
         const r = img.getBoundingClientRect();
         const cs = getComputedStyle(img);
+        // The content box: where the pixels go, which is what the app's image item is.
+        const px = (v) => parseFloat(v) || 0;
+        const left = px(cs.borderLeftWidth) + px(cs.paddingLeft), top = px(cs.borderTopWidth) + px(cs.paddingTop);
+        const right = px(cs.borderRightWidth) + px(cs.paddingRight), bottom = px(cs.borderBottomWidth) + px(cs.paddingBottom);
         images.push({
           src: img.getAttribute('src'), resolved: img.currentSrc || img.src,
-          x: round(r.left + scrollX), y: round(r.top + scrollY), w: round(r.width), h: round(r.height),
+          x: round(r.left + left + scrollX), y: round(r.top + top + scrollY),
+          w: round(Math.max(0, r.width - left - right)), h: round(Math.max(0, r.height - top - bottom)),
           nw: img.naturalWidth, nh: img.naturalHeight, complete: img.complete,
           broken: img.complete && img.naturalWidth === 0, alt: img.getAttribute('alt') || '',
           hidden: cs.display === 'none' || !!hiddenBy(img, r), objectFit: cs.objectFit,
