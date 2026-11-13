@@ -447,6 +447,36 @@ fn html_mail_is_laid_out_as_a_page_with_its_own_layout() {
 }
 
 #[test]
+fn blocked_images_keep_their_box_and_show_their_alt_text() {
+    let html = r#"<p>Hello</p><img src="https://cdn.example/hero.png" width="600" height="200"
+                  alt="Spring sale" style="display:block;width:100%;height:auto"><p>After</p>"#;
+    let mut s = demo::state();
+    if let Some(b) = s.body.as_mut() {
+        b.html = Some(html.into());
+    }
+    s.body_lines = super::html::render(html);
+    s.reset_mail_layout();
+    let rt = runtime(s);
+    assert!(
+        rt.state.body_images.is_empty(),
+        "remote images stay blocked"
+    );
+    let elements = rt.elements();
+    let rect = |want: &str| {
+        elements
+            .iter()
+            .find(|e| e.text.as_deref() == Some(want))
+            .map(|e| e.rect)
+            .unwrap_or_else(|| panic!("no {want:?}"))
+    };
+    let (hello, alt, after) = (rect("Hello"), rect("Spring sale"), rect("After"));
+    assert!(
+        alt[1] > hello[1] && after[1] > alt[1] + 100.0,
+        "the 3:1 box is held"
+    );
+}
+
+#[test]
 fn every_scene_renders() {
     for (name, scene) in demo::SCENES {
         let mut s = demo::state();

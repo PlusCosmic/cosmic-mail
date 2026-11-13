@@ -89,7 +89,7 @@ impl Ui {
         self.mail.borrow().done.as_ref().map(|(_, doc)| doc.clone())
     }
 
-    /// The `src` of every image in the open body's latest layout.
+    /// The `src` of every image in the open body's latest layout, background images too.
     pub(crate) fn mail_layout_image_srcs(&self) -> Vec<String> {
         let state = self.mail.borrow();
         let Some((_, doc)) = &state.done else {
@@ -98,7 +98,9 @@ impl Ui {
         doc.items
             .iter()
             .filter_map(|i| match i {
-                mail_doc::Item::Image { src, .. } => Some(src.clone()),
+                mail_doc::Item::Image { src, .. } | mail_doc::Item::Background { src, .. } => {
+                    Some(src.clone())
+                }
                 _ => None,
             })
             .collect()
