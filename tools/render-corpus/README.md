@@ -67,6 +67,22 @@ It exits non-zero if any case differs by more than 2px. Run it after any change 
 fork's table code or to `mail_doc`'s table passes (`tables.rs`, `hints.rs`); the cases still
 differing are listed under "Blitz" in `docs/GOTCHAS.md`.
 
+Line layout under each document mode has a matrix too: 28 hand-written cases (text in the block
+or only in spans, nested and padded spans, `<br>` lines, images alone and beside text in cells,
+inline blocks, mixed sizes, tables in a big or centred block, cell heights with padding,
+unitless lengths, class case), each under `<!DOCTYPE html>` (`std`), XHTML 1.0 Transitional
+(`lq`, limited-quirks) and no doctype (`q`, quirks), through both renderers.
+
+```sh
+python3 quirkcases.py             # every case and mode: OK, or each renderer's rows
+python3 quirkcases.py 02 08 q,lq  # only these cases, in these modes
+```
+
+Rows are `t<y>` per text line (`@x<x>` when not 0), `i<y>+<h>` per image, `b<y>+<h>` per filled
+box. It exits non-zero if any differs by more than 1px (x: 4px). Run it after any change to the
+fork's inline layout (`layout/construct.rs`) or quirks-mode code; the cases still differing are
+listed under "Blitz" in `docs/GOTCHAS.md`.
+
 ## What is compared, and how
 
 - **The app side** is `examples/mail_render.rs`: the demo mailbox with the mail as its open
