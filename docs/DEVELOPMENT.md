@@ -56,6 +56,17 @@ Without a GPU, install `mesa-vulkan-drivers` and set
 `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json` (lavapipe). Every UI change should
 come with a `--snap` of the affected scene, checked by eye.
 
+### HTML mail against Chrome (render corpus)
+
+`tools/render-corpus/` renders every mail in the local cache through the real reader
+(`examples/mail_render.rs`, headless) and through headless Chrome at the same width and in the
+same fonts, then diffs them: page heights, dropped or stray text, positions, images, and
+side-by-side pictures. Run it before and after any change to `ui::mail_doc`, the reader's mail
+drawing, or the Blitz/Rune pins, and compare the totals (`cmp_agg.sh`); `lay.sh` and
+`chrome_lay.mjs` show both layouts of a snippet for reducing a difference to a test. The corpus
+is private mail kept under `target/`, and Chrome fetches the mails' remote images — read
+`tools/render-corpus/README.md` first.
+
 ### Lifecycle
 
 One process per session: the first launch binds `$XDG_RUNTIME_DIR/cosmic-mail.sock`; a

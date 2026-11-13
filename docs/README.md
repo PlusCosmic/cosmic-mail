@@ -45,6 +45,8 @@ src/ui/             Rune UI: mod.rs (state + Inbox), store.rs (state transitions
                     demo.rs (demo mailbox + headless scenes), tests.rs
 tests/              e2e_greenmail.rs (real UI + backend against a GreenMail fixture)
 e2e/                the GreenMail fixture (docker compose, seed mail, throwaway TLS)
+examples/           dev tools: mail_render (one mail through the reader, headless), mail_corpus_fetch
+tools/render-corpus the reader's HTML mail rendering against headless Chrome, over your cached mail
 assets/             icons
 ```
 
