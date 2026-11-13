@@ -3,10 +3,17 @@
 This file is shared by Claude and Codex. `AGENTS.md` is a symlink to this file, so
 keep instructions tool-agnostic unless a section explicitly names a tool.
 
-Native Linux mail client for the omarchy desktop. One Rust crate: the backend
-(`src/`, UI-agnostic) and a native GPU UI built with [Rune](https://github.com/anomalyco/rune)
-(`src/ui/`). IMAP + Gmail (OAuth2→XOAUTH2), mako notifications, and the PlusCosmic UI
-foundation's look (`rune-theme-foundation`: colour schemes, light/dark, type).
+Native mail client for Windows, macOS and Linux — all three first-class, none favoured.
+One Rust crate: the backend (`src/`, UI-agnostic) and a native GPU UI built with
+[Rune](https://github.com/anomalyco/rune) (`src/ui/`). IMAP + Gmail (OAuth2→XOAUTH2),
+native notifications and keyring per platform, and the PlusCosmic UI foundation's look
+(`rune-theme-foundation`: colour schemes, light/dark, type).
+
+Design and test for every platform. A feature that works on one OS and not the others is
+unfinished: implement it everywhere, or `cfg`-gate it and record the gap (DESKTOP.md,
+an issue). Omarchy/Hyprland/mako are one Linux desktop's integration, not the product's
+identity; use neutral terms (desktop, keyring, notifications) unless the text is about
+one platform's specifics.
 
 **Start with `docs/README.md`** (2-min overview + reading order). Non-negotiables:
 

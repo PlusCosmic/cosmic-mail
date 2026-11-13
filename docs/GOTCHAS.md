@@ -21,8 +21,8 @@ related area. When you learn a new one, add it.
   crate's `all` feature to even exist, and `with_interval`/`with_retries` are absent
   entirely on some `target_os`es (see the `#[cfg(...)]` lists in the vendored
   `socket2-0.6.4/src/lib.rs`). Enable `features = ["all"]` on the `socket2` dep, or
-  `.with_retries(...)` won't compile — this project only targets Linux, where all three
-  setters (`with_time`/`with_interval`/`with_retries`) are available.
+  `.with_retries(...)` won't compile. All three setters (`with_time`/`with_interval`/
+  `with_retries`) exist on Windows, macOS and Linux, the targets we build.
 
 ## TLS / auth
 
@@ -53,13 +53,14 @@ related area. When you learn a new one, add it.
 - **Rune is pinned to the revision `rune-theme-foundation` pins** (ui-foundation's
   `rune/Cargo.toml`). Two different revisions build two Runes whose `Color`, `El` and `Theme`
   don't meet, and nothing from the theme crate type-checks. Move both pins together.
-- **A background client's focus request can be ignored by Hyprland/Wayland focus-stealing
-  prevention.** Activation (notification click, tray, second launch) first goes through
+- **Linux: a background client's focus request can be ignored by Hyprland/Wayland
+  focus-stealing prevention.** Activation (notification click, tray, second launch) first goes through
   `AppHandle::open`/`activate` (with the launcher's XDG activation token when there is one),
   then `desktop::hyprland_focus` runs a fixed-argument (no shell)
   `hyprctl dispatch focuswindow class:^(cosmic-mail)$` when `HYPRLAND_INSTANCE_SIGNATURE` is
   present. The window's app id/class must stay `cosmic-mail` (`rune::tooling::set_app_id`). Test actions on a currently-live notification:
-  restored mako history belongs to the old listener and cannot validate the callback.
+  an item restored from the daemon's history (e.g. mako's) belongs to the old listener and
+  cannot validate the callback.
 - **Unix socket paths over 108 bytes fail to bind.** The single-instance socket lives at
   `$XDG_RUNTIME_DIR/cosmic-mail.sock`; a very long `XDG_RUNTIME_DIR` (seen in test sandboxes)
   makes `bind` fail, and the app then logs `single-instance socket unavailable` and runs

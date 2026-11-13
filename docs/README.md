@@ -8,36 +8,38 @@ Documentation for agents and humans picking up this project without prior contex
 | this file | 2-minute project overview |
 | [SETUP.md](SETUP.md) | Requirements, account setup, Gmail OAuth, keyboard shortcuts, and local data locations |
 | [TERMINOLOGY.md](TERMINOLOGY.md) | Shared names and concise definitions for UI surfaces, mail concepts, sync behavior, and application architecture |
-| [OMARCHY.md](OMARCHY.md) | Live theming, Mako notifications, and the background application lifecycle |
+| [DESKTOP.md](DESKTOP.md) | How the app fits Windows, macOS and Linux: appearance, notifications, the background process, the tray |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | **The binding contract** between the backend and the Rune UI: backend operations, events, wire types, DB schema, module layout, sync/notification/oauth/discovery specs. Conform to it exactly; update it in the same change that alters the API surface. |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Build/run/test commands, verification workflow, local state paths, how to test each subsystem |
-| [RELEASING.md](RELEASING.md) | How a merge to `main` becomes an Arch package, a Windows installer and a macOS disk image |
+| [RELEASING.md](RELEASING.md) | How a merge to `main` becomes a Windows installer, a macOS disk image and an Arch package |
 | [GOTCHAS.md](GOTCHAS.md) | Hard-won, non-obvious lessons (each one cost real debugging time — read before touching deps, TLS, SASL, or file watchers) |
 | [ROADMAP.md](ROADMAP.md) | Frozen archive of pre-issues history (all work tracking — open and done — lives in GitHub issues) |
 
 ## What this project is
 
-**Cosmic Mail** — a native Linux mail client for the [omarchy](https://omarchy.org) desktop
-(Arch + Hyprland + mako + walker). One Rust crate: a UI-agnostic backend plus a native
-GPU-rendered UI built on [Rune](https://github.com/anomalyco/rune) (wgpu + winit, no
-webview, no JavaScript).
+**Cosmic Mail** — a native mail client for Windows, macOS and Linux, with no platform
+favoured: each is first-class, and a feature missing on one is a gap to close. One Rust
+crate: a UI-agnostic backend plus a native GPU-rendered UI built on
+[Rune](https://github.com/anomalyco/rune) (wgpu + winit, no webview, no JavaScript).
 
 Design goals, in priority order:
 
-1. **Native omarchy citizen** — notifications through mako (freedesktop D-Bus, stable
-   app-name, click-to-focus); keyboard-driven, minimal chrome. The look is the UI
-   foundation's (`rune-theme-foundation`): its colour schemes, light and dark, and its type.
+1. **Native on every desktop** — the platform's own notifications (Notification Center,
+   toasts, freedesktop D-Bus), keyring, single-instance and background behaviour;
+   keyboard-driven, minimal chrome. The look is the UI foundation's
+   (`rune-theme-foundation`) everywhere: its colour schemes, light and dark, and its type.
 2. **One sync engine for both account kinds** — plain IMAP (password) and Gmail
    (OAuth2 PKCE → SASL XOAUTH2 over IMAP). No Gmail REST API.
 3. **Local-first** — SQLite (WAL) envelope/body cache; lazy body fetch; IMAP IDLE for
-   push; secrets only in the Secret Service keyring, never on disk.
+   push; secrets only in the platform keyring (Credential Manager, Keychain, Secret
+   Service), never on disk.
 
 ## Layout at a glance
 
 ```
 docs/               you are here (ARCHITECTURE.md = the contract)
 src/                backend: backend.rs (the operations the UI calls), events.rs (AppEvent),
-                    store.rs, accounts.rs, omarchy.rs, notifications.rs, autoconfig.rs,
+                    store.rs, accounts.rs, settings.rs, paths.rs, notifications.rs, autoconfig.rs,
                     desktop.rs, sync/{mod,imap}.rs, auth/oauth.rs, wire.rs
 src/app.rs          startup: single instance, tokio runtime, tray, window
 src/ui/             Rune UI: mod.rs (state + Inbox), store.rs (state transitions),

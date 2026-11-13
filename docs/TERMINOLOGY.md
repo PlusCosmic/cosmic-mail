@@ -28,10 +28,10 @@ in [ARCHITECTURE.md](ARCHITECTURE.md).
 | **compose dialog** | The modal surface for creating a new message or reply and sending it through a selected account. Compose is currently plain text. |
 | **add-account dialog** | The modal surface for adding a password-authenticated IMAP account or starting Gmail sign-in. |
 | **settings dialog** | The modal surface for global preferences, opened from the account rail's settings cog or the command palette. `ui/view/modals.rs` renders it; preferences persist to `settings.json` via `Backend::get_settings`/`update_settings`. It currently exposes the **always download remote images** preference. |
-| **command palette** | The walker/telescope-style `Ctrl+K` overlay that fuzzy-searches and runs the currently-applicable commands (view switching, compose, reply, message actions, sync, add account, search all mail), and doubles as
+| **command palette** | The launcher-style `Ctrl+K` overlay that fuzzy-searches and runs the currently-applicable commands (view switching, compose, reply, message actions, sync, add account, search all mail), and doubles as
 the folder picker for **move**. `ui/view/modals.rs` renders it; `ui/palette.rs` ranks the commands. It is UI-only and adds no backend operations. |
 | **toast** | A temporary in-app informational or error message. A toast is not a desktop notification. |
-| **desktop notification** | A new-mail notification sent over the freedesktop notification interface and rendered by Mako. Activating a live notification shows and focuses the existing app window. |
+| **desktop notification** | A new-mail notification shown by the platform's own notification system (Notification Center on macOS, a toast on Windows, the freedesktop notification interface on Linux), optionally with a sound. Clicking it shows and focuses the existing app window (macOS and Linux; not yet on Windows). |
 
 ## Mail model
 
@@ -84,6 +84,6 @@ the folder picker for **move**. `ui/view/modals.rs` renders it; `ui/palette.rs` 
 | **event** | An `AppEvent` the backend emits through its `Events` sink — new-message, messages-updated, sync-state, and activation updates. |
 | **sync state** | An account's current `idle`, `syncing`, or `error` status exposed to the UI. `idle` means no sync pass is active; background IDLE waiting may still be running. |
 | **process owner** | The single Cosmic Mail process for a desktop session that owns sync tasks, notification listeners, and the main window. Later launches activate this process instead of creating another engine. |
-| **background service** | The systemd user service installed by the Arch package. It starts the process owner hidden and keeps it running for the graphical session. |
+| **background service** | On Linux, the systemd user service installed by the Arch package (Windows: the installer's optional sign-in entry; macOS: a login item the user adds). It starts the process owner hidden and keeps it running for the graphical session. |
 | **activation** | A launcher invocation (handed over the single-instance socket), tray click, or live notification action that reveals and focuses the existing main window. |
 | **colour scheme** | One of the UI foundation's schemes (Stacks, Oxblood, Ink, Walnut, Graphite), each light and dark, from `rune-theme-foundation` and mapped to the UI's `Palette` (`ui/theme.rs`). Chosen in the settings dialog with the **appearance** (system, light or dark). |

@@ -1,4 +1,4 @@
-//! Cosmic Mail: an IMAP/Gmail client for the omarchy desktop.
+//! Cosmic Mail: an IMAP/Gmail client for Windows, macOS and Linux.
 //!
 //! The backend (`backend`, `store`, `sync`, `auth`, ...) is UI-agnostic and
 //! reports changes through [`events::Events`]. The `ui` module is the native

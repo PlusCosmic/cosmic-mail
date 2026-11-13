@@ -1,7 +1,7 @@
 # Cosmic Mail — Architecture Contract
 
-Native Linux mail client for [omarchy](https://omarchy.org): a Rust backend and a native GPU
-UI built with [Rune](https://github.com/anomalyco/rune), in one crate. Supports plain IMAP
+Native mail client for Windows, macOS and Linux (all first-class): a Rust backend and a
+native GPU UI built with [Rune](https://github.com/anomalyco/rune), in one crate. Supports plain IMAP
 accounts and Gmail (OAuth2/XOAUTH2 over IMAP — one sync engine for both).
 
 **This document is the contract between the backend (`src/`, UI-agnostic) and the Rune UI
@@ -23,7 +23,7 @@ src/
   error.rs          # AppError (thiserror); Display is the string the UI toasts
   store.rs          # rusqlite: schema, migrations, queries
   accounts.rs       # Account model, accounts.json persistence, keyring secrets
-  notifications.rs  # notify-rust wrapper (mako-aware); click -> AppEvent::Activate
+  notifications.rs  # notify-rust wrapper (all three platforms); click -> AppEvent::Activate
   sync/
     mod.rs          # SyncManager: per-account background task on the tokio runtime, IDLE loop
     imap.rs         # async-imap + tokio-rustls connector, LOGIN + XOAUTH2
@@ -210,7 +210,7 @@ Delivery: `app.rs` installs a sink that forwards every event except `Activate` t
 hidden, so state stays current). Without a handle (tests, headless runs) the `Inbox` queues
 jobs for `Ui::poll` to drain.
 
-## SQLite schema (store.rs; db at `$XDG_DATA_HOME/cosmic-mail/mail.db`)
+## SQLite schema (store.rs; db at `<data dir>/cosmic-mail/mail.db`, `paths::data_dir`)
 
 ```sql
 CREATE TABLE IF NOT EXISTS folders (
@@ -317,44 +317,48 @@ Account configs (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/accounts.json
 Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.json`
 (`settings.rs`); the read path never errors — a missing or malformed file yields defaults.
 
-## Secrets (keyring, Secret Service via keyring v4 zbus store)
+## Secrets (keyring v4: Windows Credential Manager, macOS Keychain, Linux Secret Service via the zbus store)
 
 - service: `dev.pluscosmic.mail`
 - user key: `imap-password:<account-id>` for IMAP; `oauth-refresh-token:<account-id>` for Gmail.
 - Never write secrets to sqlite, accounts.json, or logs.
 
-## Omarchy integration (verified on this machine)
+## Desktop integration (all platforms; user-facing summary in DESKTOP.md)
 
-- Notifications are rendered by **mako**; plain freedesktop D-Bus notifications are all that's
-  needed. Send via `notify-rust` with:
-  - `appname("Cosmic Mail")` — users theme/script per app-name in mako config
-    (user already has an `[app-name="Betterbird Mail"]` block; ours enables the same pattern).
-  - `.hint(Hint::DesktopEntry("dev.pluscosmic.mail".into()))` — icon + association.
-  - a `default` action; on activation, focus the main window (and later, select the message).
-    The action emits `AppEvent::Activate`; the shell shows and focuses the window through
-    Rune's `AppHandle::open` first, then under Hyprland follows it with a fixed-argument
-    `hyprctl dispatch focuswindow class:^(cosmic-mail)$` fallback because Wayland
-    focus-stealing prevention can ignore a background focus request. Never invoke
-    this through a shell or interpolate notification/message content into the command.
+- New-mail notifications, on every platform, via `notify-rust` (`notifications.rs`):
   - summary: `New mail — {fromName}`, body: `{subject}`. Batch: if >3 new messages in one
     sync pass for a folder, send ONE notification: `{n} new messages in {account email}`.
   - Only notify for folders with role `inbox`, only for UIDs above `last_seen_uid`, never
     during an account's initial sync.
-  - Sound: when `Settings.notificationSound` is on, the batch's first notification carries
-    the `message-new-email` sound-name hint (the rest, and all of them when it is off, carry
-    `suppress-sound`). mako plays no sound itself; a mako `[app-name="Cosmic Mail"]` block
-    with `on-notify=exec …` can.
-- macOS: notifications go through `notify-rust`'s `NSUserNotificationCenter` backend, posted
-  as `dev.pluscosmic.mail` (`notify_rust::set_application`, once, before the first one) so
-  they carry the app's name and icon and are controlled under its System Settings entry; this
-  needs the installed `Cosmic Mail.app` (Launch Services), else they post as another app.
-  Sound is `NSUserNotificationDefaultSoundName`. A click emits `AppEvent::Activate`, as on
-  Linux: each notification's own thread waits for it (`wait_for_response`; the delegate
-  callback arrives on the main run loop Rune's loop pumps), and `AppHandle::open` shows the
-  window, reopening it if closed, and activates the app. A notification left in Notification
-  Center keeps its thread waiting until clicked or cleared, so at most 32 wait at once; past
-  that a notification posts fire-and-forget (a click still activates the app, but cannot
-  reopen a closed window).
+  - Sound: when `Settings.notificationSound` is on, the batch's first notification plays the
+    platform's new-mail sound; the rest are silent.
+  - A click emits `AppEvent::Activate`: the shell shows and focuses the window through
+    Rune's `AppHandle::open` (reopening it if closed), then, on Linux under Hyprland only,
+    follows it with the fixed-argument `hyprctl dispatch focuswindow class:^(cosmic-mail)$`
+    fallback, because Wayland focus-stealing prevention can ignore a background focus
+    request. Never invoke this through a shell or interpolate notification/message content
+    into the command.
+- Linux: plain freedesktop D-Bus notifications, for any notification daemon:
+  - `appname("Cosmic Mail")` — daemons that rule per app name (mako, dunst) can theme or
+    script it.
+  - `.hint(Hint::DesktopEntry("dev.pluscosmic.mail".into()))` — icon + association.
+  - a `default` action, waited on by a thread per notification (`wait_for_response`).
+  - sound: the `message-new-email` sound-name hint when it sounds, else `suppress-sound`.
+    Daemons that play sounds honour it; mako plays none itself (an `on-notify=exec …` rule
+    in an `[app-name="Cosmic Mail"]` block can).
+- macOS: `notify-rust`'s `NSUserNotificationCenter` backend, posted as `dev.pluscosmic.mail`
+  (`notify_rust::set_application`, once, before the first one) so notifications carry the
+  app's name and icon and are controlled under its System Settings entry; this needs the
+  installed `Cosmic Mail.app` (Launch Services), else they post as another app. Sound is
+  `NSUserNotificationDefaultSoundName`. The click: each notification's own thread waits for
+  it (`wait_for_response`; the delegate callback arrives on the main run loop Rune's loop
+  pumps). A notification left in Notification Center keeps its thread waiting until clicked
+  or cleared, so at most 32 wait at once; past that a notification posts fire-and-forget (a
+  click still activates the app, but cannot reopen a closed window).
+- Windows: a toast; sound `Mail`. **Gap:** no app id is set, so `notify-rust` posts under
+  PowerShell's AppUserModelID: the toast is labelled Windows PowerShell and a click does not
+  reach Cosmic Mail. Fixing it needs an AUMID on the installer's Start-menu shortcut,
+  `Notification::app_id`, and the same `listen` wiring as the other platforms (issue #85).
 - Theme: the UI's colours, fonts and type come from `rune-theme-foundation`
   (PlusCosmic/ui-foundation, generated from `@pluscosmic/ui`'s `tokens.css`). `ui::theme::Palette`
   names the foundation's tokens by the roles the views use (`bg`, `fg`, `muted` = `fg-soft`,
@@ -372,7 +376,7 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
 - The separator constrains both panes to usable minimum widths (`ui::pane`). The message list
   also has a readable maximum width so maximized windows give surplus space to the reader.
 - The preferred message-list proportion persists as `listPaneRatio` in
-  `$XDG_CONFIG_HOME/cosmic-mail/ui.json` (Rune `Prefs`). A proportion, rather than a pixel
+  `<config dir>/cosmic-mail/ui.json` (Rune `Prefs`). A proportion, rather than a pixel
   width, keeps the preference useful when the window is resized or the folder column appears.
   Constraints re-apply whenever the available width changes; malformed values fall back.
 - Left/Right arrows resize the focused separator (Shift uses a larger step), Home/End choose its
@@ -399,7 +403,7 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   can say Cosmic Mail needs updating. A request line is read up to 16 KiB. Because requests can
   carry a password, the socket is `chmod 600` straight after `bind`, which matters when
   `XDG_RUNTIME_DIR` is unset and it falls back to the shared temp folder.
-- The promoted daily build installs `cosmic-mail.service`, a systemd user service bound to
+- Linux: the Arch package installs `cosmic-mail.service`, a systemd user service bound to
   `graphical-session.target`. It launches the binary with `--background`, uses
   `Restart=on-failure` for crash recovery, and stops it with the graphical session. A clean tray
   Quit therefore remains stopped until the service is explicitly started or the next graphical
@@ -408,7 +412,7 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   (`App::titlebar`, `view::titlebar`: the mark, the search field, `.window_drag()`) under the
   native controls (macOS traffic lights; Windows caption buttons Rune draws, with snap layouts),
   and `Settings.windowTitleBar` is ignored. On Linux it has the platform title bar and borders unless
-  `Settings.windowTitleBar` is off (for a tiling window manager such as omarchy's Hyprland,
+  `Settings.windowTitleBar` is off (for a tiling window manager such as Hyprland or Sway,
   which draws its own), 1280×800, minimum 900×560, Wayland app id / X11 class
   `cosmic-mail`. A normal first launch opens it; a `--background` first launch starts windowless
   (`App::windowless`) while sync, IDLE, and notification listeners run normally.
@@ -418,10 +422,12 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
 - A second normal launch is an explicit activation request: the owner shows and focuses the
   window, forwarding the launcher's `XDG_ACTIVATION_TOKEN` to `AppHandle::activate` when there is
   one. A second `--background` launch is silent so service restarts cannot steal focus.
-  Notification default actions and the tray use the same path, followed by the fixed-argument
+  Notification clicks and the tray use the same path, followed on Linux by the fixed-argument
   Hyprland focus fallback (`hyprctl dispatch focuswindow class:^(cosmic-mail)$`, only when
   `HYPRLAND_INSTANCE_SIGNATURE` is set).
-- One tray icon (Rune's StatusNotifierItem tray, `rune::tray`) lives for the process lifetime with
+- One tray icon (`rune::tray`: StatusNotifierItem on Linux, the notification area on Windows;
+  Rune has no macOS backend yet, so there the Dock and application menu stand in) lives for
+  the process lifetime with
   **Open Cosmic Mail**, **Sync now**, and **Quit**; a primary click opens the window. Sync now
   restarts the background sync task for every configured account. Quit requests a clean
   application exit. A missing tray host (bare session, CI) is logged and non-fatal.

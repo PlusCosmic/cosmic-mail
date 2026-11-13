@@ -350,7 +350,7 @@ pub async fn access_token(account_id: &str) -> Result<String> {
         Ok(token) => token,
         Err(err) => {
             // A vanished keyring entry can only be fixed by a new consent;
-            // other keyring failures (locked/unavailable Secret Service) are
+            // other keyring failures (a locked or unavailable keyring) are
             // transient and stay plain retryable errors.
             let missing = err
                 .downcast_ref::<keyring::Error>()
