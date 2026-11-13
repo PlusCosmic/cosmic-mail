@@ -941,6 +941,139 @@ mod tests {
         );
     }
 
+    /// The `(x, y, w, h)` of each filled box, in paint order: one per `bgcolor` cell below.
+    fn filled_boxes(l: &MailLayout) -> Vec<(f32, f32, f32, f32)> {
+        l.items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Box {
+                    x,
+                    y,
+                    w,
+                    h,
+                    fill: Some(_),
+                    ..
+                } => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A 600px table, no padding or spacing, one `<tr>` per row of `<td>` attributes and contents.
+    fn cell_widths(rows: &[&[(&str, &str)]]) -> Vec<f32> {
+        let rows: String = rows
+            .iter()
+            .map(|cells| {
+                let cells: String = cells
+                    .iter()
+                    .map(|(attrs, text)| format!(r##"<td bgcolor="#eee" {attrs}>{text}</td>"##))
+                    .collect();
+                format!("<tr>{cells}</tr>")
+            })
+            .collect();
+        let l = lay(&format!(
+            r#"<body style="margin:0"><table width="600" cellpadding="0" cellspacing="0">{rows}</table>"#
+        ));
+        filled_boxes(&l).iter().map(|b| b.2.round()).collect()
+    }
+
+    const LONG: &str =
+        "Lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor";
+
+    // Column widths in auto table layout, as Chrome lays them out (Blitz fork, GOTCHAS "Blitz").
+
+    #[test]
+    fn percentage_columns_get_their_share_of_the_table() {
+        assert_eq!(
+            cell_widths(&[&[(r#"width="35%""#, "Short"), ("", LONG)]]),
+            [210.0, 390.0]
+        );
+        assert_eq!(
+            cell_widths(&[&[(r#"width="50%""#, "Short"), (r#"width="50%""#, LONG)]]),
+            [300.0, 300.0]
+        );
+    }
+
+    #[test]
+    fn column_widths_come_from_any_row() {
+        // Mail often opens a table with a spacer row and puts the widths on the row below.
+        assert_eq!(
+            cell_widths(&[
+                &[("", "A"), ("", "B")],
+                &[(r#"width="150""#, "C"), ("", "D")]
+            ]),
+            [150.0, 450.0, 150.0, 450.0]
+        );
+    }
+
+    #[test]
+    fn a_column_width_gives_way_to_wider_content_and_to_a_narrower_table() {
+        let wide = r#"<div style="width:300px;height:4px"></div>"#;
+        assert_eq!(
+            cell_widths(&[&[(r#"width="100""#, wide), ("", "B")]]),
+            [300.0, 300.0]
+        );
+        // Widths adding up to more than the table shrink to fit it rather than overflow.
+        assert_eq!(
+            cell_widths(&[&[(r#"width="400""#, "A"), (r#"width="400""#, "B")]]),
+            [300.0, 300.0]
+        );
+    }
+
+    #[test]
+    fn a_narrow_header_cell_grows_to_its_text_rather_than_overlap_the_next() {
+        // GitHub Actions mail: `Status` in a `width:24px` column, then `width:100%` and auto.
+        let l = lay(
+            r#"<body style="margin:0"><table width="600" cellpadding="0" cellspacing="0"><tr>
+               <th style="width:24px">Status</th><th style="width:100%">Job</th><th>Annotations</th>
+               </tr></table>"#,
+        );
+        let span = |want: &str| match text_item(&l, want) {
+            Item::Text { x, w, .. } => (*x, *x + *w),
+            _ => unreachable!(),
+        };
+        let (status, job, annotations) = (span("Status"), span("Job"), span("Annotations"));
+        assert!(status.1 <= job.0, "Status {status:?} overlaps Job {job:?}");
+        assert!(
+            job.1 <= annotations.0,
+            "Job {job:?} overlaps {annotations:?}"
+        );
+        assert!(
+            annotations.1 <= 600.5,
+            "Annotations {annotations:?} overflows"
+        );
+    }
+
+    #[test]
+    fn a_spanning_first_row_width_is_not_its_first_columns() {
+        let l = lay(
+            r##"<body style="margin:0"><table width="600" cellpadding="0" cellspacing="0">
+               <tr><td colspan="2" width="600" bgcolor="#eee">Header</td></tr>
+               <tr><td bgcolor="#eee">C</td><td bgcolor="#eee">Some longer text</td></tr></table>"##,
+        );
+        let boxes = filled_boxes(&l);
+        assert_eq!(boxes.len(), 3);
+        // Not the header's 600px (Chrome: 52px; content-proportional `auto` columns are not
+        // done, so less than half is what can be asked of it).
+        assert!(boxes[1].2 < 300.0, "first column {:?}", boxes[1]);
+        assert!((boxes[1].2 + boxes[2].2 - 600.0).abs() < 0.5, "{boxes:?}");
+    }
+
+    #[test]
+    fn max_height_does_not_collapse_a_cell() {
+        // Receipt spacers: `<td height=32 style="max-height:1px">`, which browsers ignore.
+        let l = lay(
+            r##"<body style="margin:0"><table width="300" cellpadding="0" cellspacing="0">
+               <tr><td height="32" bgcolor="#eee" style="max-height:1px;font-size:1px">&nbsp;</td></tr>
+               <tr><td>After</td></tr></table>"##,
+        );
+        assert_eq!(filled_boxes(&l)[0].3.round(), 32.0);
+        match text_item(&l, "After") {
+            Item::Text { y, .. } => assert!(*y >= 32.0, "After at {y}"),
+            _ => unreachable!(),
+        }
+    }
+
     #[test]
     fn hidden_scripts_styles_and_preheaders_never_show() {
         // Minified CSS without a trailing `;`, as mail sends it.

@@ -65,8 +65,8 @@ icons, and the systemd user unit under `/usr/lib/systemd/user/`.
 > `tauri build`), install `target/release/cosmic-mail`, and replace the `webkit2gtk-4.1`,
 > `gtk3`, `librsvg` and `libayatana-appindicator` dependencies with `libxkbcommon`,
 > `wayland` and `vulkan-icd-loader` (plus `vulkan-driver`). Its `makedepends` need
-> rustup (the toolchain is pinned to 1.99.1 by `rust-toolchain.toml`) and git (Rune is
-> a git dependency). The desktop entry should keep `StartupWMClass=cosmic-mail`, the
+> rustup (the toolchain is pinned to 1.99.1 by `rust-toolchain.toml`) and git (Rune and Blitz are
+> git dependencies). The desktop entry should keep `StartupWMClass=cosmic-mail`, the
 > window's app id.
 
 `pkgver` grows with every merge (the commit count), and `pkgrel` is the packaging
