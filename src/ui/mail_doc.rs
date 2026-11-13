@@ -950,6 +950,15 @@ mod tests {
     }
 
     #[test]
+    fn thai_breaks_between_words() {
+        // Needs blitz-dom's `complex-scripts` feature: Thai has no spaces, and without a
+        // dictionary the paragraph is one line overflowing its box.
+        let l = lay(r#"<p style="width:120px">ข้อความภาษาไทยที่ยาวมากและไม่มีช่องว่างเลย</p>"#);
+        assert!(texts(&l).len() > 1, "{:?}", texts(&l));
+        assert!(l.content_width <= 600.0);
+    }
+
+    #[test]
     fn a_full_height_body_does_not_collapse_the_page() {
         let l = lay(
             "<html><head><style>html,body{height:100%}</style></head><body><p>One</p><p>Two</p></body></html>",
@@ -958,6 +967,9 @@ mod tests {
             unreachable!()
         };
         assert!(l.height >= y + line_height, "page {} tall", l.height);
+        // The viewport is 1px tall, so `100vh` adds no empty space either.
+        let l = lay(r#"<div style="min-height:100vh">One</div>"#);
+        assert!(l.height < 50.0, "page {} tall", l.height);
     }
 
     #[test]

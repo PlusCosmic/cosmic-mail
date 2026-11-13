@@ -205,6 +205,25 @@ related area. When you learn a new one, add it.
   `prepare_body_images` with its own image `src`s.
 - **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
   root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
+- **`HtmlDocument::from_html` parses XHTML-looking mail as XML** (`<?xml` first, an XHTML
+  doctype on the first line, or `<html xmlns=…xhtml>` as root): a third of mail, none of it
+  XML — content after `<br>` lost, `<style>` drawn as text. `mail_doc::parse` runs html5ever
+  itself with Blitz's options and sink. Blitz ignores quirks mode either way (always
+  NoQuirks), so quirks-mode mail lays out to standards rules.
+- **Blitz panics on URLs it cannot resolve**, and a panic is an empty layout (the reader
+  shows text): without a `base_url` on `//host/x.png` or `x.png` (so there is an inert one);
+  even with one on `<img src>`/`<link href>` that is no URL (`http://`, `http://*|IMG|*`)
+  and on `@import url()`. `mail_doc::parse` blanks such `src`/`href`s and renames every
+  `@import` (unescaped, any case) to an unknown at-rule. The net provider is the no-op
+  `DummyNetProvider`: nothing is fetched and nothing waits on a pending load.
+- **The page is at least as tall as what it draws**: `html,body{height:100%}` resolves
+  against the viewport, which is 1px so `100vh`/`height:100%` wrappers never add empty
+  space (as in a browser with a short window); the content overflows the root box. The
+  reader fills the whole page with `MailLayout.background`.
+- **blitz-dom features**: `floats` must be on (else floated columns and `<table align>`
+  stack). `complex-scripts` gives Thai/Lao/Khmer/Myanmar line breaks (else one unbroken
+  line that scales the whole mail down). `svg`, `woff`, `text-transform-icu`,
+  `system-fonts` stay off: see the `Cargo.toml` comment.
 
 ## Wire format
 
