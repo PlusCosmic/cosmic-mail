@@ -203,6 +203,14 @@ related area. When you learn a new one, add it.
 - **The image list comes from the Blitz layout as well as html2text.** html2text drops some
   `<img>`s Blitz lays out (GitHub's avatar inside a flex `<div>`), so a landed layout re-runs
   `prepare_body_images` with its own image `src`s.
+- **Blitz drops table parts the CSS re-displays, with all their content**: a child of a
+  table/row group/row whose computed `display` is not the table part it expects
+  (`td{display:block}`, `tbody{display:table}`, captions, `display:contents` rows) is
+  skipped, and rows/cells outside a table are laid out as plain blocks. Browsers wrap them
+  in anonymous table boxes. `mail_doc::tables` does that with real `cosmic-anon-*`
+  elements between a style pass (`resolve_stylist`) and `resolve`: the display is only
+  known after the cascade. Moving nodes restyles them (child selectors may stop matching
+  — harmless), and a custom tag keeps type selectors like `td{…}` off the wrappers.
 - **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
   root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
 

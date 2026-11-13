@@ -19,6 +19,8 @@ use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::PositionedLayoutItem;
 
+mod tables;
+
 /// An sRGB colour, 8 bits per channel.
 pub type Rgba = [u8; 4];
 
@@ -186,12 +188,16 @@ fn layout_inner(
             ua_stylesheets: vec![
                 UserAgentStylesheet::default_sheet(),
                 UserAgentStylesheet::parse(&css),
+                UserAgentStylesheet::parse(tables::CSS),
             ],
             ..Default::default()
         },
     );
     size_images(&mut doc, &image_size);
     table_heights_as_minimums(&mut doc);
+    // Styles first: which table parts need anonymous boxes depends on the cascade.
+    doc.resolve_stylist(0.0);
+    tables::wrap_stray_table_parts(&mut doc);
     doc.resolve(0.0);
     let doc: &BaseDocument = &doc;
 
