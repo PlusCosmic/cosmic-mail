@@ -29,7 +29,7 @@ first notification of a batch sounds) and **Send a test notification**.
 | | delivered through | sound | click |
 |---|---|---|---|
 | **macOS** | Notification Center, as the `Cosmic Mail.app` bundle (`dev.pluscosmic.mail`); allow or mute it under System Settings → Notifications | the system alert sound | shows the window (reopening it if closed) and brings the app forward |
-| **Windows** | a toast, currently labelled Windows PowerShell (no app id registered yet) | the "Mail" toast sound | **gap** ([#85](https://github.com/PlusCosmic/cosmic-mail/issues/85)): does not open Cosmic Mail yet |
+| **Windows** | a toast under the AppUserModelID `dev.pluscosmic.mail`, labelled Cosmic Mail; allow or mute it under Settings → System → Notifications. The installer's Start-menu shortcut carries the id, and the app registers it for the current user on its first notification, so the portable zip is named too | the "Mail" toast sound | while the toast is on screen: shows the window (reopening it if closed) and brings it forward |
 | **Linux** | the freedesktop notification interface (any daemon: mako, dunst, GNOME, KDE, ...), app name `Cosmic Mail` plus a desktop-entry hint, so per-app daemon rules work | the `message-new-email` sound-name hint; daemons that play sounds honour it (mako doesn't, but an `on-notify` rule can) | shows and focuses the existing window |
 
 ## Background process

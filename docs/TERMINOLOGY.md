@@ -31,7 +31,7 @@ in [ARCHITECTURE.md](ARCHITECTURE.md).
 | **command palette** | The launcher-style `Ctrl+K` overlay that fuzzy-searches and runs the currently-applicable commands (view switching, compose, reply, message actions, sync, add account, search all mail), and doubles as
 the folder picker for **move**. `ui/view/modals.rs` renders it; `ui/palette.rs` ranks the commands. It is UI-only and adds no backend operations. |
 | **toast** | A temporary in-app informational or error message. A toast is not a desktop notification. |
-| **desktop notification** | A new-mail notification shown by the platform's own notification system (Notification Center on macOS, a toast on Windows, the freedesktop notification interface on Linux), optionally with a sound. Clicking it shows and focuses the existing app window (macOS and Linux; not yet on Windows). |
+| **desktop notification** | A new-mail notification shown by the platform's own notification system (Notification Center on macOS, a toast on Windows, the freedesktop notification interface on Linux), optionally with a sound. Clicking it shows and focuses the existing app window (on every platform; on Windows while the toast is on screen). |
 
 ## Mail model
 

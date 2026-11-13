@@ -6,11 +6,10 @@
 //! notification exposes a single `default` action; activating it emits
 //! `AppEvent::Activate`, which shows and focuses the main window. Action
 //! handling is spawned so waiting on the user does not block the sync engine.
-//! On macOS a click on the notification does the same (`NSUserNotificationCenter`
-//! reports it to the posting process; Rune's loop pumps the main run loop it
-//! arrives on). Actions and hints are otherwise freedesktop (D-Bus) features. On
-//! Windows a toast just shows, under PowerShell's app id (none of ours is
-//! registered yet), so a click does not reach Cosmic Mail: a known gap.
+//! On macOS and Windows a click on the notification does the same (macOS:
+//! `NSUserNotificationCenter` reports it to the posting process, and Rune's loop
+//! pumps the main run loop it arrives on; Windows: the toast's `Activated` event).
+//! Actions and hints are otherwise freedesktop (D-Bus) features.
 //!
 //! Sound follows `Settings.notificationSound`: on macOS the system alert sound
 //! (`NSUserNotificationDefaultSoundName`), on Windows the "Mail" toast sound, and
@@ -22,15 +21,17 @@
 //! registered with Launch Services by installing `Cosmic Mail.app`), so they carry
 //! its name and icon and are allowed or muted under its entry in System Settings →
 //! Notifications. Without that, `mac-notification-sys` posts them as Finder.
+//!
+//! On Windows toasts are posted under the AppUserModelID `dev.pluscosmic.mail`
+//! (without one, `notify-rust` uses PowerShell's, and the toast reads "Windows
+//! PowerShell"). The installer puts that id on its Start-menu shortcut, and the
+//! app itself registers it under `HKCU\Software\Classes\AppUserModelId` before
+//! its first toast, so the portable zip (no shortcut) is named Cosmic Mail too.
 
-#[cfg(unix)]
-use crate::events::AppEvent;
-use crate::events::Events;
+use crate::events::{AppEvent, Events};
 #[cfg(all(unix, not(target_os = "macos")))]
 use notify_rust::Hint;
-use notify_rust::Notification;
-#[cfg(unix)]
-use notify_rust::{NotificationHandle, NotificationResponse};
+use notify_rust::{Notification, NotificationResponse};
 
 const APP_NAME: &str = "Cosmic Mail";
 const DESKTOP_ENTRY: &str = "dev.pluscosmic.mail";
@@ -115,30 +116,31 @@ fn show(events: &Events, summary: &str, body: &str, sound: bool) {
         Hint::SuppressSound(true)
     });
 
-    // Actions and the desktop-entry hint are the freedesktop (D-Bus) spec;
-    // elsewhere the notification just shows (Windows toasts open the app on
-    // click by themselves).
-    #[cfg(target_os = "macos")]
-    {
-        set_macos_identity();
-        // `show` only builds a handle; posting happens on the handle's thread,
-        // either waiting for the click (`listen`) or, past the cap, fire-and-forget
-        // on drop (which still waits up to a couple of seconds for delivery).
-        let events = events.clone();
-        std::thread::spawn(move || match notification.show() {
-            Ok(handle) => match MacListener::claim() {
-                Some(_slot) => listen(handle, &events),
-                None => drop(handle),
-            },
-            Err(err) => tracing::warn!(error = %err, "failed to show notification"),
-        });
-    }
+    // Actions and the desktop-entry hint are the freedesktop (D-Bus) spec; macOS
+    // and Windows report a click on the notification itself.
     #[cfg(target_os = "windows")]
+    notification.app_id(DESKTOP_ENTRY);
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
-        let _ = events;
-        if let Err(err) = notification.show() {
-            tracing::warn!(error = %err, "failed to show notification");
-        }
+        let events = events.clone();
+        // On macOS `show` only builds a handle; posting happens on the handle's
+        // thread, either waiting for the click (`listen`) or, past the cap,
+        // fire-and-forget on drop (which still waits up to a couple of seconds for
+        // delivery). On Windows `show` posts the toast. Either way the identity is
+        // set up here, off the sync engine's thread.
+        std::thread::spawn(move || {
+            #[cfg(target_os = "macos")]
+            set_macos_identity();
+            #[cfg(target_os = "windows")]
+            register_windows_app_id();
+            match notification.show() {
+                Ok(handle) => match ClickListener::claim() {
+                    Some(_slot) => listen(&events, |respond| handle.wait_for_response(respond)),
+                    None => drop(handle),
+                },
+                Err(err) => tracing::warn!(error = %err, "failed to show notification"),
+            }
+        });
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     notification
@@ -151,7 +153,9 @@ fn show(events: &Events, summary: &str, body: &str, sound: bool) {
             let events = events.clone();
             // wait_for_response blocks until the user acts or the notification
             // closes; run it off the sync/async runtime on a dedicated thread.
-            std::thread::spawn(move || listen(handle, &events));
+            std::thread::spawn(move || {
+                listen(&events, |respond| handle.wait_for_response(respond))
+            });
         }
         Err(err) => {
             tracing::warn!(error = %err, "failed to show notification");
@@ -160,10 +164,14 @@ fn show(events: &Events, summary: &str, body: &str, sound: bool) {
 }
 
 /// Block until the user clicks the notification (emit `AppEvent::Activate`) or
-/// it goes away. Runs on its own thread.
-#[cfg(unix)]
-fn listen(handle: NotificationHandle, events: &Events) {
-    let result = handle.wait_for_response(|response: &NotificationResponse| {
+/// it goes away. Runs on its own thread. `wait` is the handle's
+/// `wait_for_response`, passed as a closure because `notify-rust` does not
+/// export its Windows `NotificationHandle` type.
+fn listen(
+    events: &Events,
+    wait: impl FnOnce(&dyn Fn(&NotificationResponse)) -> notify_rust::error::Result<()>,
+) {
+    let result = wait(&|response: &NotificationResponse| {
         if is_click(response) {
             tracing::debug!(?response, "notification action received");
             events.emit(AppEvent::Activate);
@@ -178,7 +186,6 @@ fn listen(handle: NotificationHandle, events: &Events) {
 
 /// Whether a response means "open the app": the notification's body or its
 /// action, not a dismissal or a reply.
-#[cfg(unix)]
 fn is_click(response: &NotificationResponse) -> bool {
     matches!(
         response,
@@ -186,36 +193,84 @@ fn is_click(response: &NotificationResponse) -> bool {
     )
 }
 
-/// A macOS click listener's slot. A notification left in Notification Center
-/// keeps its listener thread waiting until it is clicked or cleared, so the
+/// Register the AppUserModelID toasts are posted under, with Cosmic Mail's name
+/// and (when `icon.png` sits beside the executable, as the installer and the
+/// portable zip put it) icon, so Windows labels the toast as Cosmic Mail and not
+/// PowerShell. Per user (HKCU), once per process; rewriting the same values is
+/// harmless, and keeps `IconUri` right if a portable copy moves. The installer's
+/// shortcut carries the id too, and its uninstaller removes the key.
+#[cfg(target_os = "windows")]
+fn register_windows_app_id() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let key = format!(r"HKCU\Software\Classes\AppUserModelId\{DESKTOP_ENTRY}");
+        let mut values = vec![("DisplayName", APP_NAME.to_string())];
+        let icon = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|dir| dir.join("icon.png")))
+            .filter(|icon| icon.is_file());
+        if let Some(icon) = icon {
+            values.push(("IconUri", icon.display().to_string()));
+        }
+        for (name, data) in values {
+            if let Err(err) = reg_add(&key, name, &data) {
+                // Toasts still show; Windows may label them with the bare id.
+                tracing::warn!(error = %err, "could not register {DESKTOP_ENTRY} ({name})");
+            }
+        }
+    });
+}
+
+/// Set one string value under an HKCU key with `reg.exe` (fixed arguments, no
+/// shell; no console window flashes up).
+#[cfg(target_os = "windows")]
+fn reg_add(key: &str, name: &str, data: &str) -> anyhow::Result<()> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let status = Command::new("reg")
+        .args(["add", key, "/v", name, "/t", "REG_SZ", "/d", data, "/f"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()?;
+    anyhow::ensure!(status.success(), "reg add exited with {status}");
+    Ok(())
+}
+
+/// A click listener's slot (macOS and Windows). A listener thread waits until its
+/// notification is clicked or goes away: on macOS a notification left in
+/// Notification Center keeps it waiting until clicked or cleared; on Windows the
+/// toast's `Dismissed` event ends it when the toast leaves the screen. So the
 /// number of listeners is capped; past the cap a notification still shows, and
-/// a click on it still brings the app forward (AppKit activates the bundle),
-/// it just can't reopen a closed window.
-#[cfg(target_os = "macos")]
-struct MacListener;
+/// a click on it still brings the app forward on macOS (AppKit activates the
+/// bundle), it just can't reopen a closed window.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+struct ClickListener;
 
-#[cfg(target_os = "macos")]
-static MAC_LISTENERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+static CLICK_LISTENERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-#[cfg(target_os = "macos")]
-impl MacListener {
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl ClickListener {
     const MAX: usize = 32;
 
-    fn claim() -> Option<MacListener> {
+    fn claim() -> Option<ClickListener> {
         use std::sync::atomic::Ordering;
-        MAC_LISTENERS
+        CLICK_LISTENERS
             .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < Self::MAX).then_some(n + 1)
             })
             .ok()
-            .map(|_| MacListener)
+            .map(|_| ClickListener)
     }
 }
 
-#[cfg(target_os = "macos")]
-impl Drop for MacListener {
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+impl Drop for ClickListener {
     fn drop(&mut self) {
-        MAC_LISTENERS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        CLICK_LISTENERS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
 }
 
@@ -249,7 +304,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn only_a_click_opens_the_app() {
         use notify_rust::CloseReason;
         assert!(is_click(&NotificationResponse::Default));
@@ -261,14 +315,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "macos")]
-    fn mac_listeners_are_capped() {
-        let held: Vec<_> = std::iter::from_fn(MacListener::claim)
-            .take(MacListener::MAX + 1)
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn click_listeners_are_capped() {
+        let held: Vec<_> = std::iter::from_fn(ClickListener::claim)
+            .take(ClickListener::MAX + 1)
             .collect();
-        assert_eq!(held.len(), MacListener::MAX);
+        assert_eq!(held.len(), ClickListener::MAX);
         drop(held);
-        assert!(MacListener::claim().is_some(), "slots come back on drop");
+        assert!(ClickListener::claim().is_some(), "slots come back on drop");
     }
 
     #[test]

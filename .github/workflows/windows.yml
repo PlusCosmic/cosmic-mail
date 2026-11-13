@@ -102,6 +102,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path $portable | Out-Null
           Copy-Item target\release\cosmic-mail.exe $portable
           Copy-Item LICENSE (Join-Path $portable "LICENSE.txt")
+          # The toast icon (src/notifications.rs registers it as the app id's IconUri).
+          Copy-Item assets\icon-128.png (Join-Path $portable "icon.png")
           Compress-Archive -Path "$portable\*" `
             -DestinationPath "$dist\cosmic-mail-$version-windows-x64-portable.zip"
           Get-ChildItem $dist | Format-Table Name, Length

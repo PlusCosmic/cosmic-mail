@@ -29,8 +29,7 @@ OAuth 2.0 rather than an app password.
 - Unified inbox and account-specific folder views
 - Vim-style keyboard navigation, command palette, and resizable three-pane layout
 - Five colour schemes in light and dark from the PlusCosmic UI foundation, following the system or fixed
-- Native new-mail notifications with sound on every platform (click-to-open on macOS and
-  Linux), plus a background mode and a system tray (Windows and Linux)
+- Native new-mail notifications with sound and click-to-open on every platform, plus a background mode and a system tray (Windows and Linux)
 - Passwords and refresh tokens stored in the platform keyring (Credential Manager,
   Keychain, Secret Service)
 

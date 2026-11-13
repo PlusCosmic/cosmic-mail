@@ -125,11 +125,15 @@ scripts/build-local.sh cosmic-mail ~/Projects/Mail
   [One release per commit](#one-release-per-commit).
 
 The installer is per-user (`PrivilegesRequired=lowest`: installs under
-`%LOCALAPPDATA%\Programs`, no UAC prompt), adds a Start-menu entry, optionally a
-desktop icon, and optionally a `HKCU\…\Run` entry that starts `cosmic-mail.exe
+`%LOCALAPPDATA%\Programs`, no UAC prompt), adds a Start-menu entry (carrying the
+notification AppUserModelID `dev.pluscosmic.mail`, with `icon.png` beside the exe as its
+toast icon), optionally a desktop icon, and optionally a `HKCU\…\Run` entry that starts `cosmic-mail.exe
 --background` at sign-in — the Windows counterpart of `cosmic-mail.service`. It closes a
-running Cosmic Mail before upgrading and stops it on uninstall. **Never change the
-script's `AppId`**: upgrades find the existing install by it.
+running Cosmic Mail before upgrading and stops it on uninstall, removing the
+`HKCU\Software\Classes\AppUserModelId\dev.pluscosmic.mail` key. **Never change the
+script's `AppId`**: upgrades find the existing install by it. Nor the AppUserModelID:
+Windows keeps each user's notification settings under it. The portable zip holds the exe,
+`icon.png` and `LICENSE.txt`.
 
 The release exe is a GUI-subsystem binary (no console window; `src/main.rs`) with
 `assets/icon.ico` embedded by `build.rs` (`winresource`). Builds are not code-signed;
