@@ -18,23 +18,48 @@ use blitz_dom::{local_name, BaseDocument, DocumentConfig, FontContext, Node, Nod
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::PositionedLayoutItem;
 
+mod clip;
+mod hints;
+mod paint;
 mod parse;
+mod tables;
+pub use paint::{background_tile, BgSize, Border, Gradient, LineStyle, Shadow};
 
 /// An sRGB colour, 8 bits per channel.
 pub type Rgba = [u8; 4];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
-    /// An element's box: background and/or border.
+    /// An element's box: background, border and shadow.
     Box {
         x: f32,
         y: f32,
         w: f32,
         h: f32,
         fill: Option<Rgba>,
-        /// Border widths (top, right, bottom, left) and one colour: the first visible side's.
-        border: Option<([f32; 4], Rgba)>,
-        radius: f32,
+        border: Option<Border>,
+        /// Corner radii: top-left, top-right, bottom-right, bottom-left.
+        radius: [f32; 4],
+        /// A linear gradient painted over the fill.
+        gradient: Option<Gradient>,
+        shadows: Vec<Shadow>,
+    },
+    /// A background image (`background-image: url()`, `background=`) in an element's
+    /// padding box `x, y, w, h`, clipped to it. Its size and place in the box depend on
+    /// the image's own size: see [`background_tile`].
+    Background {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: [f32; 4],
+        src: String,
+        size: BgSize,
+        /// Horizontal and vertical position, each `(fraction, px)`: the image's edge sits
+        /// at `px + fraction × (box − image)` (`center` is `(0.5, 0.0)`).
+        position: [(f32, f32); 2],
+        /// Whether it repeats horizontally and vertically.
+        repeat: [bool; 2],
     },
     Image {
         x: f32,
@@ -56,8 +81,21 @@ pub enum Item {
         w: f32,
         line_height: f32,
         size: f32,
+        /// Letter spacing in px (Blitz measured with it).
+        tracking: f32,
         text: String,
         spans: Vec<TextSpan>,
+    },
+    /// The next `len` items (nested clips included) draw only inside this rectangle:
+    /// the padding box of an `overflow:hidden` (`clip`, `scroll`, `auto`) ancestor
+    /// they cross the edge of. See `clip`.
+    Clip {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        len: usize,
     },
 }
 
@@ -68,7 +106,10 @@ pub struct TextSpan {
     pub weight: f32,
     pub italic: bool,
     pub color: Rgba,
-    pub underline: bool,
+    /// Underlined, in this colour (the decorating element's, not always the text's).
+    pub underline: Option<Rgba>,
+    /// Struck through (`<s>`, `<del>`, `line-through`), in this colour.
+    pub strike: Option<Rgba>,
     /// In the foundation's code face (`<code>`, `<pre>`, monospace inline styles).
     pub mono: bool,
     /// The link target as written in the mail (validate before opening).
@@ -81,6 +122,7 @@ impl TextSpan {
             && self.italic == other.italic
             && self.color == other.color
             && self.underline == other.underline
+            && self.strike == other.strike
             && self.mono == other.mono
             && self.link == other.link
     }
@@ -193,12 +235,18 @@ fn layout_inner(
             ua_stylesheets: vec![
                 UserAgentStylesheet::default_sheet(),
                 UserAgentStylesheet::parse(&css),
+                UserAgentStylesheet::parse(tables::CSS),
             ],
             ..Default::default()
         },
     );
     size_images(&mut doc, &image_size);
+    hints::apply(&mut doc);
     table_heights_as_minimums(&mut doc);
+    background_attributes(&mut doc);
+    // Styles first: which table parts need anonymous boxes depends on the cascade.
+    doc.resolve_stylist(0.0);
+    tables::wrap_stray_table_parts(&mut doc);
     doc.resolve(0.0);
     let doc: &BaseDocument = &doc;
 
@@ -212,23 +260,19 @@ fn layout_inner(
     out.height = root.final_layout().size.height;
     out.background = page_background(doc, root);
     walk(doc, root.id, 0.0, 0.0, &mut out.items);
-    out.content_width = out
-        .items
-        .iter()
-        .map(|i| match i {
-            Item::Box { x, w, .. } | Item::Image { x, w, .. } | Item::Text { x, w, .. } => x + w,
-        })
-        .fold(width, f32::max);
+    // The viewport cuts off what lies above or left of the page (`text-indent:-9999px`).
+    clip::clip_subtree(
+        &mut out.items,
+        0,
+        [0.0, 0.0, f32::INFINITY, f32::INFINITY],
+        0.0,
+    );
+    // Only what is drawn counts: an off-canvas preheader or a ticker clipped to its box
+    // neither scales the page down nor makes it taller.
+    let (right, bottom) = clip::visible_extent(&out.items);
+    out.content_width = right.max(width);
     // `html,body{height:100%}` makes the root box the viewport's height (1px) with the mail
     // overflowing it: the page is at least as tall as what it draws.
-    let bottom = out
-        .items
-        .iter()
-        .map(|i| match i {
-            Item::Box { y, h, .. } | Item::Image { y, h, .. } => y + h,
-            Item::Text { y, line_height, .. } => y + line_height,
-        })
-        .fold(0.0, f32::max);
     out.height = out.height.max(bottom);
     out
 }
@@ -240,7 +284,8 @@ const BASE_URL: &str = "https://mail.invalid/";
 /// would once the image loads. Blitz fetches nothing itself, and an image with
 /// no data sizes from its attributes alone — so `width:100%;height:auto` in a
 /// shrink-to-fit cell collapses to 0×0. Layout only reads the dimensions, so
-/// the pixel data stays empty.
+/// the pixel data stays empty. Images not decoded keep the box their attributes
+/// describe (`unloaded_image_size`, `alt_text_lines`).
 fn size_images(doc: &mut BaseDocument, image_size: &impl Fn(&str) -> Option<(u32, u32)>) {
     use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
     let mut imgs = Vec::new();
@@ -257,16 +302,90 @@ fn size_images(doc: &mut BaseDocument, image_size: &impl Fn(&str) -> Option<(u32
             .attr(local_name!("src"))
             .and_then(image_size)
             .filter(|(w, h)| *w > 0 && *h > 0)
+            .or_else(|| unloaded_image_size(node))
         {
             imgs.push((id, w, h));
         }
     }
+    alt_text_lines(doc, image_size);
     for (id, w, h) in imgs {
         if let Some(el) = doc.get_node_mut(id).and_then(|n| n.element_data_mut()) {
             el.special_data = SpecialElementData::Image(Box::new(ImageData::Raster(
                 RasterImageData::new(w, h, std::sync::Arc::new(Vec::new())),
             )));
         }
+    }
+}
+
+/// The box an image that has not loaded (blocked, still fetching, failed, or in a format
+/// the reader cannot decode) keeps, so that loading it does not reflow the mail. Browsers
+/// map `width` and `height` attributes to `aspect-ratio: auto w / h` (HTML "attributes for
+/// embedded content"), which holds the box at the CSS width — `height:auto` included —
+/// before the image arrives; Blitz has no such mapping. An image with both, as non-zero
+/// non-percentage lengths, is laid out as if it had loaded at that size: the same ratio,
+/// and an intrinsic width that is right for every image drawn at its declared size.
+fn unloaded_image_size(node: &Node) -> Option<(u32, u32)> {
+    let w = dimension_attr(node.attr(local_name!("width"))?)?;
+    let h = dimension_attr(node.attr(local_name!("height"))?)?;
+    Some((w.round().max(1.0) as u32, h.round().max(1.0) as u32))
+}
+
+/// An HTML dimension attribute ("rules for parsing dimension values") as a length in px:
+/// leading digits and an optional fraction, anything after ignored (`600px`), `None` for a
+/// percentage, zero or no number at all.
+fn dimension_attr(value: &str) -> Option<f32> {
+    let v = value.trim_start();
+    let end = v
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(v.len());
+    let n: f32 = v[..end].trim_end_matches('.').parse().ok()?;
+    let percent = v[end..].trim_start().starts_with('%');
+    (n > 0.0 && n.is_finite() && !percent).then_some(n)
+}
+
+/// How tall an unloaded image with only a `width` is held, when it has alt text to show.
+const ALT_LINE: f32 = 20.0;
+
+/// An unloaded image with a `width` but no `height` has no height until it arrives. When
+/// it has alt text, hold one line for it (the reader draws the text in the frame), as a
+/// browser shows a broken image's alt text; without, it stays collapsed — any other guess
+/// at the height would still reflow when the image loads. The mail's own `min-height`
+/// follows in the `style` attribute, so it still wins.
+fn alt_text_lines(doc: &mut BaseDocument, image_size: &impl Fn(&str) -> Option<(u32, u32)>) {
+    use blitz_dom::{ns, QualName};
+    let mut found = Vec::new();
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else {
+            continue;
+        };
+        stack.extend(node.children.iter().copied());
+        if !node.data.is_element_with_tag_name(&local_name!("img"))
+            || node.attr(local_name!("src")).and_then(image_size).is_some()
+            || node
+                .attr(local_name!("alt"))
+                .is_none_or(|a| a.trim().is_empty())
+            || node
+                .attr(local_name!("height"))
+                .and_then(dimension_attr)
+                .is_some()
+            || node
+                .attr(local_name!("width"))
+                .and_then(dimension_attr)
+                .is_none_or(|w| w <= 2.0)
+        {
+            continue;
+        }
+        let style = node.attr(local_name!("style")).unwrap_or("").to_string();
+        found.push((id, style));
+    }
+    let mut m = doc.mutate();
+    for (id, style) in found {
+        m.set_attribute(
+            id,
+            QualName::new(None, ns!(), local_name!("style")),
+            &format!("min-height:{ALT_LINE}px;{style}"),
+        );
     }
 }
 
@@ -317,6 +436,45 @@ fn table_heights_as_minimums(doc: &mut BaseDocument) {
     }
 }
 
+/// The legacy `background="url"` attribute on `<body>`, `<table>`, `<tr>`, `<td>` and
+/// `<th>`, which Blitz does not map: a background image under the element's own styles,
+/// which come after it in the `style` attribute and so still win.
+fn background_attributes(doc: &mut BaseDocument) {
+    use blitz_dom::{ns, QualName};
+    let tags = [
+        local_name!("body"),
+        local_name!("table"),
+        local_name!("tr"),
+        local_name!("td"),
+        local_name!("th"),
+    ];
+    let mut found = Vec::new();
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else {
+            continue;
+        };
+        stack.extend(node.children.iter().copied());
+        if !tags.iter().any(|t| node.data.is_element_with_tag_name(t)) {
+            continue;
+        }
+        let Some(url) = node
+            .attr(local_name!("background"))
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+        else {
+            continue;
+        };
+        let style = node.attr(local_name!("style")).unwrap_or("").to_string();
+        let url = url.replace('\\', "\\\\").replace('"', "\\\"");
+        found.push((id, format!("background-image:url(\"{url}\");{style}")));
+    }
+    let mut m = doc.mutate();
+    for (id, style) in found {
+        m.set_attribute(id, QualName::new(None, ns!(), local_name!("style")), &style);
+    }
+}
+
 fn page_background(doc: &BaseDocument, root: &Node) -> Option<Rgba> {
     let own = root.primary_styles().and_then(|s| fill_of(&s));
     own.or_else(|| {
@@ -359,51 +517,24 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
     let (x, y) = (ox + l.location.x, oy + l.location.y);
     let (w, h) = (l.size.width, l.size.height);
 
-    // Box: background and border.
-    let fill = fill_of(&styles);
-    let border = {
-        // Stylo computes a `none`/`hidden` side's width as 0, so the layout's widths say
-        // which sides draw.
-        let widths = [l.border.top, l.border.right, l.border.bottom, l.border.left];
-        let b = styles.get_border();
-        let current = styles.clone_color();
-        let colors = [
-            &b.border_top_color,
-            &b.border_right_color,
-            &b.border_bottom_color,
-            &b.border_left_color,
-        ];
-        widths
-            .iter()
-            .zip(colors)
-            .find(|(w, _)| **w > 0.0)
-            .map(|(_, c)| rgba(c.resolve_to_absolute(&current).as_color_color()))
-            .filter(|c| c[3] > 0)
-            .map(|c| (widths, c))
-    };
-    let radius = styles
-        .get_border()
-        .border_top_left_radius
-        .0
-        .width
-        .0
-        .resolve(style::values::computed::Length::new(w.min(h)))
-        .px();
-    if (fill.is_some() || border.is_some()) && w > 0.0 && h > 0.0 {
-        let item = Item::Box {
-            x,
-            y,
-            w,
-            h,
-            fill,
-            border,
-            radius,
-        };
+    // Box: background, border, shadow; then background images over it.
+    if let Some(item) = paint::element_box(
+        &styles,
+        Some([l.border.top, l.border.right, l.border.bottom, l.border.left]),
+        (x, y, w, h),
+    ) {
         // Mail nests same-coloured tables in cells of the same size; one box is enough.
         if out.last() != Some(&item) {
             out.push(item);
         }
     }
+    paint::collapsed_cell_border(doc, node, &styles, (x, y, w, h), out);
+    paint::background_images(&styles, l, (x, y, w, h), out);
+    paint::row_backgrounds(doc, node, x, y, out);
+    let radius = paint::top_left_radius(&styles, w, h);
+
+    // Everything after the box itself is clipped by its `overflow`, outside list markers too.
+    let clip_start = out.len();
 
     // Images: the reader loads and draws them by `src`.
     if node.data.is_element_with_tag_name(&local_name!("img")) {
@@ -431,6 +562,7 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
         {
             let cx = x + l.padding.left + l.border.left;
             let cy = y + l.padding.top + l.border.top + text.block_offset;
+            paint::inline_boxes(doc, id, &text.layout, cx, cy, out);
             text_items(doc, &text.text, &text.layout, cx, cy, false, out);
         }
     }
@@ -477,6 +609,9 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
         for child in children {
             walk(doc, *child, x, y, out);
         }
+    }
+    if let Some((rect, radius)) = clip::clip_of(node, x, y, radius) {
+        clip::clip_subtree(out, clip_start, rect, radius);
     }
 }
 
@@ -530,8 +665,19 @@ fn text_items(
             let Some(s) = doc.get_node(id).and_then(|n| n.primary_styles()) else {
                 continue;
             };
+            // Text a browser lays out but nobody sees: `font-size:0` wrappers, `color:transparent`.
+            let color = rgba(s.clone_color().as_color_color());
+            if run.font_size() < 1.0 || color[3] == 0 {
+                continue;
+            }
             let font = s.get_font();
             let fm = run.font_metrics();
+            let tracking = s
+                .get_inherited_text()
+                .letter_spacing
+                .0
+                .resolve(style::values::computed::Length::new(run.font_size()))
+                .px();
             let piece = Piece {
                 x: cx + gr.offset(),
                 end_x: cx + gr.offset() + gr.advance(),
@@ -539,13 +685,15 @@ fn text_items(
                 ascent: fm.ascent,
                 descent: fm.descent.abs(),
                 size: run.font_size(),
+                tracking,
                 text,
                 span: TextSpan {
                     range: 0..0,
                     weight: font.font_weight.value(),
                     italic: font.font_style != style::values::computed::font::FontStyle::NORMAL,
-                    color: rgba(s.clone_color().as_color_color()),
-                    underline: underlined(doc, id),
+                    color,
+                    underline: decoration(doc, id, Decoration::UNDERLINE),
+                    strike: decoration(doc, id, Decoration::LINE_THROUGH),
                     mono: force_mono || is_mono(font),
                     link: ancestor_link(doc, id).map(str::to_string),
                 },
@@ -577,6 +725,7 @@ struct Piece {
     ascent: f32,
     descent: f32,
     size: f32,
+    tracking: f32,
     text: String,
     span: TextSpan,
 }
@@ -591,6 +740,7 @@ struct Group {
     ascent: f32,
     descent: f32,
     size: f32,
+    tracking: f32,
     text: String,
     spans: Vec<TextSpan>,
 }
@@ -604,6 +754,7 @@ impl Group {
             ascent: piece.ascent,
             descent: piece.descent,
             size: piece.size,
+            tracking: piece.tracking,
             text: String::new(),
             spans: Vec::new(),
         };
@@ -614,6 +765,7 @@ impl Group {
     fn continues(&self, p: &Piece) -> bool {
         (p.baseline - self.baseline).abs() < 0.01
             && (p.size - self.size).abs() < 0.01
+            && (p.tracking - self.tracking).abs() < 0.01
             && (p.x - self.end_x).abs() < 0.5
     }
 
@@ -651,6 +803,7 @@ impl Group {
             w: self.end_x - self.x,
             line_height: self.ascent + self.descent,
             size: self.size,
+            tracking: self.tracking,
             text: self.text,
             spans: self.spans,
         });
@@ -679,25 +832,39 @@ fn ancestor_link(doc: &BaseDocument, mut id: NodeId) -> Option<&str> {
     }
 }
 
-fn underlined(doc: &BaseDocument, mut id: NodeId) -> bool {
-    use style::values::specified::TextDecorationLine;
+use style::values::specified::TextDecorationLine as Decoration;
+
+/// The colour of the `line` decoration (underline, line-through) a run's text carries,
+/// if any. Decorations propagate from the element that sets them to all its in-flow
+/// descendants, in that element's `text-decoration-color` (its `color` by default), and
+/// a descendant's `text-decoration: none` cannot remove them; they stop at inline blocks,
+/// floats and positioned boxes.
+fn decoration(doc: &BaseDocument, mut id: NodeId, line: Decoration) -> Option<Rgba> {
+    use style::values::specified::box_::{DisplayInside, DisplayOutside};
     loop {
-        let Some(node) = doc.get_node(id) else {
-            return false;
-        };
+        let node = doc.get_node(id)?;
         if let Some(s) = node.primary_styles() {
-            if s.get_text()
-                .text_decoration_line
-                .contains(TextDecorationLine::UNDERLINE)
+            let text = s.get_text();
+            if text.text_decoration_line.contains(line) {
+                let current = s.clone_color();
+                let c = rgba(
+                    text.text_decoration_color
+                        .resolve_to_absolute(&current)
+                        .as_color_color(),
+                );
+                return (c[3] > 0).then_some(c);
+            }
+            let display = s.get_box().display;
+            let atomic_inline = display.outside() == DisplayOutside::Inline
+                && display.inside() != DisplayInside::Flow;
+            if atomic_inline
+                || s.get_box().float != style::computed_values::float::T::None
+                || s.get_box().position.is_absolutely_positioned()
             {
-                return true;
+                return None;
             }
         }
-        if node.flags.is_inline_root() {
-            return false;
-        }
-        let Some(p) = node.parent else { return false };
-        id = p;
+        id = node.parent?;
     }
 }
 
@@ -802,7 +969,7 @@ mod tests {
             span_of("here").link.as_deref(),
             Some("https://ups.example/t")
         );
-        assert!(span_of("here").underline);
+        assert!(span_of("here").underline.is_some());
     }
 
     #[test]
@@ -830,6 +997,83 @@ mod tests {
         let sizes = [("cid:p".to_string(), (90, 45))].into_iter().collect();
         let l = layout(html, 600.0, &sizes);
         assert_eq!(size(&l), Some((90.0, 45.0)));
+    }
+
+    fn image_box(l: &MailLayout, want: &str) -> (f32, f32, f32, f32) {
+        l.items
+            .iter()
+            .find_map(|i| match i {
+                Item::Image {
+                    x, y, w, h, src, ..
+                } if src == want => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no image {want:?}"))
+    }
+
+    #[test]
+    fn unloaded_images_keep_the_box_their_attributes_declare() {
+        // Remote images are blocked until the reader allows them: the page must not
+        // collapse, and must not reflow when they arrive (here at twice the size, hi-dpi).
+        let html = r#"<img src="https://cdn.example/hero.png" width="600" height="200"
+                        style="display:block;width:100%;height:auto"><p>After</p>"#;
+        let blocked = lay(html);
+        let sizes = [("https://cdn.example/hero.png".to_string(), (1200, 400))]
+            .into_iter()
+            .collect();
+        let loaded = layout(html, 600.0, &sizes);
+        let (_, _, w, h) = image_box(&blocked, "https://cdn.example/hero.png");
+        assert!((h - w / 3.0).abs() < 0.5, "{w}x{h}: the 3:1 ratio");
+        assert_eq!(
+            image_box(&blocked, "https://cdn.example/hero.png"),
+            image_box(&loaded, "https://cdn.example/hero.png")
+        );
+        assert_eq!(text_item(&blocked, "After"), text_item(&loaded, "After"));
+    }
+
+    #[test]
+    fn unloaded_images_with_only_a_width_hold_a_line_for_their_alt_text() {
+        let l = lay(
+            r#"<img src="https://a.example/1.png" width="300" alt="Spring sale">
+               <img src="https://a.example/2.png" width="300" alt="">
+               <img src="https://a.example/3.png" width="100%" height="50%" alt="Banner">
+               <img src="https://a.example/4.png" width="300" height="auto" style="min-height:40px" alt="Logo">"#,
+        );
+        assert_eq!(image_box(&l, "https://a.example/1.png").3, ALT_LINE);
+        assert_eq!(
+            image_box(&l, "https://a.example/2.png").3,
+            0.0,
+            "no alt: collapsed"
+        );
+        assert_eq!(
+            image_box(&l, "https://a.example/3.png").3,
+            0.0,
+            "percentages declare no size"
+        );
+        assert_eq!(
+            image_box(&l, "https://a.example/4.png").3,
+            40.0,
+            "the mail's own min-height wins"
+        );
+        // Once decoded, the image's own size rules.
+        let sizes = [("https://a.example/1.png".to_string(), (600, 100))]
+            .into_iter()
+            .collect();
+        let l = layout(
+            r#"<img src="https://a.example/1.png" width="300" alt="Spring sale">"#,
+            600.0,
+            &sizes,
+        );
+        assert_eq!(image_box(&l, "https://a.example/1.png").3, 50.0);
+    }
+
+    #[test]
+    fn dimension_attributes_parse_as_browsers_do() {
+        assert_eq!(dimension_attr("600"), Some(600.0));
+        assert_eq!(dimension_attr(" 37.5px"), Some(37.5));
+        assert_eq!(dimension_attr("100%"), None);
+        assert_eq!(dimension_attr("0"), None);
+        assert_eq!(dimension_attr("auto"), None);
     }
 
     #[test]
@@ -997,5 +1241,49 @@ mod tests {
         let l = lay(r#"<body style="background:#f0f2f2"><p>x</p></body>"#);
         assert_eq!(l.background, Some([0xf0, 0xf2, 0xf2, 255]));
         assert!(lay("<p>x</p>").background.is_none());
+    }
+
+    fn span<'a>(l: &'a MailLayout, want: &str) -> &'a TextSpan {
+        l.items
+            .iter()
+            .find_map(|i| match i {
+                Item::Text { text, spans, .. } => {
+                    spans.iter().find(|s| &text[s.range.clone()] == want)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no span {want:?}"))
+    }
+
+    #[test]
+    fn struck_and_underlined_text_carry_the_decorating_elements_colour() {
+        let l = lay(
+            r#"<p><s>$10</s> <del style="color:#888">$9</del> <span style="text-decoration:line-through;text-decoration-color:#f00">$8</span> $7</p>
+               <a href="https://shop.example" style="color:#00f"><div><span style="color:#f00">Linked</span></div></a>"#,
+        );
+        assert_eq!(span(&l, "$10").strike, Some([0, 0, 0, 255]));
+        assert_eq!(span(&l, "$9").strike, Some([0x88, 0x88, 0x88, 255]));
+        assert_eq!(span(&l, "$8").strike, Some([255, 0, 0, 255]));
+        // The link's underline reaches into the block inside it, in the link's colour.
+        assert_eq!(span(&l, "Linked").underline, Some([0, 0, 255, 255]));
+        assert_eq!(span(&l, "Linked").color, [255, 0, 0, 255]);
+        // `text-decoration: none` on an inline block stops it.
+        let l = lay(
+            r#"<a href="https://shop.example"><span style="display:inline-block;text-decoration:none">Button</span></a>"#,
+        );
+        assert_eq!(span(&l, "Button").underline, None);
+    }
+
+    #[test]
+    fn letter_spacing_reaches_the_text_item() {
+        let l = lay(r#"<p style="letter-spacing:2px">SPACED</p><p>plain</p>"#);
+        let tracking = |want: &str| {
+            l.items.iter().find_map(|i| match i {
+                Item::Text { text, tracking, .. } if text == want => Some(*tracking),
+                _ => None,
+            })
+        };
+        assert_eq!(tracking("SPACED"), Some(2.0));
+        assert_eq!(tracking("plain"), Some(0.0));
     }
 }
