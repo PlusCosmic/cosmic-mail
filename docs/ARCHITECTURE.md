@@ -666,7 +666,9 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   (background, gradient, shadow, per-side borders and corner radii — including inline elements'
   boxes, row backgrounds and collapsed table borders), images by `src`, background images by URL
   with their CSS size/position/repeat, list markers, and one text item per line segment (with its
-  letter spacing) with per-run weight/italic/colour/underline/strike-through/link spans. The reader draws that
+  letter spacing) with per-run weight/italic/colour/underline/strike-through/link spans, cut to the
+  padding box of any `overflow` ancestor they cross (`Item::Clip` runs; wholly clipped items are
+  dropped). The reader draws that
   list as Rune elements on a page in the mail's own colours (white unless the mail sets a
   background, in either app theme), so table layouts, buttons and colour bars look as they do in
   other clients. There is no JavaScript engine and no event dispatch; forms and frames draw

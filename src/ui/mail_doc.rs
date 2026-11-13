@@ -15,11 +15,13 @@
 use blitz_dom::util::ToColorColor;
 use blitz_dom::UserAgentStylesheet;
 use blitz_dom::{local_name, BaseDocument, DocumentConfig, FontContext, Node, NodeId};
-use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::PositionedLayoutItem;
 
+mod clip;
+mod hints;
 mod paint;
+mod parse;
 pub use paint::{background_tile, BgSize, Border, Gradient, LineStyle, Shadow};
 
 /// An sRGB colour, 8 bits per channel.
@@ -82,6 +84,17 @@ pub enum Item {
         tracking: f32,
         text: String,
         spans: Vec<TextSpan>,
+    },
+    /// The next `len` items (nested clips included) draw only inside this rectangle:
+    /// the padding box of an `overflow:hidden` (`clip`, `scroll`, `auto`) ancestor
+    /// they cross the edge of. See `clip`.
+    Clip {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        len: usize,
     },
 }
 
@@ -172,9 +185,15 @@ pub fn layout(
             .spawn_scoped(scope, || {
                 layout_inner(html, width, |src| image_sizes.get(src).copied())
             })
+            .map_err(|e| tracing::warn!("mail layout thread not started: {e}"))
             .ok()
             .and_then(|h| h.join().ok())
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                // An empty layout makes the reader show the mail as text. Blitz's panic message
+                // went to stderr; it can quote the mail, so it is not logged here.
+                tracing::warn!(bytes = html.len(), "mail layout failed; showing it as text");
+                MailLayout::default()
+            })
     })
 }
 
@@ -199,8 +218,8 @@ fn layout_inner(
         "* {{ font-family: \"{sans}\" !important; }}\n\
          {code}, {code_desc} {{ font-family: \"{mono}\" !important; }}"
     );
-    let mut doc = HtmlDocument::from_html(
-        &as_html(html),
+    let mut doc = parse::document(
+        html,
         DocumentConfig {
             // Without a base, Blitz panics resolving `//host/x.png` or `x.png`. Nothing is
             // ever fetched from it.
@@ -220,6 +239,7 @@ fn layout_inner(
         },
     );
     size_images(&mut doc, &image_size);
+    hints::apply(&mut doc);
     table_heights_as_minimums(&mut doc);
     background_attributes(&mut doc);
     doc.resolve(0.0);
@@ -235,49 +255,25 @@ fn layout_inner(
     out.height = root.final_layout().size.height;
     out.background = page_background(doc, root);
     walk(doc, root.id, 0.0, 0.0, &mut out.items);
-    out.content_width = out
-        .items
-        .iter()
-        .map(|i| match i {
-            Item::Box { x, w, .. }
-            | Item::Image { x, w, .. }
-            | Item::Text { x, w, .. }
-            | Item::Background { x, w, .. } => x + w,
-        })
-        .fold(width, f32::max);
+    // The viewport cuts off what lies above or left of the page (`text-indent:-9999px`).
+    clip::clip_subtree(
+        &mut out.items,
+        0,
+        [0.0, 0.0, f32::INFINITY, f32::INFINITY],
+        0.0,
+    );
+    // Only what is drawn counts: an off-canvas preheader or a ticker clipped to its box
+    // neither scales the page down nor makes it taller.
+    let (right, bottom) = clip::visible_extent(&out.items);
+    out.content_width = right.max(width);
     // `html,body{height:100%}` makes the root box the viewport's height (1px) with the mail
     // overflowing it: the page is at least as tall as what it draws.
-    let bottom = out
-        .items
-        .iter()
-        .map(|i| match i {
-            Item::Box { y, h, .. } | Item::Image { y, h, .. } | Item::Background { y, h, .. } => {
-                y + h
-            }
-            Item::Text { y, line_height, .. } => y + line_height,
-        })
-        .fold(0.0, f32::max);
     out.height = out.height.max(bottom);
     out
 }
 
 /// The base URL relative `src`s resolve against (inert: Blitz loads nothing).
 const BASE_URL: &str = "https://mail.invalid/";
-
-/// The mail, made to parse as HTML. blitz-html sniffs a document that starts with `<?xml`,
-/// or with an XHTML doctype, or whose root declares the XHTML namespace, and hands it to an
-/// XML parser. Mail with an XHTML doctype is tag soup like any other: parsed as XML it loses
-/// the HTML tree builder (implied `<tbody>`, void elements, entities), drops content and
-/// draws `<style>` text. A leading comment defeats the sniff and, unlike a doctype of our
-/// own, leaves the mail's quirks mode alone.
-fn as_html(html: &str) -> String {
-    let html = html.trim_start_matches('\u{feff}');
-    let html = match html.trim_start().strip_prefix("<?xml") {
-        Some(rest) => rest.split_once("?>").map_or(html, |(_, after)| after),
-        None => html,
-    };
-    format!("<!---->{html}")
-}
 
 /// Give each `<img>` the reader has decoded its intrinsic size, as a browser
 /// would once the image loads. Blitz fetches nothing itself, and an image with
@@ -457,6 +453,9 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
     paint::row_backgrounds(doc, node, x, y, out);
     let radius = paint::top_left_radius(&styles, w, h);
 
+    // Everything after the box itself is clipped by its `overflow`, outside list markers too.
+    let clip_start = out.len();
+
     // Images: the reader loads and draws them by `src`.
     if node.data.is_element_with_tag_name(&local_name!("img")) {
         if let Some(src) = node.attr(local_name!("src")) {
@@ -531,6 +530,9 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
             walk(doc, *child, x, y, out);
         }
     }
+    if let Some((rect, radius)) = clip::clip_of(node, x, y, radius) {
+        clip::clip_subtree(out, clip_start, rect, radius);
+    }
 }
 
 fn text_items(
@@ -583,6 +585,11 @@ fn text_items(
             let Some(s) = doc.get_node(id).and_then(|n| n.primary_styles()) else {
                 continue;
             };
+            // Text a browser lays out but nobody sees: `font-size:0` wrappers, `color:transparent`.
+            let color = rgba(s.clone_color().as_color_color());
+            if run.font_size() < 1.0 || color[3] == 0 {
+                continue;
+            }
             let font = s.get_font();
             let fm = run.font_metrics();
             let tracking = s
@@ -604,7 +611,7 @@ fn text_items(
                     range: 0..0,
                     weight: font.font_weight.value(),
                     italic: font.font_style != style::values::computed::font::FontStyle::NORMAL,
-                    color: rgba(s.clone_color().as_color_color()),
+                    color,
                     underline: decoration(doc, id, Decoration::UNDERLINE),
                     strike: decoration(doc, id, Decoration::LINE_THROUGH),
                     mono: force_mono || is_mono(font),
@@ -1011,6 +1018,34 @@ mod tests {
     }
 
     #[test]
+    fn urls_blitz_cannot_resolve_do_not_lose_the_mail() {
+        // Each of these panicked Blitz even with a base URL.
+        for html in [
+            r#"<style>@import url();</style><p>Hello</p>"#,
+            r#"<svg><style>&#64;IMPORT "http://"</style></svg><p>Hello</p>"#,
+            r#"<link rel="stylesheet" href="http://"><p>Hello</p>"#,
+            r#"<p>Hello</p><img src="http://*|IMG|*/a.png" width="20" height="20">"#,
+        ] {
+            assert_eq!(texts(&lay(html)), vec!["Hello"], "{html}");
+        }
+        // The rules after a defused `@import` still apply.
+        let l = lay(r#"<style>@import url();p{color:#ff0000}</style><p>Hello</p>"#);
+        let Item::Text { spans, .. } = text_item(&l, "Hello") else {
+            unreachable!()
+        };
+        assert_eq!(spans[0].color, [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn thai_breaks_between_words() {
+        // Needs blitz-dom's `complex-scripts` feature: Thai has no spaces, and without a
+        // dictionary the paragraph is one line overflowing its box.
+        let l = lay(r#"<p style="width:120px">ข้อความภาษาไทยที่ยาวมากและไม่มีช่องว่างเลย</p>"#);
+        assert!(texts(&l).len() > 1, "{:?}", texts(&l));
+        assert!(l.content_width <= 600.0);
+    }
+
+    #[test]
     fn a_full_height_body_does_not_collapse_the_page() {
         let l = lay(
             "<html><head><style>html,body{height:100%}</style></head><body><p>One</p><p>Two</p></body></html>",
@@ -1019,6 +1054,9 @@ mod tests {
             unreachable!()
         };
         assert!(l.height >= y + line_height, "page {} tall", l.height);
+        // The viewport is 1px tall, so `100vh` adds no empty space either.
+        let l = lay(r#"<div style="min-height:100vh">One</div>"#);
+        assert!(l.height < 50.0, "page {} tall", l.height);
     }
 
     #[test]

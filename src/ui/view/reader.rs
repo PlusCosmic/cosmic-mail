@@ -575,11 +575,37 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
         .h(doc.height)
         .radius(RADIUS)
         .fill(color(doc.background.unwrap_or([255, 255, 255, 255])));
+    // Open clips (`MailItem::Clip`): the clipping element, the index its run ends at, and
+    // its origin, which its children are placed relative to.
+    let mut clips: Vec<(El, usize, f32, f32)> = Vec::new();
     for (i, item) in doc.items.iter().enumerate() {
+        while clips.last().is_some_and(|c| c.1 <= i) {
+            if let Some((clip, ..)) = clips.pop() {
+                page = attach(page, &mut clips, clip);
+            }
+        }
+        let (ox, oy) = clips.last().map_or((0.0, 0.0), |c| (c.2, c.3));
         let child = match item {
-            MailItem::Box { x, y, .. } => mail_box(item, &color).absolute(*x, *y),
+            MailItem::Clip {
+                x,
+                y,
+                w,
+                h,
+                radius,
+                len,
+            } => {
+                let clip = el()
+                    .w(*w)
+                    .h(*h)
+                    .clip_rounded(*radius)
+                    .absolute(*x - ox, *y - oy)
+                    .key(format!("md-{i}"));
+                clips.push((clip, i + 1 + len, *x, *y));
+                continue;
+            }
+            MailItem::Box { x, y, .. } => mail_box(item, &color).absolute(*x - ox, *y - oy),
             MailItem::Background { x, y, .. } => match mail_background(s, item) {
-                Some(b) => b.absolute(*x, *y),
+                Some(b) => b.absolute(*x - ox, *y - oy),
                 None => continue,
             },
             MailItem::Image {
@@ -608,7 +634,7 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                         .cursor(Cursor::Pointer)
                         .on_press(move |s: &mut Ui| s.open_link(&url));
                 }
-                e.w(*w).h(*h).radius(*radius).absolute(*x, *y)
+                e.w(*w).h(*h).radius(*radius).absolute(*x - ox, *y - oy)
             }
             MailItem::Text {
                 x,
@@ -658,10 +684,13 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                 }
                 // Blitz broke the line; at its measured width (plus rounding slack) Rune
                 // never breaks it again, even where it runs past a narrow page.
-                t.w(*w + 1.0).absolute(*x, *y)
+                t.w(*w + 1.0).absolute(*x - ox, *y - oy)
             }
         };
-        page = page.child(child.key(format!("md-{i}")));
+        page = attach(page, &mut clips, child.key(format!("md-{i}")));
+    }
+    while let Some((clip, ..)) = clips.pop() {
+        page = attach(page, &mut clips, clip);
     }
     // Mail with fixed-width tables wider than the pane is drawn scaled down to fit,
     // as other clients do, rather than clipped. Layout keeps the unscaled size, so
@@ -826,6 +855,17 @@ fn mail_background(s: &Ui, item: &MailItem) -> Option<El> {
         }
     }
     Some(clip)
+}
+
+/// Add a display-list element to the innermost open clip, or to the page.
+fn attach(page: El, clips: &mut [(El, usize, f32, f32)], child: El) -> El {
+    match clips.last_mut() {
+        Some((clip, ..)) => {
+            *clip = std::mem::replace(clip, el()).child(child);
+            page
+        }
+        None => page.child(child),
+    }
 }
 
 /// How an HTML line is laid out.
