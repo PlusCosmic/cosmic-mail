@@ -764,6 +764,29 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
         )
     });
 
+    let notifications = col()
+        .w_full()
+        .gap(12.0)
+        .child(setting_toggle(
+            "setting-notification-sound",
+            "Play a sound for new mail",
+            "New-mail notifications play the system's notification sound.",
+            s.settings.notification_sound,
+            p,
+            |st| st.notification_sound = !st.notification_sound,
+        ))
+        .child(
+            button(
+                "test-notification",
+                "Send a test notification",
+                p,
+                false,
+                true,
+                |s, _| s.test_notification(),
+            )
+            .self_start(),
+        );
+
     let mut accounts = col().key("settings-accounts").w_full().gap(6.0);
     for acc in &s.accounts {
         let id = acc.id.clone();
@@ -913,6 +936,7 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                 .gap(22.0)
                 .child(section("Appearance", appearance(s, p)))
                 .child(section("Reading", remote_row))
+                .child(section("Notifications", notifications))
                 .children(title_bar_row.map(|row| section("Window", row)))
                 .child(section("Accounts", accounts))
                 .child(section(

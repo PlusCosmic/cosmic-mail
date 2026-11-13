@@ -32,6 +32,9 @@ pub struct Settings {
     /// Hyprland) that draws its own. Read at startup. Defaults to `true`.
     /// Linux only ([`HAS_TITLE_BAR_SETTING`]); ignored on Windows and macOS.
     pub window_title_bar: bool,
+    /// When true, new-mail notifications play a sound (one per sync batch).
+    /// Defaults to `true`.
+    pub notification_sound: bool,
 }
 
 impl Default for Settings {
@@ -39,6 +42,7 @@ impl Default for Settings {
         Settings {
             always_download_remote_images: false,
             window_title_bar: true,
+            notification_sound: true,
         }
     }
 }
@@ -109,6 +113,7 @@ mod tests {
         assert_eq!(load_from(&path), Settings::default());
         assert!(!load_from(&path).always_download_remote_images);
         assert!(load_from(&path).window_title_bar, "title bar on by default");
+        assert!(load_from(&path).notification_sound, "sound on by default");
     }
 
     #[test]
@@ -135,6 +140,7 @@ mod tests {
         let settings = Settings {
             always_download_remote_images: true,
             window_title_bar: false,
+            notification_sound: false,
         };
         save_to(&path, &settings).expect("save");
         assert_eq!(load_from(&path), settings);
@@ -148,6 +154,7 @@ mod tests {
         let loaded = load_from(&path);
         assert!(loaded.always_download_remote_images);
         assert!(loaded.window_title_bar);
+        assert!(loaded.notification_sound);
     }
 
     #[test]

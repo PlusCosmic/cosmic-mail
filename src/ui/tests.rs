@@ -527,3 +527,15 @@ fn without_a_backend_nothing_stays_loading() {
     assert!(!s.loading_accounts);
     assert!(runtime(s).find("welcome").is_some());
 }
+
+#[test]
+fn the_notification_sound_setting_toggles() {
+    let mut rt = runtime(demo::state());
+    assert!(rt.state.settings.notification_sound, "on by default");
+    click(&mut rt, "rail-settings");
+    assert!(rt.find("test-notification").is_some());
+    click(&mut rt, "setting-notification-sound");
+    assert!(!rt.state.settings.notification_sound);
+    click(&mut rt, "setting-notification-sound");
+    assert!(rt.state.settings.notification_sound);
+}
