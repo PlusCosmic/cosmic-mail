@@ -530,7 +530,8 @@ async fn sync_folder_uids(
         events.emit(AppEvent::MessagesUpdated { folder_id });
 
         if !notify_list.is_empty() {
-            notifications::notify_new_mail(events, &account.email, &notify_list);
+            let sound = crate::settings::load_settings().notification_sound;
+            notifications::notify_new_mail(events, &account.email, &notify_list, sound);
         }
     }
 

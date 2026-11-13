@@ -951,6 +951,18 @@ impl Ui {
         );
     }
 
+    /// Show a sample notification, so the user can check it appears (and sounds).
+    pub fn test_notification(&self) {
+        self.spawn(
+            move |b| async move { b.test_notification() },
+            move |ui, result, _| {
+                if let Err(err) = result {
+                    ui.error("Failed to send a test notification", err);
+                }
+            },
+        );
+    }
+
     /// Persist settings optimistically, rolling back on failure.
     pub fn update_settings(&mut self, next: Settings) {
         let prev = std::mem::replace(&mut self.settings, next.clone());

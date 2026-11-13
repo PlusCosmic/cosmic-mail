@@ -151,6 +151,9 @@ interface Settings {                    // settings.rs::Settings — global pref
                                         // only: Windows and macOS always draw the app's titlebar).
                                         // Read at startup (decorations are fixed at window
                                         // creation), so a change applies on the next start.
+  notificationSound: boolean;           // on by default; new-mail notifications play a sound
+                                        // (macOS system alert sound, Windows "Mail", Linux
+                                        // `message-new-email` sound-name hint), once per batch.
 }
 ```
 
@@ -180,7 +183,7 @@ interface Settings {                    // settings.rs::Settings — global pref
 | `send_message` | `input: SendMessageInput` | `void` (submits through the selected account's SMTP server) |
 | `sync_folder` | `folderId: number` | `void` (triggers refresh; progress via events) |
 | `sync_account` | `accountId: string` | `void` |
-| `test_notification` | — | `void` (sends a sample mako notification) |
+| `test_notification` | — | `void` (sends a sample notification, with sound per `Settings.notificationSound`) |
 | `discover_account_config` | `email: string` | `DiscoveredConfig` (never errors on "not found" — falls back to a `guess` with `confident: false`; errors only on invalid email) |
 | `get_settings` | — | `Settings` (never errors; a missing/malformed settings file yields defaults) |
 | `update_settings` | `settings: Settings` | `Settings` (persists to `settings.json`, returns the stored value) |
@@ -337,6 +340,16 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
     sync pass for a folder, send ONE notification: `{n} new messages in {account email}`.
   - Only notify for folders with role `inbox`, only for UIDs above `last_seen_uid`, never
     during an account's initial sync.
+  - Sound: when `Settings.notificationSound` is on, the batch's first notification carries
+    the `message-new-email` sound-name hint (the rest, and all of them when it is off, carry
+    `suppress-sound`). mako plays no sound itself; a mako `[app-name="Cosmic Mail"]` block
+    with `on-notify=exec …` can.
+- macOS: notifications go through `notify-rust`'s `NSUserNotificationCenter` backend, posted
+  as `dev.pluscosmic.mail` (`notify_rust::set_application`, once, before the first one) so
+  they carry the app's name and icon and are controlled under its System Settings entry; this
+  needs the installed `Cosmic Mail.app` (Launch Services), else they post as another app.
+  Sound is `NSUserNotificationDefaultSoundName`. No click action yet (the freedesktop path
+  only).
 - Theme: the UI's colours, fonts and type come from `rune-theme-foundation`
   (PlusCosmic/ui-foundation, generated from `@pluscosmic/ui`'s `tokens.css`). `ui::theme::Palette`
   names the foundation's tokens by the roles the views use (`bg`, `fg`, `muted` = `fg-soft`,

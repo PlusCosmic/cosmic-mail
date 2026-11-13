@@ -703,7 +703,8 @@ impl Backend {
 
     /// Send a sample notification.
     pub fn test_notification(&self) -> AppResult<()> {
-        crate::notifications::test(&self.events);
+        let sound = crate::settings::load_settings().notification_sound;
+        crate::notifications::test(&self.events, sound);
         Ok(())
     }
 
