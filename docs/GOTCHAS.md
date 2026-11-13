@@ -205,6 +205,18 @@ related area. When you learn a new one, add it.
   `prepare_body_images` with its own image `src`s.
 - **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
   root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
+  For the same reason an inline element's background/border/padding has no box: Parley gives
+  only runs tagged with their element (`brush.id`). `mail_doc::paint::inline_boxes` rebuilds
+  one box per line from the runs; Blitz reserves no space for inline horizontal padding.
+- **Collapsed table borders are gutters, not cell borders.** With `border-collapse:collapse`
+  Blitz zeroes every cell's layout border and spaces cells by the *first* cell's widest
+  border; read borders from the cell's computed style (`paint::collapsed_cell_border`).
+- **Rows and row groups are not laid-out boxes** (the table's children are its cells, found
+  through `SpecialElementData::TableRoot`); paint a row's background behind each of its cells.
+- **Layout border widths already say 0 for `none` sides, style-derived ones don't**: check
+  `border_*_style.none_or_hidden()` when reading widths from the style.
+- **Rune dashes a whole ring** (`border_dash` draws the widest side all round), so only a
+  four-sided dashed border is drawn dashed; one dashed side draws solid.
 
 ## Wire format
 

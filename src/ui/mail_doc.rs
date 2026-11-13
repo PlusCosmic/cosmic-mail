@@ -19,21 +19,44 @@ use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::PositionedLayoutItem;
 
+mod paint;
+pub use paint::{background_tile, BgSize, Border, Gradient, LineStyle, Shadow};
+
 /// An sRGB colour, 8 bits per channel.
 pub type Rgba = [u8; 4];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Item {
-    /// An element's box: background and/or border.
+    /// An element's box: background, border and shadow.
     Box {
         x: f32,
         y: f32,
         w: f32,
         h: f32,
         fill: Option<Rgba>,
-        /// Border widths (top, right, bottom, left) and one colour: the first visible side's.
-        border: Option<([f32; 4], Rgba)>,
-        radius: f32,
+        border: Option<Border>,
+        /// Corner radii: top-left, top-right, bottom-right, bottom-left.
+        radius: [f32; 4],
+        /// A linear gradient painted over the fill.
+        gradient: Option<Gradient>,
+        shadows: Vec<Shadow>,
+    },
+    /// A background image (`background-image: url()`, `background=`) in an element's
+    /// padding box `x, y, w, h`, clipped to it. Its size and place in the box depend on
+    /// the image's own size: see [`background_tile`].
+    Background {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: [f32; 4],
+        src: String,
+        size: BgSize,
+        /// Horizontal and vertical position, each `(fraction, px)`: the image's edge sits
+        /// at `px + fraction × (box − image)` (`center` is `(0.5, 0.0)`).
+        position: [(f32, f32); 2],
+        /// Whether it repeats horizontally and vertically.
+        repeat: [bool; 2],
     },
     Image {
         x: f32,
@@ -198,6 +221,7 @@ fn layout_inner(
     );
     size_images(&mut doc, &image_size);
     table_heights_as_minimums(&mut doc);
+    background_attributes(&mut doc);
     doc.resolve(0.0);
     let doc: &BaseDocument = &doc;
 
@@ -215,7 +239,10 @@ fn layout_inner(
         .items
         .iter()
         .map(|i| match i {
-            Item::Box { x, w, .. } | Item::Image { x, w, .. } | Item::Text { x, w, .. } => x + w,
+            Item::Box { x, w, .. }
+            | Item::Image { x, w, .. }
+            | Item::Text { x, w, .. }
+            | Item::Background { x, w, .. } => x + w,
         })
         .fold(width, f32::max);
     // `html,body{height:100%}` makes the root box the viewport's height (1px) with the mail
@@ -224,7 +251,9 @@ fn layout_inner(
         .items
         .iter()
         .map(|i| match i {
-            Item::Box { y, h, .. } | Item::Image { y, h, .. } => y + h,
+            Item::Box { y, h, .. } | Item::Image { y, h, .. } | Item::Background { y, h, .. } => {
+                y + h
+            }
             Item::Text { y, line_height, .. } => y + line_height,
         })
         .fold(0.0, f32::max);
@@ -331,6 +360,45 @@ fn table_heights_as_minimums(doc: &mut BaseDocument) {
     }
 }
 
+/// The legacy `background="url"` attribute on `<body>`, `<table>`, `<tr>`, `<td>` and
+/// `<th>`, which Blitz does not map: a background image under the element's own styles,
+/// which come after it in the `style` attribute and so still win.
+fn background_attributes(doc: &mut BaseDocument) {
+    use blitz_dom::{ns, QualName};
+    let tags = [
+        local_name!("body"),
+        local_name!("table"),
+        local_name!("tr"),
+        local_name!("td"),
+        local_name!("th"),
+    ];
+    let mut found = Vec::new();
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else {
+            continue;
+        };
+        stack.extend(node.children.iter().copied());
+        if !tags.iter().any(|t| node.data.is_element_with_tag_name(t)) {
+            continue;
+        }
+        let Some(url) = node
+            .attr(local_name!("background"))
+            .map(str::trim)
+            .filter(|u| !u.is_empty())
+        else {
+            continue;
+        };
+        let style = node.attr(local_name!("style")).unwrap_or("").to_string();
+        let url = url.replace('\\', "\\\\").replace('"', "\\\"");
+        found.push((id, format!("background-image:url(\"{url}\");{style}")));
+    }
+    let mut m = doc.mutate();
+    for (id, style) in found {
+        m.set_attribute(id, QualName::new(None, ns!(), local_name!("style")), &style);
+    }
+}
+
 fn page_background(doc: &BaseDocument, root: &Node) -> Option<Rgba> {
     let own = root.primary_styles().and_then(|s| fill_of(&s));
     own.or_else(|| {
@@ -373,51 +441,21 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
     let (x, y) = (ox + l.location.x, oy + l.location.y);
     let (w, h) = (l.size.width, l.size.height);
 
-    // Box: background and border.
-    let fill = fill_of(&styles);
-    let border = {
-        // Stylo computes a `none`/`hidden` side's width as 0, so the layout's widths say
-        // which sides draw.
-        let widths = [l.border.top, l.border.right, l.border.bottom, l.border.left];
-        let b = styles.get_border();
-        let current = styles.clone_color();
-        let colors = [
-            &b.border_top_color,
-            &b.border_right_color,
-            &b.border_bottom_color,
-            &b.border_left_color,
-        ];
-        widths
-            .iter()
-            .zip(colors)
-            .find(|(w, _)| **w > 0.0)
-            .map(|(_, c)| rgba(c.resolve_to_absolute(&current).as_color_color()))
-            .filter(|c| c[3] > 0)
-            .map(|c| (widths, c))
-    };
-    let radius = styles
-        .get_border()
-        .border_top_left_radius
-        .0
-        .width
-        .0
-        .resolve(style::values::computed::Length::new(w.min(h)))
-        .px();
-    if (fill.is_some() || border.is_some()) && w > 0.0 && h > 0.0 {
-        let item = Item::Box {
-            x,
-            y,
-            w,
-            h,
-            fill,
-            border,
-            radius,
-        };
+    // Box: background, border, shadow; then background images over it.
+    if let Some(item) = paint::element_box(
+        &styles,
+        Some([l.border.top, l.border.right, l.border.bottom, l.border.left]),
+        (x, y, w, h),
+    ) {
         // Mail nests same-coloured tables in cells of the same size; one box is enough.
         if out.last() != Some(&item) {
             out.push(item);
         }
     }
+    paint::collapsed_cell_border(doc, node, &styles, (x, y, w, h), out);
+    paint::background_images(&styles, l, (x, y, w, h), out);
+    paint::row_backgrounds(doc, node, x, y, out);
+    let radius = paint::top_left_radius(&styles, w, h);
 
     // Images: the reader loads and draws them by `src`.
     if node.data.is_element_with_tag_name(&local_name!("img")) {
@@ -445,6 +483,7 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
         {
             let cx = x + l.padding.left + l.border.left;
             let cy = y + l.padding.top + l.border.top + text.block_offset;
+            paint::inline_boxes(doc, id, &text.layout, cx, cy, out);
             text_items(doc, &text.text, &text.layout, cx, cy, false, out);
         }
     }
