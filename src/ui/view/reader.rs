@@ -629,11 +629,13 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                 w,
                 line_height,
                 size,
+                tracking,
                 text,
                 spans,
             } => {
                 let mut rune_spans = Vec::with_capacity(spans.len());
                 let mut links = Vec::new();
+                let mut strikes = Vec::new();
                 for sp in spans {
                     let fg = color(sp.color);
                     // The foundation ships 400 and 600 faces; Blitz matched the same ones.
@@ -643,8 +645,11 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                     if sp.italic {
                         span = span.italic();
                     }
-                    if sp.underline {
-                        span = span.underline(fg);
+                    if let Some(c) = sp.underline {
+                        span = span.underline(color(c));
+                    }
+                    if let Some(c) = sp.strike {
+                        strikes.push((sp.range.start, sp.range.end, Some(color(c))));
                     }
                     if sp.mono {
                         span = span.mono();
@@ -655,7 +660,8 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                     }
                 }
                 let mut t = rich(text.clone(), rune_spans)
-                    .font(font(*size, 400.0).lh(*line_height))
+                    .font(font(*size, 400.0).lh(*line_height).tracking(*tracking))
+                    .strikes(strikes)
                     .selectable(true);
                 if !links.is_empty() {
                     for link in links {

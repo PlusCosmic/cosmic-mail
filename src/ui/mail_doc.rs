@@ -55,6 +55,8 @@ pub enum Item {
         w: f32,
         line_height: f32,
         size: f32,
+        /// Letter spacing in px (Blitz measured with it).
+        tracking: f32,
         text: String,
         spans: Vec<TextSpan>,
     },
@@ -67,7 +69,10 @@ pub struct TextSpan {
     pub weight: f32,
     pub italic: bool,
     pub color: Rgba,
-    pub underline: bool,
+    /// Underlined, in this colour (the decorating element's, not always the text's).
+    pub underline: Option<Rgba>,
+    /// Struck through (`<s>`, `<del>`, `line-through`), in this colour.
+    pub strike: Option<Rgba>,
     /// In the foundation's code face (`<code>`, `<pre>`, monospace inline styles).
     pub mono: bool,
     /// The link target as written in the mail (validate before opening).
@@ -80,6 +85,7 @@ impl TextSpan {
             && self.italic == other.italic
             && self.color == other.color
             && self.underline == other.underline
+            && self.strike == other.strike
             && self.mono == other.mono
             && self.link == other.link
     }
@@ -540,6 +546,12 @@ fn text_items(
             };
             let font = s.get_font();
             let fm = run.font_metrics();
+            let tracking = s
+                .get_inherited_text()
+                .letter_spacing
+                .0
+                .resolve(style::values::computed::Length::new(run.font_size()))
+                .px();
             let piece = Piece {
                 x: cx + gr.offset(),
                 end_x: cx + gr.offset() + gr.advance(),
@@ -547,13 +559,15 @@ fn text_items(
                 ascent: fm.ascent,
                 descent: fm.descent.abs(),
                 size: run.font_size(),
+                tracking,
                 text,
                 span: TextSpan {
                     range: 0..0,
                     weight: font.font_weight.value(),
                     italic: font.font_style != style::values::computed::font::FontStyle::NORMAL,
                     color: rgba(s.clone_color().as_color_color()),
-                    underline: underlined(doc, id),
+                    underline: decoration(doc, id, Decoration::UNDERLINE),
+                    strike: decoration(doc, id, Decoration::LINE_THROUGH),
                     mono: force_mono || is_mono(font),
                     link: ancestor_link(doc, id).map(str::to_string),
                 },
@@ -585,6 +599,7 @@ struct Piece {
     ascent: f32,
     descent: f32,
     size: f32,
+    tracking: f32,
     text: String,
     span: TextSpan,
 }
@@ -599,6 +614,7 @@ struct Group {
     ascent: f32,
     descent: f32,
     size: f32,
+    tracking: f32,
     text: String,
     spans: Vec<TextSpan>,
 }
@@ -612,6 +628,7 @@ impl Group {
             ascent: piece.ascent,
             descent: piece.descent,
             size: piece.size,
+            tracking: piece.tracking,
             text: String::new(),
             spans: Vec::new(),
         };
@@ -622,6 +639,7 @@ impl Group {
     fn continues(&self, p: &Piece) -> bool {
         (p.baseline - self.baseline).abs() < 0.01
             && (p.size - self.size).abs() < 0.01
+            && (p.tracking - self.tracking).abs() < 0.01
             && (p.x - self.end_x).abs() < 0.5
     }
 
@@ -659,6 +677,7 @@ impl Group {
             w: self.end_x - self.x,
             line_height: self.ascent + self.descent,
             size: self.size,
+            tracking: self.tracking,
             text: self.text,
             spans: self.spans,
         });
@@ -687,25 +706,39 @@ fn ancestor_link(doc: &BaseDocument, mut id: NodeId) -> Option<&str> {
     }
 }
 
-fn underlined(doc: &BaseDocument, mut id: NodeId) -> bool {
-    use style::values::specified::TextDecorationLine;
+use style::values::specified::TextDecorationLine as Decoration;
+
+/// The colour of the `line` decoration (underline, line-through) a run's text carries,
+/// if any. Decorations propagate from the element that sets them to all its in-flow
+/// descendants, in that element's `text-decoration-color` (its `color` by default), and
+/// a descendant's `text-decoration: none` cannot remove them; they stop at inline blocks,
+/// floats and positioned boxes.
+fn decoration(doc: &BaseDocument, mut id: NodeId, line: Decoration) -> Option<Rgba> {
+    use style::values::specified::box_::{DisplayInside, DisplayOutside};
     loop {
-        let Some(node) = doc.get_node(id) else {
-            return false;
-        };
+        let node = doc.get_node(id)?;
         if let Some(s) = node.primary_styles() {
-            if s.get_text()
-                .text_decoration_line
-                .contains(TextDecorationLine::UNDERLINE)
+            let text = s.get_text();
+            if text.text_decoration_line.contains(line) {
+                let current = s.clone_color();
+                let c = rgba(
+                    text.text_decoration_color
+                        .resolve_to_absolute(&current)
+                        .as_color_color(),
+                );
+                return (c[3] > 0).then_some(c);
+            }
+            let display = s.get_box().display;
+            let atomic_inline = display.outside() == DisplayOutside::Inline
+                && display.inside() != DisplayInside::Flow;
+            if atomic_inline
+                || s.get_box().float != style::computed_values::float::T::None
+                || s.get_box().position.is_absolutely_positioned()
             {
-                return true;
+                return None;
             }
         }
-        if node.flags.is_inline_root() {
-            return false;
-        }
-        let Some(p) = node.parent else { return false };
-        id = p;
+        id = node.parent?;
     }
 }
 
@@ -810,7 +843,7 @@ mod tests {
             span_of("here").link.as_deref(),
             Some("https://ups.example/t")
         );
-        assert!(span_of("here").underline);
+        assert!(span_of("here").underline.is_some());
     }
 
     #[test]
@@ -974,5 +1007,49 @@ mod tests {
         let l = lay(r#"<body style="background:#f0f2f2"><p>x</p></body>"#);
         assert_eq!(l.background, Some([0xf0, 0xf2, 0xf2, 255]));
         assert!(lay("<p>x</p>").background.is_none());
+    }
+
+    fn span<'a>(l: &'a MailLayout, want: &str) -> &'a TextSpan {
+        l.items
+            .iter()
+            .find_map(|i| match i {
+                Item::Text { text, spans, .. } => {
+                    spans.iter().find(|s| &text[s.range.clone()] == want)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no span {want:?}"))
+    }
+
+    #[test]
+    fn struck_and_underlined_text_carry_the_decorating_elements_colour() {
+        let l = lay(
+            r#"<p><s>$10</s> <del style="color:#888">$9</del> <span style="text-decoration:line-through;text-decoration-color:#f00">$8</span> $7</p>
+               <a href="https://shop.example" style="color:#00f"><div><span style="color:#f00">Linked</span></div></a>"#,
+        );
+        assert_eq!(span(&l, "$10").strike, Some([0, 0, 0, 255]));
+        assert_eq!(span(&l, "$9").strike, Some([0x88, 0x88, 0x88, 255]));
+        assert_eq!(span(&l, "$8").strike, Some([255, 0, 0, 255]));
+        // The link's underline reaches into the block inside it, in the link's colour.
+        assert_eq!(span(&l, "Linked").underline, Some([0, 0, 255, 255]));
+        assert_eq!(span(&l, "Linked").color, [255, 0, 0, 255]);
+        // `text-decoration: none` on an inline block stops it.
+        let l = lay(
+            r#"<a href="https://shop.example"><span style="display:inline-block;text-decoration:none">Button</span></a>"#,
+        );
+        assert_eq!(span(&l, "Button").underline, None);
+    }
+
+    #[test]
+    fn letter_spacing_reaches_the_text_item() {
+        let l = lay(r#"<p style="letter-spacing:2px">SPACED</p><p>plain</p>"#);
+        let tracking = |want: &str| {
+            l.items.iter().find_map(|i| match i {
+                Item::Text { text, tracking, .. } if text == want => Some(*tracking),
+                _ => None,
+            })
+        };
+        assert_eq!(tracking("SPACED"), Some(2.0));
+        assert_eq!(tracking("plain"), Some(0.0));
     }
 }
