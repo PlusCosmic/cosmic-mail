@@ -248,7 +248,8 @@ fn as_html(html: &str) -> String {
 /// would once the image loads. Blitz fetches nothing itself, and an image with
 /// no data sizes from its attributes alone — so `width:100%;height:auto` in a
 /// shrink-to-fit cell collapses to 0×0. Layout only reads the dimensions, so
-/// the pixel data stays empty.
+/// the pixel data stays empty. Images not decoded keep the box their attributes
+/// describe (`unloaded_image_size`, `alt_text_lines`).
 fn size_images(doc: &mut BaseDocument, image_size: &impl Fn(&str) -> Option<(u32, u32)>) {
     use blitz_dom::node::{ImageData, RasterImageData, SpecialElementData};
     let mut imgs = Vec::new();
@@ -265,16 +266,90 @@ fn size_images(doc: &mut BaseDocument, image_size: &impl Fn(&str) -> Option<(u32
             .attr(local_name!("src"))
             .and_then(image_size)
             .filter(|(w, h)| *w > 0 && *h > 0)
+            .or_else(|| unloaded_image_size(node))
         {
             imgs.push((id, w, h));
         }
     }
+    alt_text_lines(doc, image_size);
     for (id, w, h) in imgs {
         if let Some(el) = doc.get_node_mut(id).and_then(|n| n.element_data_mut()) {
             el.special_data = SpecialElementData::Image(Box::new(ImageData::Raster(
                 RasterImageData::new(w, h, std::sync::Arc::new(Vec::new())),
             )));
         }
+    }
+}
+
+/// The box an image that has not loaded (blocked, still fetching, failed, or in a format
+/// the reader cannot decode) keeps, so that loading it does not reflow the mail. Browsers
+/// map `width` and `height` attributes to `aspect-ratio: auto w / h` (HTML "attributes for
+/// embedded content"), which holds the box at the CSS width — `height:auto` included —
+/// before the image arrives; Blitz has no such mapping. An image with both, as non-zero
+/// non-percentage lengths, is laid out as if it had loaded at that size: the same ratio,
+/// and an intrinsic width that is right for every image drawn at its declared size.
+fn unloaded_image_size(node: &Node) -> Option<(u32, u32)> {
+    let w = dimension_attr(node.attr(local_name!("width"))?)?;
+    let h = dimension_attr(node.attr(local_name!("height"))?)?;
+    Some((w.round().max(1.0) as u32, h.round().max(1.0) as u32))
+}
+
+/// An HTML dimension attribute ("rules for parsing dimension values") as a length in px:
+/// leading digits and an optional fraction, anything after ignored (`600px`), `None` for a
+/// percentage, zero or no number at all.
+fn dimension_attr(value: &str) -> Option<f32> {
+    let v = value.trim_start();
+    let end = v
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(v.len());
+    let n: f32 = v[..end].trim_end_matches('.').parse().ok()?;
+    let percent = v[end..].trim_start().starts_with('%');
+    (n > 0.0 && n.is_finite() && !percent).then_some(n)
+}
+
+/// How tall an unloaded image with only a `width` is held, when it has alt text to show.
+const ALT_LINE: f32 = 20.0;
+
+/// An unloaded image with a `width` but no `height` has no height until it arrives. When
+/// it has alt text, hold one line for it (the reader draws the text in the frame), as a
+/// browser shows a broken image's alt text; without, it stays collapsed — any other guess
+/// at the height would still reflow when the image loads. The mail's own `min-height`
+/// follows in the `style` attribute, so it still wins.
+fn alt_text_lines(doc: &mut BaseDocument, image_size: &impl Fn(&str) -> Option<(u32, u32)>) {
+    use blitz_dom::{ns, QualName};
+    let mut found = Vec::new();
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else {
+            continue;
+        };
+        stack.extend(node.children.iter().copied());
+        if !node.data.is_element_with_tag_name(&local_name!("img"))
+            || node.attr(local_name!("src")).and_then(image_size).is_some()
+            || node
+                .attr(local_name!("alt"))
+                .is_none_or(|a| a.trim().is_empty())
+            || node
+                .attr(local_name!("height"))
+                .and_then(dimension_attr)
+                .is_some()
+            || node
+                .attr(local_name!("width"))
+                .and_then(dimension_attr)
+                .is_none_or(|w| w <= 2.0)
+        {
+            continue;
+        }
+        let style = node.attr(local_name!("style")).unwrap_or("").to_string();
+        found.push((id, style));
+    }
+    let mut m = doc.mutate();
+    for (id, style) in found {
+        m.set_attribute(
+            id,
+            QualName::new(None, ns!(), local_name!("style")),
+            &format!("min-height:{ALT_LINE}px;{style}"),
+        );
     }
 }
 
@@ -838,6 +913,83 @@ mod tests {
         let sizes = [("cid:p".to_string(), (90, 45))].into_iter().collect();
         let l = layout(html, 600.0, &sizes);
         assert_eq!(size(&l), Some((90.0, 45.0)));
+    }
+
+    fn image_box(l: &MailLayout, want: &str) -> (f32, f32, f32, f32) {
+        l.items
+            .iter()
+            .find_map(|i| match i {
+                Item::Image {
+                    x, y, w, h, src, ..
+                } if src == want => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no image {want:?}"))
+    }
+
+    #[test]
+    fn unloaded_images_keep_the_box_their_attributes_declare() {
+        // Remote images are blocked until the reader allows them: the page must not
+        // collapse, and must not reflow when they arrive (here at twice the size, hi-dpi).
+        let html = r#"<img src="https://cdn.example/hero.png" width="600" height="200"
+                        style="display:block;width:100%;height:auto"><p>After</p>"#;
+        let blocked = lay(html);
+        let sizes = [("https://cdn.example/hero.png".to_string(), (1200, 400))]
+            .into_iter()
+            .collect();
+        let loaded = layout(html, 600.0, &sizes);
+        let (_, _, w, h) = image_box(&blocked, "https://cdn.example/hero.png");
+        assert!((h - w / 3.0).abs() < 0.5, "{w}x{h}: the 3:1 ratio");
+        assert_eq!(
+            image_box(&blocked, "https://cdn.example/hero.png"),
+            image_box(&loaded, "https://cdn.example/hero.png")
+        );
+        assert_eq!(text_item(&blocked, "After"), text_item(&loaded, "After"));
+    }
+
+    #[test]
+    fn unloaded_images_with_only_a_width_hold_a_line_for_their_alt_text() {
+        let l = lay(
+            r#"<img src="https://a.example/1.png" width="300" alt="Spring sale">
+               <img src="https://a.example/2.png" width="300" alt="">
+               <img src="https://a.example/3.png" width="100%" height="50%" alt="Banner">
+               <img src="https://a.example/4.png" width="300" height="auto" style="min-height:40px" alt="Logo">"#,
+        );
+        assert_eq!(image_box(&l, "https://a.example/1.png").3, ALT_LINE);
+        assert_eq!(
+            image_box(&l, "https://a.example/2.png").3,
+            0.0,
+            "no alt: collapsed"
+        );
+        assert_eq!(
+            image_box(&l, "https://a.example/3.png").3,
+            0.0,
+            "percentages declare no size"
+        );
+        assert_eq!(
+            image_box(&l, "https://a.example/4.png").3,
+            40.0,
+            "the mail's own min-height wins"
+        );
+        // Once decoded, the image's own size rules.
+        let sizes = [("https://a.example/1.png".to_string(), (600, 100))]
+            .into_iter()
+            .collect();
+        let l = layout(
+            r#"<img src="https://a.example/1.png" width="300" alt="Spring sale">"#,
+            600.0,
+            &sizes,
+        );
+        assert_eq!(image_box(&l, "https://a.example/1.png").3, 50.0);
+    }
+
+    #[test]
+    fn dimension_attributes_parse_as_browsers_do() {
+        assert_eq!(dimension_attr("600"), Some(600.0));
+        assert_eq!(dimension_attr(" 37.5px"), Some(37.5));
+        assert_eq!(dimension_attr("100%"), None);
+        assert_eq!(dimension_attr("0"), None);
+        assert_eq!(dimension_attr("auto"), None);
     }
 
     #[test]

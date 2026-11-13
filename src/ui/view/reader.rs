@@ -613,8 +613,13 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                     Some(BodyImage::Ready(img)) if img.size().is_some() => {
                         el().pixels(img.pixels()).label(alt.clone())
                     }
-                    // Blocked, loading or failed: a faint frame keeps the layout readable.
-                    _ => el().border(1.0, color([0, 0, 0, 24])),
+                    // Loading or decoding: a faint frame keeps the layout readable.
+                    Some(BodyImage::Loading) => el().border(1.0, color([0, 0, 0, 24])),
+                    Some(BodyImage::Ready(img)) if img.error().is_none() => {
+                        el().border(1.0, color([0, 0, 0, 24]))
+                    }
+                    // Blocked, failed or undecodable: the frame, and the alt text in it.
+                    _ => image_placeholder(alt, *w, *h, color([0, 0, 0, 24]), color(ALT_GREY)),
                 };
                 if let Some(url) = link.clone() {
                     e = e
@@ -687,6 +692,38 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                 .absolute(0.0, 0.0),
         )
 }
+
+/// An image the mail page shows without its pixels (blocked, failed, or in a format the
+/// reader cannot decode): a faint frame with the alt text in it, as a browser draws a
+/// broken image, when there is room for a line.
+fn image_placeholder(alt: &str, w: f32, h: f32, frame: rune::Color, ink: rune::Color) -> El {
+    const LINE: f32 = 15.0;
+    let pad = if h >= 26.0 { 6.0 } else { 2.0 };
+    let alt = alt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let e = col()
+        .border(1.0, frame)
+        .px(pad)
+        .py(pad.min(((h - LINE) / 2.0).max(0.0)));
+    if alt.is_empty() || w < 24.0 || h < 12.0 {
+        return e;
+    }
+    let lines = ((h - 2.0 * pad) / LINE).floor().max(1.0) as usize;
+    let t = label(alt.clone(), SMALL.lh(LINE), ink).w_full();
+    let t = if lines == 1 {
+        t.truncate()
+    } else {
+        t.max_lines(lines)
+    };
+    let e = e.label(alt).child(t);
+    if lines == 1 {
+        e.justify_center()
+    } else {
+        e
+    }
+}
+
+/// Alt text on the mail page: mid-grey reads on the light and the dark pages mail sets.
+const ALT_GREY: [u8; 4] = [0x80, 0x80, 0x80, 0xff];
 
 /// How an HTML line is laid out.
 #[derive(Clone, Copy)]
