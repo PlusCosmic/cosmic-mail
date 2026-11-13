@@ -74,6 +74,9 @@ socket2 = { version = "0.6.4", features = ["all"] }
 # floated blocks stack.
 blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["floats"] }
 blitz-html = "=0.3.0-beta.4"
+# The parser blitz-html builds with: mail is fed to it directly (ui::mail_doc::parse), not
+# through blitz-html's XHTML sniff. Keep the version blitz-html depends on.
+html5ever = "0.40.1"
 blitz-traits = "=0.3.0-beta.4"
 parley = { version = "0.12", default-features = false }
 taffy = { version = "0.15", default-features = false }

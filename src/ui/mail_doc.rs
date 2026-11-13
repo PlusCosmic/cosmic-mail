@@ -15,9 +15,10 @@
 use blitz_dom::util::ToColorColor;
 use blitz_dom::UserAgentStylesheet;
 use blitz_dom::{local_name, BaseDocument, DocumentConfig, FontContext, Node, NodeId};
-use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::PositionedLayoutItem;
+
+mod parse;
 
 /// An sRGB colour, 8 bits per channel.
 pub type Rgba = [u8; 4];
@@ -143,9 +144,15 @@ pub fn layout(
             .spawn_scoped(scope, || {
                 layout_inner(html, width, |src| image_sizes.get(src).copied())
             })
+            .map_err(|e| tracing::warn!("mail layout thread not started: {e}"))
             .ok()
             .and_then(|h| h.join().ok())
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                // An empty layout makes the reader show the mail as text. Blitz's panic message
+                // went to stderr; it can quote the mail, so it is not logged here.
+                tracing::warn!(bytes = html.len(), "mail layout failed; showing it as text");
+                MailLayout::default()
+            })
     })
 }
 
@@ -170,8 +177,8 @@ fn layout_inner(
         "* {{ font-family: \"{sans}\" !important; }}\n\
          {code}, {code_desc} {{ font-family: \"{mono}\" !important; }}"
     );
-    let mut doc = HtmlDocument::from_html(
-        &as_html(html),
+    let mut doc = parse::document(
+        html,
         DocumentConfig {
             // Without a base, Blitz panics resolving `//host/x.png` or `x.png`. Nothing is
             // ever fetched from it.
@@ -228,21 +235,6 @@ fn layout_inner(
 
 /// The base URL relative `src`s resolve against (inert: Blitz loads nothing).
 const BASE_URL: &str = "https://mail.invalid/";
-
-/// The mail, made to parse as HTML. blitz-html sniffs a document that starts with `<?xml`,
-/// or with an XHTML doctype, or whose root declares the XHTML namespace, and hands it to an
-/// XML parser. Mail with an XHTML doctype is tag soup like any other: parsed as XML it loses
-/// the HTML tree builder (implied `<tbody>`, void elements, entities), drops content and
-/// draws `<style>` text. A leading comment defeats the sniff and, unlike a doctype of our
-/// own, leaves the mail's quirks mode alone.
-fn as_html(html: &str) -> String {
-    let html = html.trim_start_matches('\u{feff}');
-    let html = match html.trim_start().strip_prefix("<?xml") {
-        Some(rest) => rest.split_once("?>").map_or(html, |(_, after)| after),
-        None => html,
-    };
-    format!("<!---->{html}")
-}
 
 /// Give each `<img>` the reader has decoded its intrinsic size, as a browser
 /// would once the image loads. Blitz fetches nothing itself, and an image with
@@ -936,6 +928,25 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn urls_blitz_cannot_resolve_do_not_lose_the_mail() {
+        // Each of these panicked Blitz even with a base URL.
+        for html in [
+            r#"<style>@import url();</style><p>Hello</p>"#,
+            r#"<svg><style>&#64;IMPORT "http://"</style></svg><p>Hello</p>"#,
+            r#"<link rel="stylesheet" href="http://"><p>Hello</p>"#,
+            r#"<p>Hello</p><img src="http://*|IMG|*/a.png" width="20" height="20">"#,
+        ] {
+            assert_eq!(texts(&lay(html)), vec!["Hello"], "{html}");
+        }
+        // The rules after a defused `@import` still apply.
+        let l = lay(r#"<style>@import url();p{color:#ff0000}</style><p>Hello</p>"#);
+        let Item::Text { spans, .. } = text_item(&l, "Hello") else {
+            unreachable!()
+        };
+        assert_eq!(spans[0].color, [255, 0, 0, 255]);
     }
 
     #[test]
