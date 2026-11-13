@@ -193,6 +193,20 @@ related area. When you learn a new one, add it.
 - **Blitz loads no resources**, so an `<img>` has no intrinsic size and `width:100%;
   height:auto` in a shrink-to-fit cell collapses to 0×0. `size_images` gives each decoded
   image empty `RasterImageData` of its real size (layout reads only the dimensions).
+- **Blitz has no attribute-mapped `aspect-ratio`** (browsers map `<img width height>` to
+  `aspect-ratio: auto w/h`), so a blocked or failed image with `height:auto` lost its height
+  and the mail reflowed when images arrived. An undecoded image with both attributes gets
+  fake `RasterImageData` of that size; one with only `width` and alt text a 20px
+  `min-height` for the alt line (`unloaded_image_size`, `alt_text_lines`).
+- **Rune decodes only the formats its `image` dependency enables** (`png`, `jpeg`); this
+  crate depends on the same `image` 0.25 with `gif` and `webp` so feature unification turns
+  them on inside Rune's decoder. Bumping Rune to another `image` major silently drops GIF
+  again (`images::tests::gif_and_webp_mail_images_decode` catches it). AVIF: not decoded.
+- **Blitz's auto table layout ignores percentage cell widths** (`layout/table.rs`: "only
+  take effect in the fixed table layout"), so `<td style="width:35%">` sizes from content —
+  e.g. a `width:100%` logo with 1904 natural px widens its column far past Chrome's.
+- **Chrome image boxes in the corpus harness are border boxes**; `Item::Image` is the content
+  box. An icon with `padding:8px` reads as "40×40 vs 24×24" — not a sizing bug.
 - **Rune draws only fonts the app embeds**, so Blitz must measure with them too (a UA
   `* { font-family: … !important }` rule), or runs measured in Arial overlap when drawn in
   Instrument Sans. Code (`<code>`, `<pre>`, monospace inline styles) gets the foundation's
