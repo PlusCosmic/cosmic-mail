@@ -43,6 +43,8 @@ pub enum Item {
         src: String,
         alt: String,
         link: Option<String>,
+        /// Corner radius (`border-radius:50%` makes a round avatar).
+        radius: f32,
     },
     /// Text on one line at one font size, its box `line_height` tall from `y`
     /// with the baseline `line_height - descent` down; styled per span.
@@ -66,6 +68,8 @@ pub struct TextSpan {
     pub italic: bool,
     pub color: Rgba,
     pub underline: bool,
+    /// In the foundation's code face (`<code>`, `<pre>`, monospace inline styles).
+    pub mono: bool,
     /// The link target as written in the mail (validate before opening).
     pub link: Option<String>,
 }
@@ -76,6 +80,7 @@ impl TextSpan {
             && self.italic == other.italic
             && self.color == other.color
             && self.underline == other.underline
+            && self.mono == other.mono
             && self.link == other.link
     }
 }
@@ -142,9 +147,20 @@ fn layout_inner(
     image_size: impl Fn(&str) -> Option<(u32, u32)>,
 ) -> MailLayout {
     let font_ctx = FONTS.clone();
+    let (sans, mono) = rune_theme_foundation::FAMILIES;
+    // Everything in the app's sans, and code — by tag, or by a monospace inline style or
+    // `<font face>` — in its code face. Descendants are listed too because `*` matches
+    // them directly, so they would not inherit the code face.
+    let code = "code, pre, kbd, samp, tt, [style*=monospace i], [style*=courier i], \
+                [style*=consolas i], [style*=menlo i], font[face*=mono i], font[face*=courier i]";
+    let code_desc = code
+        .split(", ")
+        .map(|sel| format!("{sel} *"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let css = format!(
-        "* {{ font-family: \"{}\" !important; }}",
-        rune_theme_foundation::FAMILIES.0.replace('"', "")
+        "* {{ font-family: \"{sans}\" !important; }}\n\
+         {code}, {code_desc} {{ font-family: \"{mono}\" !important; }}"
     );
     let mut doc = HtmlDocument::from_html(
         html,
@@ -333,15 +349,15 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
             .filter(|c| c[3] > 0)
             .map(|c| (widths, c))
     };
+    let radius = styles
+        .get_border()
+        .border_top_left_radius
+        .0
+        .width
+        .0
+        .resolve(style::values::computed::Length::new(w.min(h)))
+        .px();
     if (fill.is_some() || border.is_some()) && w > 0.0 && h > 0.0 {
-        let radius = styles
-            .get_border()
-            .border_top_left_radius
-            .0
-            .width
-            .0
-            .resolve(style::values::computed::Length::new(w.min(h)))
-            .px();
         let item = Item::Box {
             x,
             y,
@@ -370,6 +386,7 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
                 src: src.to_string(),
                 alt: node.attr(local_name!("alt")).unwrap_or("").to_string(),
                 link: ancestor_link(doc, id).map(str::to_string),
+                radius,
             });
         }
     }
@@ -493,6 +510,7 @@ fn text_items(
                     italic: font.font_style != style::values::computed::font::FontStyle::NORMAL,
                     color: rgba(s.clone_color().as_color_color()),
                     underline: underlined(doc, id),
+                    mono: is_mono(font),
                     link: ancestor_link(doc, id).map(str::to_string),
                 },
             };
@@ -601,6 +619,16 @@ impl Group {
             spans: self.spans,
         });
     }
+}
+
+/// Whether a run's computed font is the foundation's code face (see the UA rule in
+/// `layout_inner`).
+fn is_mono(font: &style::properties::style_structs::Font) -> bool {
+    use style::values::computed::font::SingleFontFamily;
+    matches!(
+        font.font_family.families.iter().next(),
+        Some(SingleFontFamily::FamilyName(f)) if &*f.name == rune_theme_foundation::FAMILIES.1
+    )
 }
 
 fn ancestor_link(doc: &BaseDocument, mut id: NodeId) -> Option<&str> {
@@ -794,6 +822,35 @@ mod tests {
         let l = lay("<p>Order # \u{202b}026-1</p>");
         assert!(texts(&l).iter().all(|t| !t.contains('\u{202b}')));
         assert!(texts(&l).iter().any(|t| t.contains("026-1")));
+    }
+
+    #[test]
+    fn code_is_set_in_the_code_face() {
+        let l = lay(r#"<p>category <code>flagged_feature</code> is new</p>
+               <pre><span class="pl-s">"schema"</span>: 1</pre>
+               <p><span style="font-family: Courier New, monospace">a1b2c3</span></p>"#);
+        let span = |want: &str| {
+            l.items
+                .iter()
+                .find_map(|i| match i {
+                    Item::Text { text, spans, .. } => spans
+                        .iter()
+                        .find(|sp| &text[sp.range.clone()] == want)
+                        .cloned(),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no span {want:?} in {:?}", texts(&l)))
+        };
+        assert!(span("flagged_feature").mono);
+        assert!(!span("category ").mono, "prose around code stays sans");
+        assert!(span("\"schema\": 1").mono, "highlighted spans inside <pre>");
+        assert!(span("a1b2c3").mono, "monospace inline styles");
+        // Monospace: every character the same width.
+        let width = |want: &str| match text_item(&lay(&format!("<code>{want}</code>")), want) {
+            Item::Text { w, .. } => *w,
+            _ => unreachable!(),
+        };
+        assert!((width("iiii") - width("WWWW")).abs() < 0.01);
     }
 
     #[test]

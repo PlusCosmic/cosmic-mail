@@ -195,8 +195,14 @@ related area. When you learn a new one, add it.
   image empty `RasterImageData` of its real size (layout reads only the dimensions).
 - **Rune draws only fonts the app embeds**, so Blitz must measure with them too (a UA
   `* { font-family: … !important }` rule), or runs measured in Arial overlap when drawn in
-  Instrument Sans. System fonts stay in the (shared, built-once) collection as glyph
-  fallback — without them `•` list markers, CJK and emoji vanish.
+  Instrument Sans. Code (`<code>`, `<pre>`, monospace inline styles) gets the foundation's
+  bundled code face the same way, flagged `mono` per span so Rune draws it in its mono slot —
+  never the platform's monospace, which Blitz and Rune can resolve differently. System fonts
+  stay in the (shared, built-once) collection as glyph fallback — without them `•` list
+  markers, CJK and emoji vanish.
+- **The image list comes from the Blitz layout as well as html2text.** html2text drops some
+  `<img>`s Blitz lays out (GitHub's avatar inside a flex `<div>`), so a landed layout re-runs
+  `prepare_body_images` with its own image `src`s.
 - **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
   root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
 

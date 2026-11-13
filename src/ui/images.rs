@@ -46,10 +46,24 @@ impl Ui {
 
     /// Whether the open message references any remote image.
     pub fn body_has_remote_images(&self) -> bool {
-        self.body_lines
+        self.body_image_srcs().iter().any(|src| is_remote(src))
+    }
+
+    /// Every image `src` the open message shows: the visible `<img>`s of its Blitz
+    /// layout once that has landed, plus those the styled-text lines found (the
+    /// fallback rendering, and all there is before the first layout). html2text
+    /// misses some images Blitz lays out — GitHub's avatar inside a flex `<div>` —
+    /// so the lines alone are not enough.
+    pub(crate) fn body_image_srcs(&self) -> Vec<String> {
+        let mut srcs: Vec<String> = self
+            .body_lines
             .iter()
-            .flat_map(|l| l.images.iter())
-            .any(|i| is_remote(&i.src))
+            .flat_map(|l| l.images.iter().map(|i| i.src.clone()))
+            .collect();
+        srcs.extend(self.mail_layout_image_srcs());
+        let mut seen = std::collections::HashSet::new();
+        srcs.retain(|s| seen.insert(s.clone()));
+        srcs
     }
 
     /// Decode the open message's inline images, and fetch its remote ones
@@ -62,11 +76,7 @@ impl Ui {
         let Some(cache) = self.image_cache.clone() else {
             return;
         };
-        let srcs: Vec<String> = self
-            .body_lines
-            .iter()
-            .flat_map(|l| l.images.iter().map(|i| i.src.clone()))
-            .collect();
+        let srcs = self.body_image_srcs();
         let allow_remote = self.remote_images_allowed(id);
         let mut remote = Vec::new();
         for src in srcs {

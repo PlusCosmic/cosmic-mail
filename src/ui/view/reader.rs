@@ -603,6 +603,7 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                 src,
                 alt,
                 link,
+                radius,
             } => {
                 // Tracking pixels and spacers draw nothing worth showing.
                 if *w <= 2.0 || *h <= 2.0 {
@@ -620,7 +621,7 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                         .cursor(Cursor::Pointer)
                         .on_press(move |s: &mut Ui| s.open_link(&url));
                 }
-                e.w(*w).h(*h).absolute(*x, *y)
+                e.w(*w).h(*h).radius(*radius).absolute(*x, *y)
             }
             MailItem::Text {
                 x,
@@ -644,6 +645,9 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                     }
                     if sp.underline {
                         span = span.underline(fg);
+                    }
+                    if sp.mono {
+                        span = span.mono();
                     }
                     rune_spans.push(span);
                     if let Some(url) = &sp.link {

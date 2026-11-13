@@ -77,6 +77,8 @@ impl Ui {
                             state.pending = None;
                         }
                         state.done = Some((key, doc));
+                        // The layout may show images the styled-text pass missed.
+                        ui.prepare_body_images();
                     }
                 }));
             });
@@ -85,6 +87,21 @@ impl Ui {
             self.mail.borrow_mut().pending = None;
         }
         self.mail.borrow().done.as_ref().map(|(_, doc)| doc.clone())
+    }
+
+    /// The `src` of every image in the open body's latest layout.
+    pub(crate) fn mail_layout_image_srcs(&self) -> Vec<String> {
+        let state = self.mail.borrow();
+        let Some((_, doc)) = &state.done else {
+            return Vec::new();
+        };
+        doc.items
+            .iter()
+            .filter_map(|i| match i {
+                mail_doc::Item::Image { src, .. } => Some(src.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The pixel size of every body image decoded so far, by `src`.
