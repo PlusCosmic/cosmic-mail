@@ -395,6 +395,32 @@ fn the_remote_image_banner_only_shows_for_remote_images() {
 }
 
 #[test]
+fn images_only_blitz_finds_are_still_fetched() {
+    // GitHub notifications put the avatar in a flex `<div>`; html2text drops it,
+    // so the image list must come from the Blitz layout too.
+    let html = r#"<div style="display: flex; flex-wrap: wrap; white-space: pre-wrap; align-items: center; "><img height="20" width="20" style="border-radius:50%" src="https://avatars.example/u?s=20&amp;v=4" /><strong>bot</strong> left a comment</div><p>Body</p>"#;
+    assert!(super::html::render(html)
+        .iter()
+        .all(|l| l.images.is_empty()));
+    let mut s = demo::state();
+    if let Some(b) = s.body.as_mut() {
+        b.html = Some(html.into());
+    }
+    s.body_lines = super::html::render(html);
+    s.reset_mail_layout();
+    let rt = runtime(s);
+    assert_eq!(
+        rt.state.body_image_srcs(),
+        vec!["https://avatars.example/u?s=20&v=4".to_string()]
+    );
+    assert!(rt.state.body_has_remote_images());
+    assert!(
+        rt.find("remote-content").is_some(),
+        "the consent banner shows"
+    );
+}
+
+#[test]
 fn html_mail_is_laid_out_as_a_page_with_its_own_layout() {
     let rt = runtime(demo::state());
     let elements = rt.elements();

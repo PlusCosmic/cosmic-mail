@@ -25,7 +25,7 @@ winresource = "0.1"
 rune = { git = "https://github.com/anomalyco/rune", rev = "cd36f5a9917ec4a65786caf69213c9cc32919984" }
 # The UI foundation's colour schemes, fonts and type as a Rune theme (PlusCosmic/ui-foundation).
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "cd36f5a9917ec4a65786caf69213c9cc32919984" }
-rune-theme-foundation = { git = "https://github.com/PlusCosmic/ui-foundation", rev = "9d39c0a4f66eb97284c4bee3990bf166ca7657c9" }
+rune-theme-foundation = { git = "https://github.com/PlusCosmic/ui-foundation", rev = "149557de183cf9bed92c072c5eb2158d98e9dbbc" }
 # Decodes the bundled PNG icon into RGBA for the tray.
 png = "0.18"
 # Renders sanitized HTML mail as styled text (Rune has no HTML engine).

@@ -4456,7 +4456,7 @@ dependencies = [
 [[package]]
 name = "rune-theme-foundation"
 version = "0.1.0"
-source = "git+https://github.com/PlusCosmic/ui-foundation?rev=9d39c0a4f66eb97284c4bee3990bf166ca7657c9#9d39c0a4f66eb97284c4bee3990bf166ca7657c9"
+source = "git+https://github.com/PlusCosmic/ui-foundation?rev=149557de183cf9bed92c072c5eb2158d98e9dbbc#149557de183cf9bed92c072c5eb2158d98e9dbbc"
 dependencies = [
  "rune",
  "rune-kit",
