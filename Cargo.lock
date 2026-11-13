@@ -973,6 +973,7 @@ dependencies = [
  "futures",
  "hickory-resolver",
  "html2text",
+ "html5ever 0.40.1",
  "image",
  "keyring",
  "lettre",

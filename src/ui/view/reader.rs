@@ -575,26 +575,39 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
         .h(doc.height)
         .radius(RADIUS)
         .fill(color(doc.background.unwrap_or([255, 255, 255, 255])));
+    // Open clips (`MailItem::Clip`): the clipping element, the index its run ends at, and
+    // its origin, which its children are placed relative to.
+    let mut clips: Vec<(El, usize, f32, f32)> = Vec::new();
     for (i, item) in doc.items.iter().enumerate() {
+        while clips.last().is_some_and(|c| c.1 <= i) {
+            if let Some((clip, ..)) = clips.pop() {
+                page = attach(page, &mut clips, clip);
+            }
+        }
+        let (ox, oy) = clips.last().map_or((0.0, 0.0), |c| (c.2, c.3));
         let child = match item {
-            MailItem::Box {
+            MailItem::Clip {
                 x,
                 y,
                 w,
                 h,
-                fill,
-                border,
                 radius,
+                len,
             } => {
-                let mut b = el().w(*w).h(*h).radius(*radius);
-                if let Some(f) = fill {
-                    b = b.fill(color(*f));
-                }
-                if let Some((bw, bc)) = border {
-                    b = b.border_sides(*bw, color(*bc));
-                }
-                b.absolute(*x, *y)
+                let clip = el()
+                    .w(*w)
+                    .h(*h)
+                    .clip_rounded(*radius)
+                    .absolute(*x - ox, *y - oy)
+                    .key(format!("md-{i}"));
+                clips.push((clip, i + 1 + len, *x, *y));
+                continue;
             }
+            MailItem::Box { x, y, .. } => mail_box(item, &color).absolute(*x - ox, *y - oy),
+            MailItem::Background { x, y, .. } => match mail_background(s, item) {
+                Some(b) => b.absolute(*x - ox, *y - oy),
+                None => continue,
+            },
             MailItem::Image {
                 x,
                 y,
@@ -626,7 +639,7 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                         .cursor(Cursor::Pointer)
                         .on_press(move |s: &mut Ui| s.open_link(&url));
                 }
-                e.w(*w).h(*h).radius(*radius).absolute(*x, *y)
+                e.w(*w).h(*h).radius(*radius).absolute(*x - ox, *y - oy)
             }
             MailItem::Text {
                 x,
@@ -634,11 +647,13 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                 w,
                 line_height,
                 size,
+                tracking,
                 text,
                 spans,
             } => {
                 let mut rune_spans = Vec::with_capacity(spans.len());
                 let mut links = Vec::new();
+                let mut strikes = Vec::new();
                 for sp in spans {
                     let fg = color(sp.color);
                     // The foundation ships 400 and 600 faces; Blitz matched the same ones.
@@ -648,8 +663,11 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                     if sp.italic {
                         span = span.italic();
                     }
-                    if sp.underline {
-                        span = span.underline(fg);
+                    if let Some(c) = sp.underline {
+                        span = span.underline(color(c));
+                    }
+                    if let Some(c) = sp.strike {
+                        strikes.push((sp.range.start, sp.range.end, Some(color(c))));
                     }
                     if sp.mono {
                         span = span.mono();
@@ -660,7 +678,8 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                     }
                 }
                 let mut t = rich(text.clone(), rune_spans)
-                    .font(font(*size, 400.0).lh(*line_height))
+                    .font(font(*size, 400.0).lh(*line_height).tracking(*tracking))
+                    .strikes(strikes)
                     .selectable(true);
                 if !links.is_empty() {
                     for link in links {
@@ -670,10 +689,13 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                 }
                 // Blitz broke the line; at its measured width (plus rounding slack) Rune
                 // never breaks it again, even where it runs past a narrow page.
-                t.w(*w + 1.0).absolute(*x, *y)
+                t.w(*w + 1.0).absolute(*x - ox, *y - oy)
             }
         };
-        page = page.child(child.key(format!("md-{i}")));
+        page = attach(page, &mut clips, child.key(format!("md-{i}")));
+    }
+    while let Some((clip, ..)) = clips.pop() {
+        page = attach(page, &mut clips, clip);
     }
     // Mail with fixed-width tables wider than the pane is drawn scaled down to fit,
     // as other clients do, rather than clipped. Layout keeps the unscaled size, so
@@ -724,6 +746,164 @@ fn image_placeholder(alt: &str, w: f32, h: f32, frame: rune::Color, ink: rune::C
 
 /// Alt text on the mail page: mid-grey reads on the light and the dark pages mail sets.
 const ALT_GREY: [u8; 4] = [0x80, 0x80, 0x80, 0xff];
+
+/// A box of an HTML mail: fill, gradient, shadows, corners and borders. Rune draws one
+/// border colour and style per element, so sides that differ are drawn by overlays, one
+/// per colour and style.
+fn mail_box(item: &MailItem, color: &impl Fn([u8; 4]) -> rune::Color) -> El {
+    use crate::ui::mail_doc::LineStyle;
+    let MailItem::Box {
+        w,
+        h,
+        fill,
+        border,
+        radius,
+        gradient,
+        shadows,
+        ..
+    } = item
+    else {
+        return el();
+    };
+    let shape = |e: El| {
+        let e = e.w(*w).h(*h);
+        if radius.iter().any(|r| *r > 0.0) {
+            e.corners(*radius)
+        } else {
+            e
+        }
+    };
+    let mut b = shape(el());
+    if let Some(f) = fill {
+        b = b.fill(color(*f));
+    }
+    if let Some(g) = gradient {
+        let stops: Vec<(f32, rune::Color)> =
+            g.stops.iter().map(|(at, c)| (*at, color(*c))).collect();
+        b = b.linear_gradient(g.angle, stops);
+    }
+    for sh in shadows {
+        b = b.box_shadow(rune::Shadow {
+            x: sh.x,
+            y: sh.y,
+            blur: sh.blur,
+            spread: sh.spread,
+            color: color(sh.color),
+            inset: sh.inset,
+        });
+    }
+    let Some(border) = border else {
+        return b;
+    };
+    // Sides by (colour, style): their widths, others 0.
+    type Side = ([u8; 4], LineStyle);
+    let mut groups: Vec<(Side, [f32; 4])> = Vec::new();
+    for side in 0..4 {
+        if border.widths[side] <= 0.0 {
+            continue;
+        }
+        let key = (border.colors[side], border.styles[side]);
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, widths)) => widths[side] = border.widths[side],
+            None => {
+                let mut widths = [0.0; 4];
+                widths[side] = border.widths[side];
+                groups.push((key, widths));
+            }
+        }
+    }
+    let ring = |e: El, (c, style): ([u8; 4], LineStyle), widths: [f32; 4]| {
+        let e = e.border_sides(widths, color(c));
+        // Rune dashes a whole ring; a dashed side on its own draws solid.
+        let full = widths.iter().all(|w| *w > 0.0);
+        let wide = widths.iter().copied().fold(0.0, f32::max);
+        match style {
+            LineStyle::Dashed if full => {
+                e.border_dash((3.0 * wide).max(3.0), (3.0 * wide).max(3.0))
+            }
+            LineStyle::Dotted if full => e.border_dash(wide, wide),
+            _ => e,
+        }
+    };
+    let mut groups = groups.into_iter();
+    if let Some((key, widths)) = groups.next() {
+        b = ring(b, key, widths);
+    }
+    for (key, widths) in groups {
+        b = b.child(ring(shape(el()), key, widths).absolute(0.0, 0.0));
+    }
+    b
+}
+
+/// A background image of an HTML mail, sized and repeated in its box and clipped to it;
+/// `None` until the image has loaded (remote ones only once the user allows them).
+fn mail_background(s: &Ui, item: &MailItem) -> Option<El> {
+    let MailItem::Background {
+        w,
+        h,
+        radius,
+        src,
+        size,
+        position,
+        repeat,
+        ..
+    } = item
+    else {
+        return None;
+    };
+    let Some(BodyImage::Ready(img)) = s.body_images.get(src) else {
+        return None;
+    };
+    let [nw, nh] = img.size()?;
+    let [tx, ty, tw, th] = crate::ui::mail_doc::background_tile(
+        [0.0, 0.0, *w, *h],
+        (nw as f32, nh as f32),
+        *size,
+        *position,
+    );
+    if tw < 0.5 || th < 0.5 {
+        return None;
+    }
+    // Tiles along each repeating axis, from before the box's edge to past its end.
+    let axis = |start: f32, step: f32, len: f32, on: bool| -> Vec<f32> {
+        if !on {
+            return vec![start];
+        }
+        let first = start - (start / step).ceil() * step;
+        (0..)
+            .map(|k| first + k as f32 * step)
+            .take_while(|p| *p < len)
+            .take(256)
+            .collect()
+    };
+    let xs = axis(tx, tw, *w, repeat[0]);
+    let ys = axis(ty, th, *h, repeat[1]);
+    let mut clip = el().w(*w).h(*h).clip_corners(*radius);
+    if xs.len() * ys.len() > 64 {
+        // A small pattern repeated hundreds of times: stretched over the box instead
+        // (exact for the usual 1px-wide gradient strips).
+        let (x0, w0) = if repeat[0] { (0.0, *w) } else { (tx, tw) };
+        let (y0, h0) = if repeat[1] { (0.0, *h) } else { (ty, th) };
+        return Some(clip.child(el().pixels(img.pixels()).w(w0).h(h0).absolute(x0, y0)));
+    }
+    for y in &ys {
+        for x in &xs {
+            clip = clip.child(el().pixels(img.pixels()).w(tw).h(th).absolute(*x, *y));
+        }
+    }
+    Some(clip)
+}
+
+/// Add a display-list element to the innermost open clip, or to the page.
+fn attach(page: El, clips: &mut [(El, usize, f32, f32)], child: El) -> El {
+    match clips.last_mut() {
+        Some((clip, ..)) => {
+            *clip = std::mem::replace(clip, el()).child(child);
+            page
+        }
+        None => page.child(child),
+    }
+}
 
 /// How an HTML line is laid out.
 #[derive(Clone, Copy)]

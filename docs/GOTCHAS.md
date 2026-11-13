@@ -219,6 +219,58 @@ related area. When you learn a new one, add it.
   `prepare_body_images` with its own image `src`s.
 - **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
   root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
+- **`HtmlDocument::from_html` parses XHTML-looking mail as XML** (`<?xml` first, an XHTML
+  doctype on the first line, or `<html xmlns=…xhtml>` as root): a third of mail, none of it
+  XML — content after `<br>` lost, `<style>` drawn as text. `mail_doc::parse` runs html5ever
+  itself with Blitz's options and sink. Blitz ignores quirks mode either way (always
+  NoQuirks), so quirks-mode mail lays out to standards rules.
+- **Blitz panics on URLs it cannot resolve**, and a panic is an empty layout (the reader
+  shows text): without a `base_url` on `//host/x.png` or `x.png` (so there is an inert one);
+  even with one on `<img src>`/`<link href>` that is no URL (`http://`, `http://*|IMG|*`)
+  and on `@import url()`. `mail_doc::parse` blanks such `src`/`href`s and renames every
+  `@import` (unescaped, any case) to an unknown at-rule. The net provider is the no-op
+  `DummyNetProvider`: nothing is fetched and nothing waits on a pending load.
+- **The page is at least as tall as what it draws**: `html,body{height:100%}` resolves
+  against the viewport, which is 1px so `100vh`/`height:100%` wrappers never add empty
+  space (as in a browser with a short window); the content overflows the root box. The
+  reader fills the whole page with `MailLayout.background`.
+- **blitz-dom features**: `floats` must be on (else floated columns and `<table align>`
+  stack). `complex-scripts` gives Thai/Lao/Khmer/Myanmar line breaks (else one unbroken
+  line that scales the whole mail down). `svg`, `woff`, `text-transform-icu`,
+  `system-fonts` stay off: see the `Cargo.toml` comment.
+- **Blitz maps few presentational attributes** (`cellpadding`, `cellspacing`, `valign`,
+  `<table align=center>`, `<font>`, `<body text link>`, named/`#`-less `bgcolor` are all
+  ignored; its `align` match is lowercase-only). `mail_doc::hints` adds them as UA-origin
+  sheets built after parsing (`add_user_agent_stylesheet` before `resolve`), so author CSS
+  still wins; never rewrite `style` for them. Selectors must name the attribute to outrank
+  Blitz's `td`/`table` defaults, and values reach the CSS only parsed (Stylo's
+  `servo::attr` has the HTML microsyntaxes — `parse_legacy_color` panics on an all-space
+  value) or escaped. Blitz's own hints (`PresHints`) outrank any UA rule.
+- **Blitz applies `min`/`max-height` to table cells**; Chrome ignores them there. Stripe's
+  spacers (`<td height=32 style="max-height:1px">`) collapse; cellspacing no longer hides it.
+- **Blitz lays out `overflow` but clipping is ours** (the walk is the painter). Unclipped,
+  `max-height:0;overflow:hidden` preheaders and footers draw over what follows, and a `nowrap`
+  ticker in a narrow `overflow:hidden` box counts towards `content_width` and shrinks the whole
+  page to fit it. `mail_doc::clip` drops what lies outside and emits `Item::Clip` runs for what
+  crosses an edge. Tables and cells never clip vertically: browsers grow them to their content,
+  Blitz keeps the `height`, so clipping to it hides text. `overflow` on inline boxes and rows does
+  nothing; on an `<li>` it hides the outside marker (as in Chrome).
+- **Blitz's table widths are not Chrome's** (left for later; the page is fit-scaled): a cell's
+  fixed `width` is a hard minimum (Chrome shrinks it, down to min-content, to fit the table);
+  `table-layout:fixed` adds a cell's padding on top of its percentage width; a `width=100%`
+  table contributes no min-content, so a `width=1` cell around one ends up 1px wide.
+  For the same reason an inline element's background/border/padding has no box: Parley gives
+  only runs tagged with their element (`brush.id`). `mail_doc::paint::inline_boxes` rebuilds
+  one box per line from the runs; Blitz reserves no space for inline horizontal padding.
+- **Collapsed table borders are gutters, not cell borders.** With `border-collapse:collapse`
+  Blitz zeroes every cell's layout border and spaces cells by the *first* cell's widest
+  border; read borders from the cell's computed style (`paint::collapsed_cell_border`).
+- **Rows and row groups are not laid-out boxes** (the table's children are its cells, found
+  through `SpecialElementData::TableRoot`); paint a row's background behind each of its cells.
+- **Layout border widths already say 0 for `none` sides, style-derived ones don't**: check
+  `border_*_style.none_or_hidden()` when reading widths from the style.
+- **Rune dashes a whole ring** (`border_dash` draws the widest side all round), so only a
+  four-sided dashed border is drawn dashed; one dashed side draws solid.
 
 ## Wire format
 
