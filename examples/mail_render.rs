@@ -175,6 +175,7 @@ fn dump(l: &MailLayout, images: Vec<Value>) -> Value {
                 fill,
                 border,
                 radius,
+                ..
             } => json!({
                 "t": "box", "x": x, "y": y, "w": w, "h": h, "fill": fill,
                 "border": border.map(|(w, c)| json!({"w": w, "c": c})), "radius": radius,
@@ -188,6 +189,7 @@ fn dump(l: &MailLayout, images: Vec<Value>) -> Value {
                 alt,
                 link,
                 radius,
+                ..
             } => json!({
                 "t": "img", "x": x, "y": y, "w": w, "h": h, "src": short(src), "alt": alt,
                 "link": link.is_some(), "radius": radius,
@@ -200,6 +202,7 @@ fn dump(l: &MailLayout, images: Vec<Value>) -> Value {
                 size,
                 text,
                 spans,
+                ..
             } => json!({
                 "t": "text", "x": x, "y": y, "w": w, "lh": line_height, "size": size, "text": text,
                 "spans": spans.iter().map(|s| json!({
@@ -208,6 +211,10 @@ fn dump(l: &MailLayout, images: Vec<Value>) -> Value {
                     "link": s.link.is_some(),
                 })).collect::<Vec<_>>(),
             }),
+            // The display list grows (new items, new fields: the `..` above); the harness
+            // must keep building when it does, so anything it does not know goes out as text.
+            #[allow(unreachable_patterns)]
+            other => json!({"t": "other", "debug": format!("{other:?}")}),
         })
         .collect();
     json!({
