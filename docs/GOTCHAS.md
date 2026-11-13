@@ -193,6 +193,20 @@ related area. When you learn a new one, add it.
 - **Blitz loads no resources**, so an `<img>` has no intrinsic size and `width:100%;
   height:auto` in a shrink-to-fit cell collapses to 0×0. `size_images` gives each decoded
   image empty `RasterImageData` of its real size (layout reads only the dimensions).
+- **Blitz has no attribute-mapped `aspect-ratio`** (browsers map `<img width height>` to
+  `aspect-ratio: auto w/h`), so a blocked or failed image with `height:auto` lost its height
+  and the mail reflowed when images arrived. An undecoded image with both attributes gets
+  fake `RasterImageData` of that size; one with only `width` and alt text a 20px
+  `min-height` for the alt line (`unloaded_image_size`, `alt_text_lines`).
+- **Rune decodes only the formats its `image` dependency enables** (`png`, `jpeg`); this
+  crate depends on the same `image` 0.25 with `gif` and `webp` so feature unification turns
+  them on inside Rune's decoder. Bumping Rune to another `image` major silently drops GIF
+  again (`images::tests::gif_and_webp_mail_images_decode` catches it). AVIF: not decoded.
+- **Blitz's auto table layout ignores percentage cell widths** (`layout/table.rs`: "only
+  take effect in the fixed table layout"), so `<td style="width:35%">` sizes from content —
+  e.g. a `width:100%` logo with 1904 natural px widens its column far past Chrome's.
+- **Chrome image boxes in the corpus harness are border boxes**; `Item::Image` is the content
+  box. An icon with `padding:8px` reads as "40×40 vs 24×24" — not a sizing bug.
 - **Rune draws only fonts the app embeds**, so Blitz must measure with them too (a UA
   `* { font-family: … !important }` rule), or runs measured in Arial overlap when drawn in
   Instrument Sans. Code (`<code>`, `<pre>`, monospace inline styles) gets the foundation's
@@ -203,6 +217,14 @@ related area. When you learn a new one, add it.
 - **The image list comes from the Blitz layout as well as html2text.** html2text drops some
   `<img>`s Blitz lays out (GitHub's avatar inside a flex `<div>`), so a landed layout re-runs
   `prepare_body_images` with its own image `src`s.
+- **Blitz drops table parts the CSS re-displays, with all their content**: a child of a
+  table/row group/row whose computed `display` is not the table part it expects
+  (`td{display:block}`, `tbody{display:table}`, captions, `display:contents` rows) is
+  skipped, and rows/cells outside a table are laid out as plain blocks. Browsers wrap them
+  in anonymous table boxes. `mail_doc::tables` does that with real `cosmic-anon-*`
+  elements between a style pass (`resolve_stylist`) and `resolve`: the display is only
+  known after the cascade. Moving nodes restyles them (child selectors may stop matching
+  — harmless), and a custom tag keeps type selectors like `td{…}` off the wrappers.
 - **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
   root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
 - **`HtmlDocument::from_html` parses XHTML-looking mail as XML** (`<?xml` first, an XHTML
