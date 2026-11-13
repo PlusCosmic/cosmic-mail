@@ -54,6 +54,19 @@ node chrome_lay.mjs '<table width="300" align="center"><tr><td>Centred?</td></tr
 
 Both accept `@file.html`. Bisect the mail (delete halves until the difference goes) to get there.
 
+Table column widths have their own fixed set of cases, written by hand (no mail): 23 table
+patterns common in HTML mail (percentage, pixel and `auto` columns, widths on later rows,
+`colspan` headers, fixed layout, nested tables), each through both renderers.
+
+```sh
+python3 tablecases.py             # every case: OK, or each cell's "x+width" in Chrome and the app
+python3 tablecases.py 05 14       # only these cases
+```
+
+It exits non-zero if any case differs by more than 2px. Run it after any change to the Blitz
+fork's table code or to `mail_doc`'s table passes (`tables.rs`, `hints.rs`); the cases still
+differing are listed under "Blitz" in `docs/GOTCHAS.md`.
+
 ## What is compared, and how
 
 - **The app side** is `examples/mail_render.rs`: the demo mailbox with the mail as its open
