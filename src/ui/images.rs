@@ -182,3 +182,27 @@ async fn fetch_image(src: &str) -> anyhow::Result<Vec<u8>> {
     }
     Ok(bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use rune::image::ImageCache;
+
+    fn encoded(format: image::ImageFormat) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(3, 2, image::Rgba([200, 60, 60, 255]));
+        let mut out = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut out, format).expect("encode");
+        out.into_inner()
+    }
+
+    #[test]
+    fn gif_and_webp_mail_images_decode() {
+        // Rune's decoder reads them only because this crate enables the `image` features.
+        let cache = ImageCache::new(Arc::new(|| {}));
+        for format in [image::ImageFormat::Gif, image::ImageFormat::WebP] {
+            let img = cache.load(encoded(format));
+            assert_eq!(img.wait().ok(), Some([3, 2]), "{format:?}");
+        }
+    }
+}

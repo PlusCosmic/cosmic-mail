@@ -28,6 +28,11 @@ rune-kit = { git = "https://github.com/anomalyco/rune", rev = "cd36f5a9917ec4a65
 rune-theme-foundation = { git = "https://github.com/PlusCosmic/ui-foundation", rev = "149557de183cf9bed92c072c5eb2158d98e9dbbc" }
 # Decodes the bundled PNG icon into RGBA for the tray.
 png = "0.18"
+# Not used directly: Rune's `ImageCache::load` decodes through `image` with only `png` and
+# `jpeg` enabled, and mail images are often GIF (WebP now and then). Cargo unifies features
+# on the one `image` 0.25 Rune builds, so these make its decoder read them, under the same
+# size limits. Keep the version on Rune's (`cargo tree -i image`).
+image = { version = "0.25", default-features = false, features = ["gif", "webp"] }
 # Renders sanitized HTML mail as styled text (Rune has no HTML engine).
 html2text = { version = "0.15", features = ["css"] }
 serde = { version = "1", features = ["derive"] }
@@ -70,10 +75,26 @@ hickory-resolver = "0.26.1"
 # (time/interval/retries) are available.
 socket2 = { version = "0.6.4", features = ["all"] }
 # HTML mail layout (ui::mail_doc). Beta: pinned exactly. stylo's build script needs Python 3.
-# `floats`: mail lays columns out with `float` and `<table align=left>`; without the feature
-# floated blocks stack.
-blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["floats"] }
+# Features, for mail (defaults off; nothing is fetched, the app brings its own fonts):
+# - `floats` on: mail lays columns out with `float` and `<table align=left>`; without it
+#   floated blocks stack.
+# - `complex-scripts` on: dictionary line breaking for Thai, Lao, Khmer and Myanmar, which
+#   have no spaces; without it a paragraph is one unbroken line that scales the whole mail
+#   down. Costs ~3 MB of const segmenter data, no build time.
+# - `svg` off: only decodes SVG *files* loaded through the net provider (none are); inline
+#   `<svg>` lays out either way. `woff` off: only for fetched `@font-face` fonts (none are,
+#   and every font is the app's). `system-fonts` off: only for Blitz's default font context
+#   (we pass ours, with system fallback). `text-transform-icu` off: std's Unicode case
+#   mapping already covers non-ASCII; ICU adds only Turkic/Lithuanian rules and true
+#   titlecase digraphs. accessibility/file-input/custom-widget: not drawn by Blitz here.
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = [
+    "floats",
+    "complex-scripts",
+] }
 blitz-html = "=0.3.0-beta.4"
+# The parser blitz-html builds with: mail is fed to it directly (ui::mail_doc::parse), not
+# through blitz-html's XHTML sniff. Keep the version blitz-html depends on.
+html5ever = "0.40.1"
 blitz-traits = "=0.3.0-beta.4"
 parley = { version = "0.12", default-features = false }
 taffy = { version = "0.15", default-features = false }
