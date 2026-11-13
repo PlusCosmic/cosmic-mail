@@ -115,6 +115,14 @@ static FONTS: std::sync::LazyLock<FontContext> = std::sync::LazyLock::new(|| {
         ctx.collection
             .register_fonts(Blob::new(std::sync::Arc::new(*face)), None);
     }
+    // Blitz lays out `•`/`◦`/`▪` list markers in `monospace` regardless of the item's font;
+    // make that the code face, which has them and which the reader draws markers in.
+    if let Some(mono) = ctx.collection.family_id(rune_theme_foundation::FAMILIES.1) {
+        ctx.collection.set_generic_families(
+            parley::fontique::GenericFamily::Monospace,
+            [mono].into_iter(),
+        );
+    }
     ctx
 });
 
@@ -399,7 +407,7 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
         {
             let cx = x + l.padding.left + l.border.left;
             let cy = y + l.padding.top + l.border.top + text.block_offset;
-            text_items(doc, &text.text, &text.layout, cx, cy, out);
+            text_items(doc, &text.text, &text.layout, cx, cy, false, out);
         }
     }
 
@@ -412,9 +420,11 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
         .element_data()
         .and_then(|e| e.list_item_data.as_deref())
     {
-        let (source, pad) = match marker {
-            blitz_dom::node::Marker::Char(c) => (format!("{c} "), 8.0),
-            blitz_dom::node::Marker::String(s) => (s.clone(), 0.0),
+        // Bullets are laid out in `monospace` (the code face, see `FONTS`); numbers in the
+        // item's own font.
+        let (source, pad, bullet) = match marker {
+            blitz_dom::node::Marker::Char(c) => (format!("{c} "), 8.0, true),
+            blitz_dom::node::Marker::String(s) => (s.clone(), 0.0, false),
         };
         let content_x = x + l.padding.left + l.border.left;
         let content_y = y + l.padding.top + l.border.top;
@@ -434,6 +444,7 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
             marker_layout,
             content_x + dx,
             content_y + dy,
+            bullet,
             out,
         );
     }
@@ -451,6 +462,7 @@ fn text_items(
     layout: &parley::Layout<blitz_dom::node::TextBrush>,
     cx: f32,
     cy: f32,
+    force_mono: bool,
     out: &mut Vec<Item>,
 ) {
     for line in layout.lines() {
@@ -510,7 +522,7 @@ fn text_items(
                     italic: font.font_style != style::values::computed::font::FontStyle::NORMAL,
                     color: rgba(s.clone_color().as_color_color()),
                     underline: underlined(doc, id),
-                    mono: is_mono(font),
+                    mono: force_mono || is_mono(font),
                     link: ancestor_link(doc, id).map(str::to_string),
                 },
             };
@@ -815,6 +827,18 @@ mod tests {
             _ => unreachable!(),
         };
         assert!(x_of("•") < x_of("Keyboard"));
+        let Item::Text { spans, .. } = text_item(&l, "•") else {
+            unreachable!()
+        };
+        assert!(
+            spans[0].mono,
+            "bullets draw in the code face, which has `•`"
+        );
+        let l = lay("<ol><li>First</li></ol>");
+        let Item::Text { spans, .. } = text_item(&l, "1.") else {
+            unreachable!()
+        };
+        assert!(!spans[0].mono, "numbers stay in the item's font");
     }
 
     #[test]
