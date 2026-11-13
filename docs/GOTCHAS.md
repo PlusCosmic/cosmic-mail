@@ -202,22 +202,24 @@ related area. When you learn a new one, add it.
   crate depends on the same `image` 0.25 with `gif` and `webp` so feature unification turns
   them on inside Rune's decoder. Bumping Rune to another `image` major silently drops GIF
   again (`images::tests::gif_and_webp_mail_images_decode` catches it). AVIF: not decoded.
-- **Blitz comes from our fork, for table column widths.** Blitz lays tables out as a CSS grid
+- **Blitz comes from our fork, for table column widths and quirks mode.** Blitz lays tables out as a CSS grid
   with column sizes from the first row only (percentages ignored, a `width` a rigid track), so
   mail columns came out the wrong width. `[patch.crates-io]` points every Blitz-workspace crate
   (`blitz-dom`, `blitz-html`, `blitz-traits`, `stylo_taffy`, `debug_timer`) at one commit of
   branch `cosmic-mail/0.3.0-beta.4` of [PlusCosmic/blitz](https://github.com/PlusCosmic/blitz):
   the `v0.3.0-beta.4` tag plus upstream's open table PRs DioxusLabs/blitz#1387, #1345, #1482,
   #1486, plus small fixes on top (among them: cells ignore `min`/`max-height`, as in Chrome, so
-  Stripe's `<td height=32 style="max-height:1px">` spacers keep their height). The branch's
-  `COSMIC_MAIL.md` lists every patch.
+  Stripe's `<td height=32 style="max-height:1px">` spacers keep their height; a cell's `height`
+  is a minimum it grows past to fit its content), and quirks-mode support (below, not
+  upstream: it stays when the table patches go). The branch's `COSMIC_MAIL.md` lists every patch.
   Patch *every* crate of that workspace in our graph, by `rev`, or a crate exists twice and
   `blitz-traits` types stop matching (`cargo tree -d` must show none of them). Keep the
   `=0.3.0-beta.4` pins: a patch only replaces the matching version. **Moving it**: for a new
   Blitz release, rebase the branch onto the new tag as `cosmic-mail/<version>`, drop patches
-  upstream merged, bump the pins and the revs; **drop the fork** (and the `[patch.crates-io]`
-  table) once a release includes DioxusLabs/blitz#1370, upstream's real table layout. Check any
-  change with `tools/render-corpus/tablecases.py` (Chrome's column widths, 23 cases).
+  upstream merged, bump the pins and the revs; drop the table patches once a release includes
+  DioxusLabs/blitz#1370, upstream's real table layout (and the fork, once upstream has quirks
+  mode too). Check any change with `tools/render-corpus/tablecases.py` (Chrome's column widths,
+  23 cases) and `quirkcases.py` (line positions under each doctype, 28 cases).
 - **Chrome image boxes in the corpus harness are border boxes**; `Item::Image` is the content
   box. An icon with `padding:8px` reads as "40×40 vs 24×24" — not a sizing bug.
 - **Rune draws only fonts the app embeds**, so Blitz must measure with them too (a UA
@@ -243,8 +245,23 @@ related area. When you learn a new one, add it.
 - **`HtmlDocument::from_html` parses XHTML-looking mail as XML** (`<?xml` first, an XHTML
   doctype on the first line, or `<html xmlns=…xhtml>` as root): a third of mail, none of it
   XML — content after `<br>` lost, `<style>` drawn as text. `mail_doc::parse` runs html5ever
-  itself with Blitz's options and sink. Blitz ignores quirks mode either way (always
-  NoQuirks), so quirks-mode mail lays out to standards rules.
+  itself with Blitz's options and sink.
+- **About half of mail is not in standards mode, and the layout must follow its doctype.** No
+  doctype (or HTML 4 Transitional without a system id) is quirks mode; XHTML 1.0 / HTML 4.01
+  Transitional is limited-quirks (Chrome's `document.compatMode` says `CSS1Compat` for it, so
+  the harness's `compat` column undercounts: go by the doctype). Upstream Blitz ignores the mode;
+  the fork keeps the one html5ever chooses (`BaseDocument::quirks_mode`, set through our
+  `MailSink` → Blitz's sink, nothing in `mail_doc::parse` changes it) and applies: in both modes
+  the **line height calculation quirk** (an inline box, the block's strut included, only counts
+  on lines where it has text of its own, so no descender gap under an image alone in a cell and
+  small print in a span keeps its own line spacing — standards rules made these pages 2–10%
+  taller than Chrome's); in quirks mode Stylo's CSS quirks (unitless lengths, `#`-less colours,
+  case-insensitive classes), **tables not inheriting font size/weight/style, line-height,
+  white-space, text-align**, and **a cell's `height` including its padding and border**. Our
+  UA sheets are parsed in no-quirks mode and are unaffected. Not done: the margin-collapsing
+  quirk (Chrome drops a cell's first/last child's *default* margins — `<td><p>` — in quirks
+  mode; needs to know a margin came from the UA sheet), an outside list marker's strut, a
+  padded span counting only on its first/last line.
 - **Blitz panics on URLs it cannot resolve**, and a panic is an empty layout (the reader
   shows text): without a `base_url` on `//host/x.png` or `x.png` (so there is an inert one);
   even with one on `<img src>`/`<link href>` that is no URL (`http://`, `http://*|IMG|*`)
@@ -272,7 +289,8 @@ related area. When you learn a new one, add it.
   ticker in a narrow `overflow:hidden` box counts towards `content_width` and shrinks the whole
   page to fit it. `mail_doc::clip` drops what lies outside and emits `Item::Clip` runs for what
   crosses an edge. Tables and cells never clip vertically: browsers grow them to their content,
-  Blitz keeps the `height`, so clipping to it hides text. `overflow` on inline boxes and rows does
+  Blitz only past a length `height` on a cell (fork) or table (`table_heights_as_minimums`), so
+  clipping to a percentage one hides text. `overflow` on inline boxes and rows does
   nothing; on an `<li>` it hides the outside marker (as in Chrome).
 - **Blitz's table widths are still not all Chrome's** (fork or not): `auto` columns share
   leftover width equally, not in proportion to their content (two long texts, one 3× the

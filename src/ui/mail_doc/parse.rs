@@ -6,6 +6,12 @@
 //! (implied `<tbody>`, void elements, entities), drops content and draws `<style>` text. So
 //! the mail goes through html5ever here with Blitz's own options and sink, never the sniff.
 //!
+//! The mail's own doctype sets the document's mode (no-quirks, limited-quirks or quirks), as in
+//! a browser: Blitz's sink hands the mode the tree builder chooses to the document, which lays
+//! out and styles in it (GOTCHAS, "Blitz"). Nothing here changes it: `drop_doctype` only keeps
+//! the doctype node out of the tree, a BOM, `<?xml …?>` or a comment before the doctype are
+//! skipped as browsers skip them, and the `@import` rename happens after parsing.
+//!
 //! The sink is wrapped to keep three things from reaching Blitz's unwraps (each panics the
 //! layout, and the reader falls back to flattened text):
 //! - an `<img src>` or `<link href>` that is not a URL even against the base (`http://`, an
@@ -243,6 +249,53 @@ fn ident_name(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blitz_dom::QuirksMode as Mode;
+
+    fn mode(html: &str) -> Mode {
+        document(html, DocumentConfig::default()).quirks_mode()
+    }
+
+    const XHTML_TRANSITIONAL: &str = r#"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">"#;
+
+    #[test]
+    fn the_mails_doctype_sets_the_mode() {
+        assert_eq!(mode("<!DOCTYPE html><p>x"), Mode::NoQuirks);
+        assert_eq!(mode("<p>x"), Mode::Quirks);
+        assert_eq!(
+            mode(&format!("{XHTML_TRANSITIONAL}<p>x")),
+            Mode::LimitedQuirks
+        );
+        assert_eq!(
+            mode(
+                r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd"><p>x"#
+            ),
+            Mode::LimitedQuirks
+        );
+        // Without the system identifier, HTML 4.01 Transitional is quirks mode.
+        assert_eq!(
+            mode(r#"<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"><p>x"#),
+            Mode::Quirks
+        );
+        assert_eq!(
+            mode(
+                r#"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"><p>x"#
+            ),
+            Mode::NoQuirks
+        );
+    }
+
+    #[test]
+    fn what_comes_before_the_doctype_keeps_its_mode() {
+        let xml = format!("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n{XHTML_TRANSITIONAL}<p>x");
+        assert_eq!(mode(&xml), Mode::LimitedQuirks);
+        assert_eq!(mode("\u{feff}<!DOCTYPE html><p>x"), Mode::NoQuirks);
+        assert_eq!(mode("<!--™-->\n  <!DOCTYPE html><p>x"), Mode::NoQuirks);
+        // `@import` is renamed after parsing, in the document's mode.
+        assert_eq!(
+            mode("<!DOCTYPE html><style>@import url();</style><p>x"),
+            Mode::NoQuirks
+        );
+    }
 
     #[test]
     fn imports_are_renamed_in_any_spelling() {
