@@ -109,6 +109,7 @@ listed under "Blitz" in `docs/GOTCHAS.md`.
 | x offset lines | app lines whose first word is more than 6px from Chrome's x |
 | dy jumps | places where the app−Chrome vertical offset changes by more than 6px: where the layouts diverge. `show.py` prints the Chrome y and the words either side |
 | wrap diffs | lines that break at different words |
+| text drawn over text | mails where the app draws two lines of text on top of each other; needs no reference, so it also works at other widths (`mail_render`'s window-width argument) |
 | font size / weight / colour / underline off | style mismatches on matched words |
 | images missing / size off / undecodable | no image item; a box differing by more than 3px; bytes Rune cannot decode |
 

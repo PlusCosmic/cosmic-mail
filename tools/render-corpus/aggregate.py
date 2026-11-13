@@ -12,6 +12,19 @@ rows=[]
 for f in glob.glob(out+"/*.cmp.json"):
     r=json.load(open(f)); m=idx.get(str(r["id"]),{}); r["from"]=m.get("from_addr","?"); r["subject"]=m.get("subject","")[:50]; rows.append(r)
 rows.sort(key=lambda r:int(r["id"]))
+def overlapping_text(i):
+    """Pairs of text lines the app draws on top of each other (no reference needed)."""
+    try: items=json.load(open(f"{out}/{i}.app.json"))["items"]
+    except (OSError,ValueError,KeyError): return 0
+    boxes=sorted(((t["x"],t["y"],t["x"]+t["w"],t["y"]+t["lh"],t["text"][:30]) for t in items if t.get("t")=="text" and len(t["text"].strip())>=2 and t["w"]>=4),key=lambda b:b[1])
+    n=0
+    for k,a in enumerate(boxes):
+        for b in boxes[k+1:]:
+            if b[1]>=a[3]-2: break
+            ix=min(a[2],b[2])-max(a[0],b[0]); iy=min(a[3],b[3])-max(a[1],b[1])
+            if ix>6 and iy>0.45*min(a[3]-a[1],b[3]-b[1]) and not (a[4]==b[4] and abs(a[0]-b[0])<1 and abs(a[1]-b[1])<1): n+=1
+    return n
+for r in rows: r["overlaps"]=overlapping_text(r["id"])
 N=len(rows); print("mails",N)
 def cnt(name,pred):
     hit=[r for r in rows if pred(r)]
@@ -45,6 +58,7 @@ cnt("strike-through text in chrome",lambda r:r["style"]["strikeInChrome"]>=1)
 cnt("uppercase lost",lambda r:r["style"]["uppercaseLost"]["off"]>=1)
 cnt("capitalize lost",lambda r:r["style"]["capitalizeLost"]>=1)
 cnt("letter-spaced words",lambda r:r["style"]["letterSpacedWords"]>=1)
+cnt("text drawn over text",lambda r:r["overlaps"]>=1)
 cnt("images missing in app",lambda r:r["images"]["missingN"]>=1)
 cnt("images size off",lambda r:r["images"]["sizeOffN"]>=1)
 cnt("images undecodable",lambda r:r["images"]["undecodableN"]>=1)
@@ -69,6 +83,6 @@ print("compat:",collections.Counter(r["compat"] for r in rows))
 print("pixelDiff >0.15:",len([r for r in rows if r.get("pixelDiff",0)>0.15]), " >0.08:",len([r for r in rows if r.get("pixelDiff",0)>0.08]), " <0.03:",len([r for r in rows if r.get("pixelDiff",1)<0.03]))
 # table
 with open(out+"/summary.tsv","w") as f:
-    f.write("id\tfrom\tsubject\tcompat\thA\thC\tratio\tfit\tmiss\textra\textraHid\tdxOff\tlines\tjumps\twrap\tsize\tweight\tcolor\tunder\timgMiss\timgSize\timgUndec\tpix\tpages\n")
+    f.write("id\tfrom\tsubject\tcompat\thA\thC\tratio\tfit\tmiss\textra\textraHid\tdxOff\tlines\tjumps\twrap\tsize\tweight\tcolor\tunder\timgMiss\timgSize\timgUndec\tpix\tpages\toverlaps\n")
     for r in rows:
-        f.write("\t".join(str(x) for x in [r["id"],r["from"],r["subject"].replace("\t"," "),r["compat"][:4],r["height"]["app"],r["height"]["chrome"],r["height"]["ratio"],r["width"]["fitScale"],r["text"]["missingInApp"],r["text"]["extraInApp"],r["text"]["extraThatChromeHides"],r["dx"]["off"],r["dx"]["lines"],r["dy"]["jumps"],r["wrapDiffs"],r["style"]["fontSize"]["off"],r["style"]["weight"]["off"],r["style"]["color"]["off"],r["style"]["underline"]["off"],r["images"]["missingN"],r["images"]["sizeOffN"],r["images"]["undecodableN"],r.get("pixelDiff"),r.get("pages")])+"\n")
+        f.write("\t".join(str(x) for x in [r["id"],r["from"],r["subject"].replace("\t"," "),r["compat"][:4],r["height"]["app"],r["height"]["chrome"],r["height"]["ratio"],r["width"]["fitScale"],r["text"]["missingInApp"],r["text"]["extraInApp"],r["text"]["extraThatChromeHides"],r["dx"]["off"],r["dx"]["lines"],r["dy"]["jumps"],r["wrapDiffs"],r["style"]["fontSize"]["off"],r["style"]["weight"]["off"],r["style"]["color"]["off"],r["style"]["underline"]["off"],r["images"]["missingN"],r["images"]["sizeOffN"],r["images"]["undecodableN"],r.get("pixelDiff"),r.get("pages"),r["overlaps"]])+"\n")
