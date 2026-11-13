@@ -22,6 +22,7 @@ mod clip;
 mod hints;
 mod paint;
 mod parse;
+mod tables;
 pub use paint::{background_tile, BgSize, Border, Gradient, LineStyle, Shadow};
 
 /// An sRGB colour, 8 bits per channel.
@@ -234,6 +235,7 @@ fn layout_inner(
             ua_stylesheets: vec![
                 UserAgentStylesheet::default_sheet(),
                 UserAgentStylesheet::parse(&css),
+                UserAgentStylesheet::parse(tables::CSS),
             ],
             ..Default::default()
         },
@@ -242,6 +244,9 @@ fn layout_inner(
     hints::apply(&mut doc);
     table_heights_as_minimums(&mut doc);
     background_attributes(&mut doc);
+    // Styles first: which table parts need anonymous boxes depends on the cascade.
+    doc.resolve_stylist(0.0);
+    tables::wrap_stray_table_parts(&mut doc);
     doc.resolve(0.0);
     let doc: &BaseDocument = &doc;
 
