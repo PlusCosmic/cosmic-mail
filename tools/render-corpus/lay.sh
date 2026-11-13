@@ -16,7 +16,7 @@ print("height",d["height"],"content_width",d["content_width"],"bg",d["background
 for i in d["items"]:
     if i["t"]=="text": print("text x=%.0f y=%.0f w=%.0f lh=%.1f size=%.1f %r %s"%(i["x"],i["y"],i["w"],i["lh"],i["size"],i["text"][:60], [(s["weight"],s["color"][:3],"u" if s["underline"] else "") for s in i["spans"]][:2]))
     elif i["t"]=="img": print("img  x=%.0f y=%.0f w=%.0f h=%.0f %s"%(i["x"],i["y"],i["w"],i["h"],i["src"][:40]))
-    elif i["t"]=="box": print("box  x=%.0f y=%.0f w=%.0f h=%.0f fill=%s border=%s r=%.0f"%(i["x"],i["y"],i["w"],i["h"],i["fill"],i["border"],i["radius"]))
+    elif i["t"]=="box": print("box  x=%.0f y=%.0f w=%.0f h=%.0f fill=%s border=%s r=%s"%(i["x"],i["y"],i["w"],i["h"],i["fill"],i["border"],i["radius"]))
     else: print("other", i.get("debug","")[:150])
 P
 rm -rf "$T"

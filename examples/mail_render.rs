@@ -178,7 +178,8 @@ fn dump(l: &MailLayout, images: Vec<Value>) -> Value {
                 ..
             } => json!({
                 "t": "box", "x": x, "y": y, "w": w, "h": h, "fill": fill,
-                "border": border.map(|(w, c)| json!({"w": w, "c": c})), "radius": radius,
+                // As debug text: the border's type is the display list's business.
+                "border": border.as_ref().map(|b| format!("{b:?}")), "radius": radius,
             }),
             Item::Image {
                 x,
