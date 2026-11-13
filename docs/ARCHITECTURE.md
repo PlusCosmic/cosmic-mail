@@ -348,8 +348,13 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   as `dev.pluscosmic.mail` (`notify_rust::set_application`, once, before the first one) so
   they carry the app's name and icon and are controlled under its System Settings entry; this
   needs the installed `Cosmic Mail.app` (Launch Services), else they post as another app.
-  Sound is `NSUserNotificationDefaultSoundName`. No click action yet (the freedesktop path
-  only).
+  Sound is `NSUserNotificationDefaultSoundName`. A click emits `AppEvent::Activate`, as on
+  Linux: each notification's own thread waits for it (`wait_for_response`; the delegate
+  callback arrives on the main run loop Rune's loop pumps), and `AppHandle::open` shows the
+  window, reopening it if closed, and activates the app. A notification left in Notification
+  Center keeps its thread waiting until clicked or cleared, so at most 32 wait at once; past
+  that a notification posts fire-and-forget (a click still activates the app, but cannot
+  reopen a closed window).
 - Theme: the UI's colours, fonts and type come from `rune-theme-foundation`
   (PlusCosmic/ui-foundation, generated from `@pluscosmic/ui`'s `tokens.css`). `ui::theme::Palette`
   names the foundation's tokens by the roles the views use (`bg`, `fg`, `muted` = `fg-soft`,
