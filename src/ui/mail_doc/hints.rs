@@ -56,6 +56,10 @@ const FIXED_CSS: &str = "
 
 table[align=left i] { float: left; }
 table[align=right i] { float: right; }
+/* A float as wide as its container leaves no room beside it, so what follows goes below,
+   as after a block. Taffy places the next table beside it all the same (off the page, at the
+   float's top), so the full-width one stays a block. */
+table:is([align=left i], [align=right i])[width='100%'] { float: none; }
 table[align=center i] { margin-left: auto; margin-right: auto; }
 
 img[align=left i] { float: left; }
@@ -412,6 +416,31 @@ mod tests {
         assert_eq!(
             borders,
             vec![(2.0, [0, 128, 0, 255]), (1.0, [0, 128, 0, 255])]
+        );
+    }
+
+    #[test]
+    fn a_table_follows_a_full_width_aligned_table_below_it() {
+        // Notification mail: a full-width `align=left` title table, a spacer table, the card.
+        let l = lay(
+            r#"<body style="margin:0"><table align="left" width="100%" cellpadding="0" cellspacing="0"><tr><td>Title</td></tr></table>
+               <table cellpadding="0" cellspacing="0"><tr><td>Spacer</td></tr></table>
+               <table align="left" width="50%" cellpadding="0" cellspacing="0"><tr><td>Half</td></tr></table>
+               <table cellpadding="0" cellspacing="0"><tr><td>Beside</td></tr></table>"#,
+        );
+        let (tx, ty, _) = at(&l, "Title");
+        let (sx, sy, _) = at(&l, "Spacer");
+        assert_eq!((tx, sx), (0.0, 0.0));
+        assert!(
+            sy >= ty + 15.0,
+            "the spacer is below the title, not beside it: {sy}"
+        );
+        // A narrower aligned table still floats, with the next table beside it.
+        let (hx, hy, _) = at(&l, "Half");
+        let (bx, by, _) = at(&l, "Beside");
+        assert!(
+            (hy - by).abs() < 1.0 && bx > hx + 250.0,
+            "{hx},{hy} {bx},{by}"
         );
     }
 

@@ -1419,4 +1419,82 @@ mod tests {
         assert_eq!(tracking("SPACED"), Some(2.0));
         assert_eq!(tracking("plain"), Some(0.0));
     }
+    // Document modes (GOTCHAS, "Blitz"): no doctype is quirks mode; XHTML 1.0 and HTML 4.01
+    // Transitional are limited-quirks. The values are Chrome's.
+
+    const XHTML_TRANSITIONAL: &str = r#"<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">"#;
+
+    fn box_heights(html: &str) -> Vec<f32> {
+        filled_boxes(&lay(html))
+            .iter()
+            .map(|b| b.3.round())
+            .collect()
+    }
+
+    fn text_y(l: &MailLayout, want: &str) -> f32 {
+        match text_item(l, want) {
+            Item::Text { y, .. } => *y,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn a_lone_image_in_a_cell_has_no_gap_under_it_outside_standards_mode() {
+        let cell = r##"<body style="margin:0"><table cellpadding="0" cellspacing="0"><tr>
+            <td bgcolor="#eee"><img src="x.png" width="60" height="20"></td></tr></table>"##;
+        assert_eq!(box_heights(cell), [20.0]);
+        assert_eq!(box_heights(&format!("{XHTML_TRANSITIONAL}{cell}")), [20.0]);
+        assert!(box_heights(&format!("<!DOCTYPE html>{cell}"))[0] > 20.0);
+    }
+
+    #[test]
+    fn small_print_in_a_span_takes_the_spans_line_spacing_outside_standards_mode() {
+        // Equifax: `<body style="font-size:16px;line-height:100%">`, small print in 12px spans.
+        let body = r#"<body style="margin:0"><div style="font-size:16px;line-height:16px">
+            <span style="font-size:12px">One<br>Two</span></div>"#;
+        let spacing = |html: &str| {
+            let l = lay(html);
+            text_y(&l, "Two") - text_y(&l, "One")
+        };
+        assert!((spacing(body) - 16.0).abs() < 0.5, "{}", spacing(body));
+        let limited = format!("{XHTML_TRANSITIONAL}{body}");
+        assert!(
+            (spacing(&limited) - 16.0).abs() < 0.5,
+            "{}",
+            spacing(&limited)
+        );
+        assert!(spacing(&format!("<!DOCTYPE html>{body}")) > 17.0);
+    }
+
+    #[test]
+    fn tables_do_not_inherit_the_font_size_in_quirks_mode() {
+        let body = r#"<div style="font-size:24px"><table><tr><td>Cell</td></tr></table></div>"#;
+        let size = |html: &str| match text_item(&lay(html), "Cell") {
+            Item::Text { size, .. } => *size,
+            _ => unreachable!(),
+        };
+        assert_eq!(size(body), 16.0);
+        assert_eq!(size(&format!("{XHTML_TRANSITIONAL}{body}")), 24.0);
+        assert_eq!(size(&format!("<!DOCTYPE html>{body}")), 24.0);
+    }
+
+    #[test]
+    fn a_cells_height_includes_its_cellpadding_in_quirks_mode() {
+        let cell = r##"<body style="margin:0"><table cellpadding="10" cellspacing="0"><tr>
+            <td bgcolor="#eee" height="50">X</td></tr></table>"##;
+        assert_eq!(box_heights(cell), [50.0]);
+        assert_eq!(box_heights(&format!("<!DOCTYPE html>{cell}")), [70.0]);
+    }
+
+    #[test]
+    fn a_cell_grows_past_its_height_to_its_content() {
+        // A `height="10"` spacer cell holding text: browsers grow it, the text never overlaps
+        // the next row.
+        let l = lay(
+            r##"<!DOCTYPE html><body style="margin:0"><table cellpadding="0" cellspacing="0">
+            <tr><td bgcolor="#eee" height="10">One<br>Two</td></tr><tr><td>Next</td></tr></table>"##,
+        );
+        assert!(filled_boxes(&l)[0].3 > 30.0);
+        assert!(text_y(&l, "Next") > text_y(&l, "Two") + 15.0);
+    }
 }

@@ -117,8 +117,8 @@ rune-taffy = { path = "vendor/rune-taffy" }
 # The `=0.3.0-beta.4` pins above must match the fork's versions. Drop this table once a Blitz
 # release includes DioxusLabs/blitz#1370 (real table layout); GOTCHAS, "Blitz", says how to move it.
 [patch.crates-io]
-blitz-dom = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
-blitz-html = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
-blitz-traits = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
-stylo_taffy = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
-debug_timer = { git = "https://github.com/PlusCosmic/blitz", rev = "405e80bf24b0ec03ea0925e4a8f239f6c4ca1c7d" }
+blitz-dom = { git = "https://github.com/PlusCosmic/blitz", rev = "597d2b0116baa539e0c95a3e325cb97057a9639e" }
+blitz-html = { git = "https://github.com/PlusCosmic/blitz", rev = "597d2b0116baa539e0c95a3e325cb97057a9639e" }
+blitz-traits = { git = "https://github.com/PlusCosmic/blitz", rev = "597d2b0116baa539e0c95a3e325cb97057a9639e" }
+stylo_taffy = { git = "https://github.com/PlusCosmic/blitz", rev = "597d2b0116baa539e0c95a3e325cb97057a9639e" }
+debug_timer = { git = "https://github.com/PlusCosmic/blitz", rev = "597d2b0116baa539e0c95a3e325cb97057a9639e" }

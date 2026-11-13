@@ -48,7 +48,8 @@ pub(super) fn clip_of(node: &Node, x: f32, y: f32, radius: f32) -> Option<(Rect,
     }
     let clips = |o: Overflow| o != Overflow::Visible;
     // A browser grows tables and cells to fit their content, so they never cut it off
-    // vertically; Blitz keeps a cell's `height`, and clipping to that would hide rows of text.
+    // vertically; Blitz grows them past a length `height` but keeps a percentage one, and
+    // clipping to that would hide rows of text.
     let grows = matches!(
         display.inside(),
         DisplayInside::Table | DisplayInside::TableCell
