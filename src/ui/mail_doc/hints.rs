@@ -18,7 +18,7 @@
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
-use blitz_dom::{BaseDocument, UserAgentStylesheet};
+use blitz_dom::{ns, BaseDocument, LocalName, NodeId, QualName, UserAgentStylesheet};
 use style::servo::attr::{parse_legacy_color, parse_unsigned_integer};
 
 /// Add the stylesheets for `doc`'s presentational attributes, before styles resolve.
@@ -26,6 +26,7 @@ pub(super) fn apply(doc: &mut BaseDocument) {
     static FIXED: LazyLock<UserAgentStylesheet> =
         LazyLock::new(|| UserAgentStylesheet::parse(FIXED_CSS));
     doc.add_user_agent_stylesheet(FIXED.clone());
+    mark_cells(doc);
     let valued = valued_rules(doc);
     if !valued.is_empty() {
         doc.add_user_agent_stylesheet(UserAgentStylesheet::parse(&valued));
@@ -100,7 +101,7 @@ fn rule_for(tag: &str, attr: &str, value: &str) -> Option<String> {
         }
         ("table", "cellpadding") => {
             let n = pixels(value)?;
-            Some(format!("{} {{ padding: {n}px; }}", cells_of(&sel("table"))))
+            Some(format!("{} {{ padding: {n}px; }}", cells_of(attr, value)))
         }
         // A width on the table, 1px on its cells; Chrome draws them in the text colour
         // (`bordercolor` overrides it, by colour only, so it never fights this rule).
@@ -111,14 +112,17 @@ fn rule_for(tag: &str, attr: &str, value: &str) -> Option<String> {
                     "{} {{ border-width: {n}px; border-style: outset; }}\n\
                      {} {{ border-width: 1px; border-style: inset; }}",
                     sel("table"),
-                    cells_of(&sel("table"))
+                    cells_of(attr, value)
                 )
             })
         }
         ("table", "bordercolor") => {
             let c = color(value)?;
             let t = sel("table");
-            Some(format!("{t}, {} {{ border-color: {c}; }}", cells_of(&t)))
+            Some(format!(
+                "{t}, {} {{ border-color: {c}; }}",
+                cells_of(attr, value)
+            ))
         }
         ("body" | "table" | "thead" | "tbody" | "tfoot" | "tr" | "td" | "th", "bgcolor") => Some(
             format!("{} {{ background-color: {}; }}", sel(tag), color(value)?),
@@ -143,9 +147,84 @@ fn rule_for(tag: &str, attr: &str, value: &str) -> Option<String> {
     }
 }
 
-/// The cells that belong to `table` itself, not to a table nested in them.
-fn cells_of(table: &str) -> String {
-    format!("{table} > :is(thead, tbody, tfoot) > tr > :is(td, th), {table} > tr > :is(td, th)")
+/// The table attributes that style the table's cells.
+const CELL_ATTRS: [&str; 3] = ["cellpadding", "border", "bordercolor"];
+
+/// The cells that belong to a table with `attr=value`, not to a table nested in them:
+/// the ones [`mark_cells`] gave a copy of the attribute.
+fn cells_of(attr: &str, value: &str) -> String {
+    format!(":is(td, th)[cosmic-table-{attr}={}]", css_string(value))
+}
+
+/// Copy each table's cell-styling attributes onto its own cells as `cosmic-table-…`.
+/// A structural selector (`table > tbody > tr > td`) would say the same, but only until
+/// `tables` wraps a re-displayed cell or row group in an anonymous element; the copy
+/// stays with the cell wherever it is moved.
+fn mark_cells(doc: &mut BaseDocument) {
+    let mut marks: Vec<(NodeId, String, String)> = Vec::new();
+    let mut stack = vec![doc.root_node().id];
+    while let Some(id) = stack.pop() {
+        let Some(node) = doc.get_node(id) else {
+            continue;
+        };
+        stack.extend(node.children.iter().copied());
+        let Some(el) = node.element_data().filter(|el| &*el.name.local == "table") else {
+            continue;
+        };
+        let attrs: Vec<(String, String)> = el
+            .attrs()
+            .iter()
+            .filter(|a| CELL_ATTRS.contains(&&*a.name.local))
+            .map(|a| {
+                (
+                    format!("cosmic-table-{}", a.name.local),
+                    a.value.to_string(),
+                )
+            })
+            .collect();
+        if attrs.is_empty() {
+            continue;
+        }
+        for cell in own_cells(doc, id) {
+            for (name, value) in &attrs {
+                marks.push((cell, name.clone(), value.clone()));
+            }
+        }
+    }
+    let mut m = doc.mutate();
+    for (id, name, value) in marks {
+        m.set_attribute(
+            id,
+            QualName::new(None, ns!(), LocalName::from(name)),
+            &value,
+        );
+    }
+}
+
+/// The `<td>`/`<th>`s in `table`'s own rows, directly in it or in its row groups.
+fn own_cells(doc: &BaseDocument, table: NodeId) -> Vec<NodeId> {
+    let is = |id: NodeId, names: &[&str]| {
+        doc.get_node(id)
+            .and_then(|n| n.element_data())
+            .is_some_and(|el| names.contains(&&*el.name.local))
+    };
+    let children = |id: NodeId| {
+        doc.get_node(id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default()
+    };
+    let mut rows = Vec::new();
+    for child in children(table) {
+        if is(child, &["tr"]) {
+            rows.push(child);
+        } else if is(child, &["thead", "tbody", "tfoot"]) {
+            rows.extend(children(child).into_iter().filter(|r| is(*r, &["tr"])));
+        }
+    }
+    rows.into_iter()
+        .flat_map(children)
+        .filter(|c| is(*c, &["td", "th"]))
+        .collect()
 }
 
 /// The HTML "maps to the pixel length property" mapping: a non-negative integer.
@@ -245,6 +324,19 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no text {want:?}"))
+    }
+
+    #[test]
+    fn cellpadding_stays_with_a_cell_the_table_pass_wraps() {
+        // `tables` moves a `display:block` cell into an anonymous cell, so it is no
+        // longer its row's child; it is still the table's cell.
+        let l = lay(
+            r#"<body style="margin:0"><table cellpadding="10" cellspacing="0" width="300">
+               <tr><td style="display:block">Block</td></tr></table>"#,
+        );
+        let (x, y, _) = at(&l, "Block");
+        assert_eq!(x, 10.0);
+        assert!((y - 10.0).abs() < 1.0, "{y}");
     }
 
     #[test]
