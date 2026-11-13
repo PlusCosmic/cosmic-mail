@@ -171,8 +171,11 @@ fn layout_inner(
          {code}, {code_desc} {{ font-family: \"{mono}\" !important; }}"
     );
     let mut doc = HtmlDocument::from_html(
-        html,
+        &as_html(html),
         DocumentConfig {
+            // Without a base, Blitz panics resolving `//host/x.png` or `x.png`. Nothing is
+            // ever fetched from it.
+            base_url: Some(BASE_URL.to_string()),
             viewport: Some(Viewport::new(
                 width.ceil() as u32,
                 1,
@@ -209,7 +212,36 @@ fn layout_inner(
             Item::Box { x, w, .. } | Item::Image { x, w, .. } | Item::Text { x, w, .. } => x + w,
         })
         .fold(width, f32::max);
+    // `html,body{height:100%}` makes the root box the viewport's height (1px) with the mail
+    // overflowing it: the page is at least as tall as what it draws.
+    let bottom = out
+        .items
+        .iter()
+        .map(|i| match i {
+            Item::Box { y, h, .. } | Item::Image { y, h, .. } => y + h,
+            Item::Text { y, line_height, .. } => y + line_height,
+        })
+        .fold(0.0, f32::max);
+    out.height = out.height.max(bottom);
     out
+}
+
+/// The base URL relative `src`s resolve against (inert: Blitz loads nothing).
+const BASE_URL: &str = "https://mail.invalid/";
+
+/// The mail, made to parse as HTML. blitz-html sniffs a document that starts with `<?xml`,
+/// or with an XHTML doctype, or whose root declares the XHTML namespace, and hands it to an
+/// XML parser. Mail with an XHTML doctype is tag soup like any other: parsed as XML it loses
+/// the HTML tree builder (implied `<tbody>`, void elements, entities), drops content and
+/// draws `<style>` text. A leading comment defeats the sniff and, unlike a doctype of our
+/// own, leaves the mail's quirks mode alone.
+fn as_html(html: &str) -> String {
+    let html = html.trim_start_matches('\u{feff}');
+    let html = match html.trim_start().strip_prefix("<?xml") {
+        Some(rest) => rest.split_once("?>").map_or(html, |(_, after)| after),
+        None => html,
+    };
+    format!("<!---->{html}")
 }
 
 /// Give each `<img>` the reader has decoded its intrinsic size, as a browser
@@ -875,6 +907,66 @@ mod tests {
             _ => unreachable!(),
         };
         assert!((width("iiii") - width("WWWW")).abs() < 0.01);
+    }
+
+    #[test]
+    fn an_xhtml_doctype_still_parses_as_html() {
+        // As XML: the `<style>` text is drawn, and everything after the `<br>` is lost.
+        let l = lay(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title><style>p{color:#ff0000}</style></head>
+<body><p>One&nbsp;line<br>Two</p></body></html>"#);
+        assert_eq!(texts(&l), vec!["One\u{a0}line", "Two"]);
+        let l =
+            lay(r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>A<br>B</p></body></html>"#);
+        assert_eq!(texts(&l), vec!["A", "B"]);
+    }
+
+    #[test]
+    fn relative_image_urls_do_not_lose_the_mail() {
+        // Blitz panics resolving these without a base URL, and the layout came back empty.
+        let l = lay(
+            r#"<p>Hello</p><img src="//cdn.example/a.png" width="20" height="20"><img src="b.png" width="20" height="20">"#,
+        );
+        assert_eq!(texts(&l), vec!["Hello"]);
+        assert_eq!(
+            l.items
+                .iter()
+                .filter(|i| matches!(i, Item::Image { .. }))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_full_height_body_does_not_collapse_the_page() {
+        let l = lay(
+            "<html><head><style>html,body{height:100%}</style></head><body><p>One</p><p>Two</p></body></html>",
+        );
+        let Item::Text { y, line_height, .. } = text_item(&l, "Two") else {
+            unreachable!()
+        };
+        assert!(l.height >= y + line_height, "page {} tall", l.height);
+    }
+
+    #[test]
+    fn floats_sit_side_by_side() {
+        // Needs blitz-dom's `floats` feature: without it floated blocks stack.
+        let l = lay(
+            r#"<div style="width:300px"><div style="float:left;width:100px">Left</div><div style="float:right;width:100px">Right</div></div>
+               <table width="150" align="left"><tr><td>ColA</td></tr></table><table width="150" align="left"><tr><td>ColB</td></tr></table>"#,
+        );
+        let pos = |s| match text_item(&l, s) {
+            Item::Text { x, y, .. } => (*x, *y),
+            _ => unreachable!(),
+        };
+        assert!((pos("Left").1 - pos("Right").1).abs() < 1.0);
+        assert!(pos("Right").0 > pos("Left").0 + 150.0);
+        assert!(
+            (pos("ColA").1 - pos("ColB").1).abs() < 1.0,
+            "tables with align=left float"
+        );
+        assert!(pos("ColB").0 > pos("ColA").0 + 100.0);
     }
 
     #[test]

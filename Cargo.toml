@@ -70,7 +70,9 @@ hickory-resolver = "0.26.1"
 # (time/interval/retries) are available.
 socket2 = { version = "0.6.4", features = ["all"] }
 # HTML mail layout (ui::mail_doc). Beta: pinned exactly. stylo's build script needs Python 3.
-blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
+# `floats`: mail lays columns out with `float` and `<table align=left>`; without the feature
+# floated blocks stack.
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["floats"] }
 blitz-html = "=0.3.0-beta.4"
 blitz-traits = "=0.3.0-beta.4"
 parley = { version = "0.12", default-features = false }
