@@ -31,7 +31,7 @@
 use crate::events::{AppEvent, Events};
 #[cfg(all(unix, not(target_os = "macos")))]
 use notify_rust::Hint;
-use notify_rust::{Notification, NotificationHandle, NotificationResponse};
+use notify_rust::{Notification, NotificationResponse};
 
 const APP_NAME: &str = "Cosmic Mail";
 const DESKTOP_ENTRY: &str = "dev.pluscosmic.mail";
@@ -135,7 +135,7 @@ fn show(events: &Events, summary: &str, body: &str, sound: bool) {
             register_windows_app_id();
             match notification.show() {
                 Ok(handle) => match ClickListener::claim() {
-                    Some(_slot) => listen(handle, &events),
+                    Some(_slot) => listen(&events, |respond| handle.wait_for_response(respond)),
                     None => drop(handle),
                 },
                 Err(err) => tracing::warn!(error = %err, "failed to show notification"),
@@ -153,7 +153,9 @@ fn show(events: &Events, summary: &str, body: &str, sound: bool) {
             let events = events.clone();
             // wait_for_response blocks until the user acts or the notification
             // closes; run it off the sync/async runtime on a dedicated thread.
-            std::thread::spawn(move || listen(handle, &events));
+            std::thread::spawn(move || {
+                listen(&events, |respond| handle.wait_for_response(respond))
+            });
         }
         Err(err) => {
             tracing::warn!(error = %err, "failed to show notification");
@@ -162,9 +164,14 @@ fn show(events: &Events, summary: &str, body: &str, sound: bool) {
 }
 
 /// Block until the user clicks the notification (emit `AppEvent::Activate`) or
-/// it goes away. Runs on its own thread.
-fn listen(handle: NotificationHandle, events: &Events) {
-    let result = handle.wait_for_response(|response: &NotificationResponse| {
+/// it goes away. Runs on its own thread. `wait` is the handle's
+/// `wait_for_response`, passed as a closure because `notify-rust` does not
+/// export its Windows `NotificationHandle` type.
+fn listen(
+    events: &Events,
+    wait: impl FnOnce(&dyn Fn(&NotificationResponse)) -> notify_rust::error::Result<()>,
+) {
+    let result = wait(&|response: &NotificationResponse| {
         if is_click(response) {
             tracing::debug!(?response, "notification action received");
             events.emit(AppEvent::Activate);
