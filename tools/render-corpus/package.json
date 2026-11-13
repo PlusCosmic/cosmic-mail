@@ -1,0 +1,11 @@
+{
+  "name": "cosmic-mail-render-corpus",
+  "private": true,
+  "description": "Compares the reader's rendering of HTML mail with headless Chrome's (see README.md)",
+  "type": "module",
+  "dependencies": {
+    "diff": "^9.0.0",
+    "puppeteer": "^25.17.0",
+    "sharp": "^0.35.5"
+  }
+}
