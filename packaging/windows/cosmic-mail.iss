@@ -57,15 +57,26 @@ Name: "startup"; Description: "Start Cosmic Mail in the background when I sign i
 [Files]
 Source: "{#SourceExe}"; DestDir: "{app}"; DestName: "cosmic-mail.exe"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
+; The toast icon: IconUri of the app's AppUserModelID (src/notifications.rs).
+Source: "..\..\assets\icon-128.png"; DestDir: "{app}"; DestName: "icon.png"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\Cosmic Mail"; Filename: "{app}\cosmic-mail.exe"
+; AppUserModelID: notifications are posted under this id (src/notifications.rs), so
+; Windows names them Cosmic Mail, not PowerShell. Never change it: Windows keeps the
+; user's notification settings per id.
+Name: "{autoprograms}\Cosmic Mail"; Filename: "{app}\cosmic-mail.exe"; AppUserModelID: "dev.pluscosmic.mail"
 Name: "{autodesktop}\Cosmic Mail"; Filename: "{app}\cosmic-mail.exe"; Tasks: desktopicon
 
 [Registry]
 ; Background start at sign-in: the Windows counterpart of the Linux
 ; cosmic-mail.service (--background: tray + sync, no window).
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Cosmic Mail"; ValueData: """{app}\cosmic-mail.exe"" --background"; Flags: uninsdeletevalue; Tasks: startup
+
+; The notification identity. The app writes the same key itself on its first
+; notification (so the portable zip gets it too); this entry is here so the
+; uninstaller removes it.
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\dev.pluscosmic.mail"; ValueType: string; ValueName: "DisplayName"; ValueData: "Cosmic Mail"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\dev.pluscosmic.mail"; ValueType: string; ValueName: "IconUri"; ValueData: "{app}\icon.png"; Flags: uninsdeletekey
 
 [Run]
 Filename: "{app}\cosmic-mail.exe"; Description: "{cm:LaunchProgram,Cosmic Mail}"; Flags: nowait postinstall skipifsilent

@@ -355,10 +355,19 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   pumps). A notification left in Notification Center keeps its thread waiting until clicked
   or cleared, so at most 32 wait at once; past that a notification posts fire-and-forget (a
   click still activates the app, but cannot reopen a closed window).
-- Windows: a toast; sound `Mail`. **Gap:** no app id is set, so `notify-rust` posts under
-  PowerShell's AppUserModelID: the toast is labelled Windows PowerShell and a click does not
-  reach Cosmic Mail. Fixing it needs an AUMID on the installer's Start-menu shortcut,
-  `Notification::app_id`, and the same `listen` wiring as the other platforms (issue #85).
+- Windows: a toast posted under the AppUserModelID `dev.pluscosmic.mail`
+  (`Notification::app_id`; without it `notify-rust` falls back to PowerShell's id and the
+  toast reads Windows PowerShell). The id is the installer's Start-menu shortcut
+  `AppUserModelID`, and before its first toast the app writes
+  `HKCU\Software\Classes\AppUserModelId\dev.pluscosmic.mail` (`DisplayName` "Cosmic Mail",
+  `IconUri` = `icon.png` beside the exe when present) with `reg.exe` (fixed arguments, no
+  shell), once per process, so the portable zip, which has no shortcut, is named too; the
+  uninstaller removes the key. Never change the id: Windows keeps the user's notification
+  settings under it. Sound `Mail`. The click: as on macOS, each toast's own thread waits
+  (`wait_for_response` on the toast's `Activated`/`Dismissed` events), sharing the same cap
+  of 32 waiting threads. A toast that leaves the screen reports `Dismissed` and ends its
+  thread, so a click from Action Center later does not reach the running process (that
+  would need a COM activator).
 - Theme: the UI's colours, fonts and type come from `rune-theme-foundation`
   (PlusCosmic/ui-foundation, generated from `@pluscosmic/ui`'s `tokens.css`). `ui::theme::Palette`
   names the foundation's tokens by the roles the views use (`bg`, `fg`, `muted` = `fg-soft`,
