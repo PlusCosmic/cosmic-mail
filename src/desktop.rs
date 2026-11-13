@@ -74,8 +74,8 @@ pub fn openable_url(href: &str) -> Option<url::Url> {
 /// Ask Hyprland to focus the window after a user activation.
 ///
 /// Wayland compositors may reject focus requests from a background client.
-/// Cosmic Mail targets Omarchy/Hyprland, whose IPC can honor an explicit user
-/// activation. Fixed arguments, no shell.
+/// Under Hyprland, its IPC can honour an explicit user activation; a no-op
+/// everywhere else. Fixed arguments, no shell.
 pub fn hyprland_focus() {
     if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
         return;

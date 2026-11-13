@@ -1,7 +1,7 @@
 [package]
 name = "cosmic-mail"
 version = "0.1.0"
-description = "A native Linux mail client for omarchy, built with Rune"
+description = "A native mail client for Windows, macOS and Linux, built with Rune"
 authors = ["Harry Leach <harry@pluscosmic.dev>"]
 publish = false
 edition = "2021"
@@ -71,8 +71,8 @@ hickory-resolver = "0.26.1"
 # TCP keepalive on the IMAP socket (issue #41): applied to the `tokio::net::TcpStream`
 # before the TLS handshake in `sync::imap::tls_client`. `feature = "all"` is required
 # for `TcpKeepalive::with_retries` (TCP_KEEPCNT) — see the vendored source for which
-# setters are gated per-platform; this project only targets Linux, where all three
-# (time/interval/retries) are available.
+# setters are gated per-platform; all three (time, interval, retries) exist on Windows,
+# macOS and Linux.
 socket2 = { version = "0.6.4", features = ["all"] }
 # HTML mail layout (ui::mail_doc). Beta: pinned exactly. stylo's build script needs Python 3.
 # Features, for mail (defaults off; nothing is fetched, the app brings its own fonts):

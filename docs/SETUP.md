@@ -1,17 +1,18 @@
 # Setup and usage
 
-Cosmic Mail currently runs from source and targets Omarchy on Arch Linux. Hosted release
-artifacts and distro packages are planned for a later stage of the project.
+Cosmic Mail runs on Windows, macOS and Linux. Installers and the Arch package are
+described in the [README](../README.md#install); this page covers running from source,
+accounts, settings, shortcuts and where data lives.
 
-## Requirements
+## Requirements (from source)
 
 - Rust via rustup (the pinned 1.99.1 toolchain in `rust-toolchain.toml` installs on first build)
-- Arch packages: `libxkbcommon`, `wayland`, `vulkan-icd-loader`, and your GPU's Vulkan driver
-  (`vulkan-radeon`, `vulkan-intel`, `nvidia-utils`, ...)
-- A running Secret Service implementation for credential storage
-
-Omarchy's default environment provides the expected Hyprland, Mako, and Secret Service
-integration.
+- Python 3 on `PATH` (a build script needs it)
+- **macOS**: the Xcode command line tools
+- **Windows**: the MSVC build tools
+- **Linux**: `libxkbcommon`, `wayland` (or X11), `vulkan-icd-loader` and your GPU's Vulkan
+  driver, and a running Secret Service implementation (GNOME Keyring, KWallet, KeePassXC,
+  ...) for credential storage
 
 ## Run from source
 
@@ -21,8 +22,8 @@ cd cosmic-mail
 cargo run --release
 ```
 
-`--background` starts without a window (tray and sync only). Launching again while it runs
-shows and focuses the existing window instead of starting a second process.
+`--background` starts without a window (sync and notifications only). Launching again while
+it runs shows and focuses the existing window instead of starting a second process.
 
 ## Account setup
 
@@ -33,7 +34,8 @@ provider autoconfiguration, Mozilla ISPDB lookup, DNS discovery, and conventiona
 hostnames. The connector currently supports implicit TLS on port 993; STARTTLS-only
 providers are not yet supported.
 
-The password is stored in the Secret Service keyring and is never written to the account
+The password is stored in the platform keyring (see [Local data](#local-data)) and is never
+written to the account
 configuration file or message database.
 
 ### Gmail
@@ -41,7 +43,8 @@ configuration file or message database.
 Gmail sign-in requires a Google OAuth client with the **Desktop app** application type.
 Create one in the [Google Cloud credentials
 console](https://console.cloud.google.com/apis/credentials), enable the Gmail API, and
-save the credentials to `~/.config/cosmic-mail/google-oauth.json`:
+save the credentials to `google-oauth.json` in the config directory (see
+[Local data](#local-data)):
 
 ```json
 {
@@ -57,7 +60,7 @@ variables override the JSON file. Packaged builds can provide defaults with
 compile time.
 
 Cosmic Mail opens an RFC 8252 loopback PKCE flow in the browser, then uses SASL XOAUTH2
-with Gmail's IMAP service. The OAuth refresh token is stored only in the Secret Service
+with Gmail's IMAP service. The OAuth refresh token is stored only in the platform
 keyring.
 
 ## Settings
@@ -70,20 +73,26 @@ changes save immediately.
   without the per-message "Load remote images" prompt. This relaxes **images only**: HTML mail is
   always rendered as styled text, so scripts, styles, forms, and every other remote resource are
   never loaded. Leave it off if you want tracking-pixel protection on a per-message basis.
+- **Play a sound for new mail** — on by default. New-mail notifications play the platform's
+  notification sound (only the first of a batch). **Send a test notification** beside it shows
+  a sample, to check notifications are allowed and audible. Per-platform details:
+  [DESKTOP.md](DESKTOP.md#notifications).
 - **Show the window title bar** (Linux only; Windows and macOS always use Cosmic Mail's own
   titlebar) — on by default: the system title bar and borders, to move,
-  minimise and close the window. Turn it off under a tiling window manager such as omarchy's
-  Hyprland, which draws its own. Takes effect the next time Cosmic Mail starts (restart the
+  minimise and close the window. Turn it off under a tiling window manager (Hyprland, Sway,
+  ...) that draws its own. Takes effect the next time Cosmic Mail starts (restart the
   `cosmic-mail.service` if it runs in the background).
 
-Preferences are stored, without secrets, in `~/.config/cosmic-mail/settings.json`.
+Preferences are stored, without secrets, in `settings.json` in the config directory.
 
-## System tray
+## Background and tray
 
-A tray icon stays available while Cosmic Mail runs in the background (where a StatusNotifier
-host such as waybar runs). Clicking it shows and focuses the window; its menu offers **Open
-Cosmic Mail**, **Sync now** (restart sync for every account), and **Quit**. Closing the window
-only hides it — mail keeps syncing and notifying until you quit from the tray.
+Closing the window only hides it: mail keeps syncing and notifying until you quit. On
+Windows and Linux a tray icon (Linux: wherever a StatusNotifier host such as Waybar or KDE's
+panel runs) shows and focuses the window on click, and its menu offers **Open Cosmic Mail**,
+**Sync now** (restart sync for every account), and **Quit**. macOS has no menu-bar icon
+yet: the app stays in the Dock, which brings the window back, and the application menu's
+Quit ends it. See [DESKTOP.md](DESKTOP.md).
 
 ## Keyboard shortcuts
 
@@ -121,10 +130,23 @@ Search does not reach mail that has not been synced locally; server-side search 
 
 ## Local data
 
-| data | location |
+Everything lives under a `cosmic-mail` folder in the platform's config and data
+directories (`XDG_CONFIG_HOME` / `XDG_DATA_HOME`, when set, win on every platform):
+
+| | config directory | data directory |
+|---|---|---|
+| **Windows** | `%APPDATA%\cosmic-mail` | `%APPDATA%\cosmic-mail` |
+| **macOS** | `~/Library/Application Support/cosmic-mail` | `~/Library/Application Support/cosmic-mail` |
+| **Linux** | `~/.config/cosmic-mail` | `~/.local/share/cosmic-mail` |
+
+| data | file |
 |---|---|
-| account settings, without secrets | `~/.config/cosmic-mail/accounts.json` |
-| global preferences, without secrets | `~/.config/cosmic-mail/settings.json` |
-| window layout (list/reader split) | `~/.config/cosmic-mail/ui.json` |
-| message cache | `~/.local/share/cosmic-mail/mail.db` |
-| IMAP passwords and OAuth refresh tokens | Secret Service keyring, service `dev.pluscosmic.mail` |
+| account settings, without secrets | config: `accounts.json` |
+| global preferences, without secrets | config: `settings.json` |
+| colour scheme, appearance, window layout | config: `ui.json` |
+| Gmail OAuth client (optional) | config: `google-oauth.json` |
+| message cache | data: `mail.db` |
+
+IMAP passwords and OAuth refresh tokens live only in the platform keyring, service
+`dev.pluscosmic.mail`: Windows Credential Manager, the macOS login Keychain, or the Secret
+Service on Linux.

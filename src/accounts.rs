@@ -1,9 +1,10 @@
 //! Account model, `accounts.json` persistence, and keyring secret helpers.
 //!
 //! Non-secret account configuration is stored in
-//! `$XDG_CONFIG_HOME/cosmic-mail/accounts.json`. Secrets (IMAP passwords, Gmail
-//! OAuth refresh tokens) live only in the Secret Service via the `keyring`
-//! crate and are never written to disk or logged.
+//! `<config dir>/cosmic-mail/accounts.json` ([`crate::paths::config_dir`]).
+//! Secrets (IMAP passwords, Gmail OAuth refresh tokens) live only in the
+//! platform keyring (Credential Manager, Keychain, Secret Service) via the
+//! `keyring` crate and are never written to disk or logged.
 
 use std::io::Write;
 use std::path::PathBuf;

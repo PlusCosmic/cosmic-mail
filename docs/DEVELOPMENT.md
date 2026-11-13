@@ -16,9 +16,9 @@ The toolchain is pinned to 1.99.1 by `rust-toolchain.toml` (Rune requires it); r
 installs it on first use. Rune itself is pinned by git rev in `Cargo.toml` — bump the rev
 deliberately, never track `dev`.
 
-Build dependencies: Arch `libxkbcommon wayland vulkan-icd-loader` plus a Vulkan driver;
-Ubuntu `libxkbcommon-dev libwayland-dev libdbus-1-dev` (and `libxkbcommon-x11-0` for
-windowed runs under X11). **Python 3** on `PATH` (`python3`; `python.exe` on Windows) —
+Build dependencies on Linux: Arch `libxkbcommon wayland vulkan-icd-loader` plus a Vulkan
+driver; Ubuntu `libxkbcommon-dev libwayland-dev libdbus-1-dev` (and `libxkbcommon-x11-0`
+for windowed runs under X11). On Windows, the MSVC build tools. Everywhere, **Python 3** on `PATH` (`python3`; `python.exe` on Windows) —
 Stylo, the CSS engine behind the HTML mail layout, generates code with it at build time;
 set `PYTHON3=/path/to/python` if it lives elsewhere (see GOTCHAS, "Blitz").
 
@@ -69,44 +69,49 @@ is private mail kept under `target/`, and Chrome fetches the mails' remote image
 
 ### Lifecycle
 
-One process per session: the first launch binds `$XDG_RUNTIME_DIR/cosmic-mail.sock`; a
-later launch (including `--background`) hands its request over the socket and exits, and
-the running process shows and focuses its window. Closing the window hides it without
-stopping sync; **Quit** in the tray ends the process.
+One process per session: the first launch claims the single instance (a Unix socket,
+`$XDG_RUNTIME_DIR/cosmic-mail.sock` or the temp dir, on Linux and macOS; a per-user named
+pipe on Windows); a later launch (including `--background`) hands its request over and
+exits, and the running process shows and focuses its window. Closing the window hides it
+without stopping sync; **Quit** (the tray on Windows and Linux, the application menu on
+macOS) ends the process.
 
-If your install runs Cosmic Mail as `cosmic-mail.service` (bound to
-`graphical-session.target`, started with `--background`), a `cargo run` while it is
-active just activates the service's window and exits. Stop it to test a dev build:
+So a `cargo run` while an installed Cosmic Mail is running just activates that one and
+exits. Quit it first:
 
-```sh
-systemctl --user stop cosmic-mail.service
-journalctl --user -u cosmic-mail.service -f
-```
+- **Linux**, when it runs as `cosmic-mail.service` (bound to `graphical-session.target`,
+  started with `--background`): `systemctl --user stop cosmic-mail.service`
+  (`journalctl --user -u cosmic-mail.service -f` for its log).
+- **macOS**: Cosmic Mail → Quit (or `osascript -e 'quit app "Cosmic Mail"'`).
+- **Windows**: the tray's Quit.
 
 ## Platform and environment specifics
 
-- omarchy is installed; mako is the notification daemon; current theme files live at
-  `~/.local/state/omarchy/current/theme/` (symlink swapped by `omarchy-theme-set`;
-  `~/.config/omarchy/current/` on older releases).
 - The window (1280×800, min 900×560) draws its own titlebar band on Windows and macOS (search
   lives in it there). On Linux it has the platform title bar unless Settings → Window →
-  "Show the window title bar" is off (read at startup), with app id / X11 class
-  `cosmic-mail`, which Hyprland rules and the `hyprctl` focus fallback match on.
+  "Show the window title bar" is off (read at startup), with Wayland app id / X11 class
+  `cosmic-mail`, which window-manager rules (and, under Hyprland, the `hyprctl` focus
+  fallback) match on.
 - Gmail OAuth credential setup and precedence are documented in [SETUP.md](SETUP.md#gmail).
   Without a credential source, Gmail sign-in and token refresh fail with a clear error;
   `obtaining Gmail access token` warnings mean credentials are missing in that process.
 
 ## Local state (wipe these to reset the app)
 
+The files sit in the config and data directories listed in
+[SETUP.md](SETUP.md#local-data) (Linux `~/.config/cosmic-mail` and
+`~/.local/share/cosmic-mail`; macOS both `~/Library/Application Support/cosmic-mail`;
+Windows both `%APPDATA%\cosmic-mail`):
+
 | what | where |
 |---|---|
-| account configs (no secrets) | `~/.config/cosmic-mail/accounts.json` |
-| global preferences (no secrets) | `~/.config/cosmic-mail/settings.json` |
-| UI preferences (pane split) | `~/.config/cosmic-mail/ui.json` |
-| message cache (SQLite, WAL) | `~/.local/share/cosmic-mail/mail.db` |
-| secrets | Secret Service keyring, service `dev.pluscosmic.mail`, keys `imap-password:<id>` / `oauth-refresh-token:<id>` |
+| account configs (no secrets) | config: `accounts.json` |
+| global preferences (no secrets) | config: `settings.json` |
+| UI preferences (scheme, appearance, pane split) | config: `ui.json` |
+| message cache (SQLite, WAL) | data: `mail.db` |
+| secrets | platform keyring (Credential Manager / Keychain / Secret Service), service `dev.pluscosmic.mail`, keys `imap-password:<id>` / `oauth-refresh-token:<id>` |
 
-Inspect sync progress without the UI:
+Inspect sync progress without the UI (Linux path shown):
 `sqlite3 ~/.local/share/cosmic-mail/mail.db 'SELECT name, role, total_count, unread_count FROM folders;'`
 
 ## Testing each subsystem
@@ -114,17 +119,20 @@ Inspect sync progress without the UI:
 - **Appearance**: Settings → Appearance; each scheme card and System/Light/Dark re-colours
   the window at once and survives a restart (`ui.json`). `--scene oxblood|ink|walnut|graphite|light`
   renders the others headless.
-- **Notifications**: `Backend::test_notification` sends a sample through mako.
+- **Notifications**: Settings → Notifications → "Send a test notification"
+  (`Backend::test_notification`) shows a sample, with sound when that setting is on.
   Real-path test: with the app running and synced, send yourself a mail; IDLE should
-  produce a mako notification within seconds. Batching: >3 new in one sync pass → one
-  summary notification. Test click-to-focus on the live notification before it expires;
-  restoring a mako history item cannot reach the original app-side action listener.
+  produce a notification within seconds. Batching: >3 new in one sync pass → one summary
+  notification. Test click-to-open with the window closed, on each platform. macOS needs
+  the installed `Cosmic Mail.app` to post as Cosmic Mail (DESKTOP.md). On Linux, click
+  the live notification before it expires: restoring an item from the daemon's history
+  (e.g. mako's) cannot reach the original app-side action listener.
 - **Background lifecycle**: start with `--background`, verify there is no Cosmic Mail
-  window, then launch it twice from Walker (one window, one PID). Close the window and
-  verify the PID remains; a live notification action or another Walker launch must reveal and
-  focus that same window. `pgrep -a cosmic-mail` and `hyprctl clients` are useful corroborating
-  checks.
-- **System tray**: with a desktop tray host running, start normally and with `--background`; in
+  window, then launch it twice from the desktop's launcher (one window, one PID). Close the
+  window and verify the PID remains; a notification click or another launch must reveal and
+  focus that same window (macOS: also a Dock click). `pgrep -a cosmic-mail` (Linux, macOS)
+  or Task Manager are useful corroborating checks.
+- **System tray** (Windows and Linux; macOS has none yet): with a tray host running, start normally and with `--background`; in
   both cases expect one Cosmic Mail tray icon with **Open Cosmic Mail**, **Sync now**, and **Quit**.
   Open must reveal/focus the existing window. Sync now must emit a new syncing state for every
   configured account without creating another process. Quit must cleanly stop the process; under
@@ -132,7 +140,7 @@ Inspect sync progress without the UI:
 - **Pane layout**: drag the separator between the message list and reader, switch between unified
   and account/folder views, and resize or maximize the window. Both panes must remain usable and
   the reader must receive surplus wide-screen space. Restart the app to verify persistence
-  (`~/.config/cosmic-mail/ui.json`). With the separator focused, test Left/Right (Shift for
+  (`ui.json`). With the separator focused, test Left/Right (Shift for
   larger steps), Home/End, and double-click reset.
 - **UI behaviour**: `cargo test` runs `src/ui/tests.rs` — the real view and key handling on
   Rune's headless `Runtime` over the demo mailbox (j/k/gg/G, filters, search, palette, compose

@@ -28,8 +28,8 @@ pub struct Settings {
     /// `false`.
     pub always_download_remote_images: bool,
     /// When true, the window has the platform's title bar and borders (move,
-    /// minimise, close). Turn it off under a tiling window manager (omarchy's
-    /// Hyprland) that draws its own. Read at startup. Defaults to `true`.
+    /// minimise, close). Turn it off under a tiling window manager (Hyprland,
+    /// Sway, ...) that draws its own. Read at startup. Defaults to `true`.
     /// Linux only ([`HAS_TITLE_BAR_SETTING`]); ignored on Windows and macOS.
     pub window_title_bar: bool,
     /// When true, new-mail notifications play a sound (one per sync batch).

@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Verify Cosmic Mail changes end-to-end. Prefer the in-process UI tests and headless Rune renders (deterministic, no display); use the GreenMail E2E for backend/IMAP paths; fall back to the live Hyprland window (wtype/grim) for real focus or visual checks.
+description: Verify Cosmic Mail changes end-to-end. Prefer the in-process UI tests and headless Rune renders (deterministic, no display); use the GreenMail E2E for backend/IMAP paths; fall back to the live window on the current platform (macOS, Linux/Hyprland, Windows) for real focus, notification or visual checks.
 ---
 
 # Verifying Cosmic Mail changes
@@ -44,24 +44,47 @@ cargo test --test e2e_greenmail -- --ignored
 
 ## 4. The live window (last resort)
 
-For genuine keyboard focus / Tab order, compositor behaviour (activation, tray,
-notifications) or pixel checks on the real display:
+For genuine keyboard focus / Tab order, platform behaviour (activation, tray,
+notifications, Dock) or pixel checks on the real display. Use the platform you are on;
+the app is first-class on all three, so platform-specific changes need a check on the
+platform they touch.
 
-- The installed build may run as `cosmic-mail.service` and owns the single-instance
-  socket; a dev launch would just activate it and exit. Stop it first, restart when done:
+Everywhere: an installed Cosmic Mail owns the single instance, and a dev launch would
+just activate it and exit. Quit it first (and restart it when done), then `cargo run`
+in the background with its log to a file.
+
+**macOS**
+
+- Quit the installed app: `osascript -e 'quit app "Cosmic Mail"'`.
+- Notifications post as `dev.pluscosmic.mail` only when `/Applications/Cosmic Mail.app`
+  is installed; check Settings → Notifications → "Send a test notification". Clicking a
+  notification needs the user (nothing here can click a banner).
+- Keyboard: `osascript -e 'tell application "System Events" to keystroke "j"'` (needs
+  Accessibility permission for the terminal). Screenshots: `screencapture -x out.png`
+  (needs Screen Recording permission).
+
+**Linux (Hyprland)**
+
+- The installed build may run as `cosmic-mail.service`:
   `systemctl --user stop cosmic-mail.service` … `systemctl --user start cosmic-mail.service`
-- `cargo run` (background, log to a file). Wait for the window:
+- Wait for the window:
   `until hyprctl clients -j | jq -e '.[] | select(.class=="cosmic-mail")' ...`
 - Focus before every key injection: `hyprctl dispatch focuswindow class:cosmic-mail`.
 - Keyboard: `wtype -k j`, `wtype -M ctrl -k k -m ctrl` (palette), `wtype "text"`; use text
   mode (`wtype "G"`) for shifted single characters.
 - Screenshots: `grim -g "$(hyprctl clients -j | jq -r '.[] | select(.class=="cosmic-mail") | "\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')" out.png`
-- Under Xvfb (no Hyprland), `xdotool` (`search --name "Cosmic Mail"`, `key j`,
+- Under Xvfb (no compositor), `xdotool` (`search --name "Cosmic Mail"`, `key j`,
   `mousemove x y click 1`) and `ffmpeg -f x11grab` work against the real window.
+
+**Windows**
+
+- Quit from the tray first. There is no scripted driver recipe yet; check by hand, and
+  rely on the `windows` CI workflow for the build and its headless snapshot.
 
 ## Observing state without the UI
 
-- SQLite cache: `sqlite3 ~/.local/share/cosmic-mail/mail.db` — messages
+- SQLite cache: `mail.db` in the data directory (`~/.local/share/cosmic-mail` on Linux,
+  `~/Library/Application Support/cosmic-mail` on macOS, `%APPDATA%\cosmic-mail` on Windows) — messages
   (snippet/seen/body_cached/body_text/body_html), folders (unread_count).
 - Logs: `RUST_LOG=cosmic_mail=debug cargo run`.
 

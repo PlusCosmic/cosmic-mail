@@ -1,8 +1,8 @@
 # Cosmic Mail
 
-Cosmic Mail is a native Linux mail client built for the
-[Omarchy](https://omarchy.org) desktop. It combines a keyboard-driven interface with
-live Omarchy theming, desktop notifications, and a local-first mail cache.
+Cosmic Mail is a native mail client for Windows, macOS and Linux. It combines a
+keyboard-driven interface with desktop notifications and a local-first mail cache, and
+looks and behaves the same on all three.
 
 The application is written in Rust, with a native GPU-rendered interface built on
 [Rune](https://github.com/anomalyco/rune) (no webview). Gmail and
@@ -29,17 +29,20 @@ OAuth 2.0 rather than an app password.
 - Unified inbox and account-specific folder views
 - Vim-style keyboard navigation, command palette, and resizable three-pane layout
 - Five colour schemes in light and dark from the PlusCosmic UI foundation, following the system or fixed
-- Native Mako notifications with click-to-focus, plus a system tray and background mode
-- Passwords and refresh tokens stored in the Secret Service keyring
+- Native new-mail notifications with sound on every platform (click-to-open on macOS and
+  Linux), plus a background mode and a system tray (Windows and Linux)
+- Passwords and refresh tokens stored in the platform keyring (Credential Manager,
+  Keychain, Secret Service)
 
 Open work is tracked in [GitHub issues](https://github.com/PlusCosmic/cosmic-mail/issues)
 (labels `roadmap`, `verification`, `papercut`).
 
-## Windows and macOS
+## Install
 
-Cosmic Mail targets Omarchy first, but it also builds for Windows and macOS. Every push
-to `main` publishes a [GitHub Release](https://github.com/PlusCosmic/cosmic-mail/releases/latest)
-with both platforms' files. The look is the same as on Linux.
+Every push to `main` publishes a
+[GitHub Release](https://github.com/PlusCosmic/cosmic-mail/releases/latest) for Windows and
+macOS, and an Arch Linux package to a hosted pacman repository
+([RELEASING.md](docs/RELEASING.md)).
 
 - **Windows**: a per-user installer (`*-setup.exe`, no administrator prompt, optional
   start at sign-in) and a portable zip. Builds are unsigned, so SmartScreen warns on first
@@ -51,21 +54,27 @@ with both platforms' files. The look is the same as on Linux.
   **Open Anyway**. Credentials live in the login Keychain, and mail is cached under
   `~/Library/Application Support/cosmic-mail`. There is no menu-bar icon yet: closing the
   window keeps the app running in the Dock.
+- **Linux**: the Arch package (with a systemd user service that keeps it running in the
+  background), or build from source on any distribution. Credentials live in the Secret
+  Service keyring, and mail is cached under `~/.local/share/cosmic-mail`.
 
 ## Try it from source
 
-Cosmic Mail currently targets Omarchy on Arch Linux. You will need Rust (the pinned
-toolchain in `rust-toolchain.toml` installs itself through rustup), a Vulkan driver,
-and a running Secret Service implementation.
+You need Rust (the pinned toolchain in `rust-toolchain.toml` installs itself through
+rustup) and Python 3 on `PATH` (a build script needs it). Per platform:
+
+- **macOS**: the Xcode command line tools (`xcode-select --install`).
+- **Windows**: the MSVC build tools.
+- **Linux**: `libxkbcommon`, `wayland` (or X11) and a Vulkan driver, plus a running Secret
+  Service implementation; the [development guide](docs/DEVELOPMENT.md) lists the packages.
 
 ```sh
-sudo pacman -S libxkbcommon wayland vulkan-icd-loader   # plus your GPU's Vulkan driver
 git clone https://github.com/PlusCosmic/cosmic-mail.git
 cd cosmic-mail
 cargo run
 ```
 
-`cargo run -- --background` starts without a window (tray and sync only). Gmail also
+`cargo run -- --background` starts without a window (sync and notifications only). Gmail also
 requires your own Google OAuth desktop client credentials. The
 [setup guide](docs/SETUP.md) covers account configuration, local data, and keyboard
 shortcuts.
@@ -86,7 +95,7 @@ operation, event, wire type, and database schema the Rune UI relies on.
 ## Documentation
 
 - [Setup and usage](docs/SETUP.md)
-- [Omarchy integration](docs/OMARCHY.md)
+- [Desktop integration](docs/DESKTOP.md)
 - [Development guide](docs/DEVELOPMENT.md)
 - [Architecture contract](docs/ARCHITECTURE.md)
 - [Issues and roadmap](https://github.com/PlusCosmic/cosmic-mail/issues)

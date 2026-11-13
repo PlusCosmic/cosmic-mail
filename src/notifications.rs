@@ -1,19 +1,21 @@
-//! Desktop notifications via `notify-rust` (rendered by mako on omarchy).
+//! Desktop notifications via `notify-rust` on Windows, macOS and Linux.
 //!
-//! Notifications carry the app-name "Cosmic Mail" (so users can theme/script
-//! per app-name in mako) and a `dev.pluscosmic.mail` desktop-entry hint. Each
+//! On Linux, notifications carry the app-name "Cosmic Mail" (so users can
+//! theme/script per app-name in their notification daemon) and a
+//! `dev.pluscosmic.mail` desktop-entry hint. Each
 //! notification exposes a single `default` action; activating it emits
 //! `AppEvent::Activate`, which shows and focuses the main window. Action
 //! handling is spawned so waiting on the user does not block the sync engine.
 //! On macOS a click on the notification does the same (`NSUserNotificationCenter`
 //! reports it to the posting process; Rune's loop pumps the main run loop it
-//! arrives on). Actions and hints are otherwise freedesktop (D-Bus) features: on
-//! Windows a notification just shows (a toast opens the app by itself).
+//! arrives on). Actions and hints are otherwise freedesktop (D-Bus) features. On
+//! Windows a toast just shows, under PowerShell's app id (none of ours is
+//! registered yet), so a click does not reach Cosmic Mail: a known gap.
 //!
 //! Sound follows `Settings.notificationSound`: on macOS the system alert sound
 //! (`NSUserNotificationDefaultSoundName`), on Windows the "Mail" toast sound, and
-//! on Linux the freedesktop `message-new-email` sound-name hint (mako plays
-//! nothing itself; an `on-notify` rule in mako's config can). Only the first
+//! on Linux the freedesktop `message-new-email` sound-name hint (daemons that
+//! play sounds honour it; mako plays none itself, but an `on-notify` rule can). Only the first
 //! notification of a batch makes a sound.
 //!
 //! On macOS notifications are posted as the app bundle (`dev.pluscosmic.mail`,

@@ -1,7 +1,8 @@
 # Releasing
 
-Builds reach other machines through a hosted Arch package repository: every merge to
-`main` that passes the definition of done is packaged and published. (The old local
+Every merge to `main` that passes the definition of done is packaged and published for all
+three platforms: a GitHub Release with the Windows installer and portable zip and the macOS
+disk image, and an Arch package in a hosted pacman repository. (The old local
 "daily promotion" script went away with the Tauri build; for a local build, run
 `cargo build --release` and use `target/release/cosmic-mail`.)
 
