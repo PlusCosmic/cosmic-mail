@@ -19,6 +19,8 @@ use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::PositionedLayoutItem;
 
+mod hints;
+
 /// An sRGB colour, 8 bits per channel.
 pub type Rgba = [u8; 4];
 
@@ -191,6 +193,7 @@ fn layout_inner(
         },
     );
     size_images(&mut doc, &image_size);
+    hints::apply(&mut doc);
     table_heights_as_minimums(&mut doc);
     doc.resolve(0.0);
     let doc: &BaseDocument = &doc;

@@ -205,6 +205,16 @@ related area. When you learn a new one, add it.
   `prepare_body_images` with its own image `src`s.
 - **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
   root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
+- **Blitz maps few presentational attributes** (`cellpadding`, `cellspacing`, `valign`,
+  `<table align=center>`, `<font>`, `<body text link>`, named/`#`-less `bgcolor` are all
+  ignored; its `align` match is lowercase-only). `mail_doc::hints` adds them as UA-origin
+  sheets built after parsing (`add_user_agent_stylesheet` before `resolve`), so author CSS
+  still wins; never rewrite `style` for them. Selectors must name the attribute to outrank
+  Blitz's `td`/`table` defaults, and values reach the CSS only parsed (Stylo's
+  `servo::attr` has the HTML microsyntaxes — `parse_legacy_color` panics on an all-space
+  value) or escaped. Blitz's own hints (`PresHints`) outrank any UA rule.
+- **Blitz applies `min`/`max-height` to table cells**; Chrome ignores them there. Stripe's
+  spacers (`<td height=32 style="max-height:1px">`) collapse; cellspacing no longer hides it.
 
 ## Wire format
 
