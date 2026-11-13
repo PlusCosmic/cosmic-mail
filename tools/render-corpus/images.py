@@ -25,6 +25,15 @@ def sniff(b):
     return "bin"
 
 
+def kind_of(file):
+    # By content: servers label AVIF bodies as image/jpeg often enough.
+    try:
+        with open(file, "rb") as f:
+            return sniff(f.read(600))
+    except OSError:
+        return "bin"
+
+
 def fetch(url):
     try:
         cmd = ["curl", "-sL", "--max-time", "25", "-A", "", "-H", "Accept: */*", url]
@@ -42,8 +51,7 @@ for dump in glob.glob(os.path.join(OUT, "*.chrome.json")):
         if not src or src.startswith("data:") or img["broken"] or img["nw"] <= 2:
             continue
         file = have.get(src, {}).get("file", "")
-        as_app = ".app." in os.path.basename(file)
-        if file and (as_app or file.rsplit(".", 1)[-1] not in ("webp", "avif", "bin")):
+        if file and (".app." in os.path.basename(file) or kind_of(file) not in ("webp", "avif", "bin")):
             continue
         if img["resolved"].startswith("http"):
             jobs[img["resolved"]].append((manifest, src, img["nw"], img["nh"]))
