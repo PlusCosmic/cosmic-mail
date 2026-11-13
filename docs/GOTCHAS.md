@@ -205,6 +205,17 @@ related area. When you learn a new one, add it.
   `prepare_body_images` with its own image `src`s.
 - **Inline `<a>` is not a layout box**: an image or text inside it is a child of the inline
   root, not of the `<a>`. Find links by walking the node's ancestors (`ancestor_link`).
+- **Blitz lays out `overflow` but clipping is ours** (the walk is the painter). Unclipped,
+  `max-height:0;overflow:hidden` preheaders and footers draw over what follows, and a `nowrap`
+  ticker in a narrow `overflow:hidden` box counts towards `content_width` and shrinks the whole
+  page to fit it. `mail_doc::clip` drops what lies outside and emits `Item::Clip` runs for what
+  crosses an edge. Tables and cells never clip vertically: browsers grow them to their content,
+  Blitz keeps the `height`, so clipping to it hides text. `overflow` on inline boxes and rows does
+  nothing; on an `<li>` it hides the outside marker (as in Chrome).
+- **Blitz's table widths are not Chrome's** (left for later; the page is fit-scaled): a cell's
+  fixed `width` is a hard minimum (Chrome shrinks it, down to min-content, to fit the table);
+  `table-layout:fixed` adds a cell's padding on top of its percentage width; a `width=100%`
+  table contributes no min-content, so a `width=1` cell around one ends up 1px wide.
 
 ## Wire format
 

@@ -19,6 +19,8 @@ use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use parley::PositionedLayoutItem;
 
+mod clip;
+
 /// An sRGB colour, 8 bits per channel.
 pub type Rgba = [u8; 4];
 
@@ -57,6 +59,17 @@ pub enum Item {
         size: f32,
         text: String,
         spans: Vec<TextSpan>,
+    },
+    /// The next `len` items (nested clips included) draw only inside this rectangle:
+    /// the padding box of an `overflow:hidden` (`clip`, `scroll`, `auto`) ancestor
+    /// they cross the edge of. See `clip`.
+    Clip {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        radius: f32,
+        len: usize,
     },
 }
 
@@ -205,23 +218,19 @@ fn layout_inner(
     out.height = root.final_layout().size.height;
     out.background = page_background(doc, root);
     walk(doc, root.id, 0.0, 0.0, &mut out.items);
-    out.content_width = out
-        .items
-        .iter()
-        .map(|i| match i {
-            Item::Box { x, w, .. } | Item::Image { x, w, .. } | Item::Text { x, w, .. } => x + w,
-        })
-        .fold(width, f32::max);
+    // The viewport cuts off what lies above or left of the page (`text-indent:-9999px`).
+    clip::clip_subtree(
+        &mut out.items,
+        0,
+        [0.0, 0.0, f32::INFINITY, f32::INFINITY],
+        0.0,
+    );
+    // Only what is drawn counts: an off-canvas preheader or a ticker clipped to its box
+    // neither scales the page down nor makes it taller.
+    let (right, bottom) = clip::visible_extent(&out.items);
+    out.content_width = right.max(width);
     // `html,body{height:100%}` makes the root box the viewport's height (1px) with the mail
     // overflowing it: the page is at least as tall as what it draws.
-    let bottom = out
-        .items
-        .iter()
-        .map(|i| match i {
-            Item::Box { y, h, .. } | Item::Image { y, h, .. } => y + h,
-            Item::Text { y, line_height, .. } => y + line_height,
-        })
-        .fold(0.0, f32::max);
     out.height = out.height.max(bottom);
     out
 }
@@ -413,6 +422,9 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
         }
     }
 
+    // Everything after the box itself is clipped by its `overflow`, outside list markers too.
+    let clip_start = out.len();
+
     // Images: the reader loads and draws them by `src`.
     if node.data.is_element_with_tag_name(&local_name!("img")) {
         if let Some(src) = node.attr(local_name!("src")) {
@@ -486,6 +498,9 @@ fn walk(doc: &BaseDocument, id: NodeId, ox: f32, oy: f32, out: &mut Vec<Item>) {
             walk(doc, *child, x, y, out);
         }
     }
+    if let Some((rect, radius)) = clip::clip_of(node, x, y, radius) {
+        clip::clip_subtree(out, clip_start, rect, radius);
+    }
 }
 
 fn text_items(
@@ -538,6 +553,11 @@ fn text_items(
             let Some(s) = doc.get_node(id).and_then(|n| n.primary_styles()) else {
                 continue;
             };
+            // Text a browser lays out but nobody sees: `font-size:0` wrappers, `color:transparent`.
+            let color = rgba(s.clone_color().as_color_color());
+            if run.font_size() < 1.0 || color[3] == 0 {
+                continue;
+            }
             let font = s.get_font();
             let fm = run.font_metrics();
             let piece = Piece {
@@ -552,7 +572,7 @@ fn text_items(
                     range: 0..0,
                     weight: font.font_weight.value(),
                     italic: font.font_style != style::values::computed::font::FontStyle::NORMAL,
-                    color: rgba(s.clone_color().as_color_color()),
+                    color,
                     underline: underlined(doc, id),
                     mono: force_mono || is_mono(font),
                     link: ancestor_link(doc, id).map(str::to_string),

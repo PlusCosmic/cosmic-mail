@@ -664,7 +664,8 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   the mail's own `<style>` blocks and inline styles, Taffy for block/flex/table layout, Parley for
   text) at the reader's content width, and flattens the result to a display list — element boxes
   (background, per-side borders, corner radius), images by `src`, list markers, and one text item
-  per line segment with per-run weight/italic/colour/underline/link spans. The reader draws that
+  per line segment with per-run weight/italic/colour/underline/link spans, cut to the padding box of
+  any `overflow` ancestor they cross (`Item::Clip` runs; wholly clipped items are dropped). The reader draws that
   list as Rune elements on a page in the mail's own colours (white unless the mail sets a
   background, in either app theme), so table layouts, buttons and colour bars look as they do in
   other clients. There is no JavaScript engine and no event dispatch; forms and frames draw
