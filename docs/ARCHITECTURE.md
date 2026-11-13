@@ -663,14 +663,19 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   hands the body to Blitz (`blitz-html`/`blitz-dom`: html5ever parsing, Stylo for the cascade of
   the mail's own `<style>` blocks and inline styles, Taffy for block/flex/table layout, Parley for
   text) at the reader's content width, and flattens the result to a display list — element boxes
-  (background, per-side borders, corner radius), images by `src`, list markers, and one text item
-  per line segment with per-run weight/italic/colour/underline/link spans, cut to the padding box of
-  any `overflow` ancestor they cross (`Item::Clip` runs; wholly clipped items are dropped). The reader draws that
+  (background, gradient, shadow, per-side borders and corner radii — including inline elements'
+  boxes, row backgrounds and collapsed table borders), images by `src`, background images by URL
+  with their CSS size/position/repeat, list markers, and one text item per line segment (with its
+  letter spacing) with per-run weight/italic/colour/underline/strike-through/link spans, cut to the
+  padding box of any `overflow` ancestor they cross (`Item::Clip` runs; wholly clipped items are
+  dropped). The reader draws that
   list as Rune elements on a page in the mail's own colours (white unless the mail sets a
   background, in either app theme), so table layouts, buttons and colour bars look as they do in
   other clients. There is no JavaScript engine and no event dispatch; forms and frames draw
-  nothing; Blitz is given no network provider, so `<link>` stylesheets, `@import`, CSS `url()`
-  backgrounds and web fonts are never requested. All text is laid out and drawn in the app's own
+  nothing; Blitz is given no network provider, so `<link>` stylesheets, `@import` and web fonts
+  are never requested. CSS `url()` backgrounds (and the legacy `background=` attribute) become
+  display-list items whose URLs join the body's image list: the reader loads them exactly like
+  `<img>`s — `data:` at once, remote ones only with remote-image consent. All text is laid out and drawn in the app's own
   fonts (system fonts only as glyph fallback), since Rune draws only fonts the app embeds.
 - Layout runs on a worker thread (16 MiB stack; Stylo recurses deeply) and is redone when the
   reader's width changes (8 px steps) or a body image finishes decoding (its pixel size feeds the

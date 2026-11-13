@@ -206,9 +206,9 @@ fn inside(b: Rect, clip: Rect, radius: f32) -> bool {
 /// An item's extent; `None` for a clip marker.
 fn bounds(item: &Item) -> Option<Rect> {
     match item {
-        Item::Box { x, y, w, h, .. } | Item::Image { x, y, w, h, .. } => {
-            Some([*x, *y, x + w, y + h])
-        }
+        Item::Box { x, y, w, h, .. }
+        | Item::Image { x, y, w, h, .. }
+        | Item::Background { x, y, w, h, .. } => Some([*x, *y, x + w, y + h]),
         Item::Text {
             x,
             y,
