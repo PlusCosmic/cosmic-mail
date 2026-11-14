@@ -539,3 +539,43 @@ fn the_notification_sound_setting_toggles() {
     click(&mut rt, "setting-notification-sound");
     assert!(rt.state.settings.notification_sound);
 }
+
+/// Press on the text keyed `from` and drag to the centre of the element keyed `to`.
+fn drag_select(rt: &mut Runtime<Ui>, from: &str, to: &str) {
+    let (r, _) = rt.presented(from).expect("drag start");
+    let (x0, y0) = (r[0] + 2.0, r[1] + r[3] * 0.5);
+    let (x1, y1) = rt.find(to).expect("drag end");
+    rt.pointer_move(x0, y0);
+    rt.pointer_down(x0, y0);
+    for i in 1..=10 {
+        let t = i as f32 / 10.0;
+        rt.pointer_move(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t);
+        rt.frame(1.0 / 60.0);
+    }
+    rt.pointer_up(x1, y1);
+    step(rt);
+}
+
+#[test]
+fn a_drag_selects_across_the_lines_of_an_html_mail() {
+    let mut rt = runtime(demo::state());
+    // The demo mail's lines are their own text elements; md-16 is "Order #114-5521 …",
+    // md-20 a line of the order table below it.
+    drag_select(&mut rt, "md-16", "md-20");
+    let picked = rt.selected_text().unwrap_or_default();
+    assert!(
+        picked.starts_with("Order #114-5521") && picked.contains("Track parcel"),
+        "the selection crosses lines: {picked:?}"
+    );
+}
+
+#[test]
+fn a_drag_selects_from_the_subject_into_the_body() {
+    let mut rt = runtime(demo::state());
+    drag_select(&mut rt, "reader-subject", "md-16");
+    let picked = rt.selected_text().unwrap_or_default();
+    assert!(
+        picked.contains("Your order has shipped!"),
+        "subject and body are one selection: {picked:?}"
+    );
+}

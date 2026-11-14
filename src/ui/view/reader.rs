@@ -230,7 +230,8 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
             .font(display(30.0).lh(35.0))
             .color(p.fg)
             .wrap()
-            .selectable(true),
+            .selectable(true)
+            .selection_color(p.sel_bg),
         )
         .child(sender.mt(4.0));
 
@@ -315,8 +316,11 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
         }
     }
 
+    // One selection across the subject and the body, as on a web page: an HTML mail is a
+    // text element per line, so without the group a drag can't leave the line it starts on.
     let mut content = col()
         .key("reader-content")
+        .selection_group(true)
         .w_full()
         .max_w(COLUMN + 80.0)
         .self_center()
@@ -348,7 +352,7 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
             if remote_blocked {
                 content = content.child(remote_notice(s, id, p));
             }
-            text_body = text_body.max_w(COLUMN).child(mail_doc_view(s, doc));
+            text_body = text_body.max_w(COLUMN).child(mail_doc_view(s, doc, p));
         } else if matches!(doc, Some(None)) {
             // Laying out.
         } else if b.html.is_some() && !s.body_lines.is_empty() {
@@ -366,7 +370,8 @@ pub fn reader(s: &Ui, p: &Palette, width: f32) -> El {
                     .color(p.fg)
                     .wrap()
                     .wrap_anywhere()
-                    .selectable(true),
+                    .selectable(true)
+                    .selection_color(p.sel_bg),
             );
         } else {
             text_body = text_body.child(label("(empty message)", font(13.0, 400.0), p.muted));
@@ -531,7 +536,8 @@ fn html_line(s: &Ui, index: usize, line: &Line, p: &Palette) -> El {
         .color(p.fg)
         .wrap()
         .wrap_anywhere()
-        .selectable(true);
+        .selectable(true)
+        .selection_color(p.sel_bg);
     for link in links {
         t = t.link(link);
     }
@@ -561,7 +567,7 @@ fn html_line(s: &Ui, index: usize, line: &Line, p: &Palette) -> El {
 /// An HTML mail laid out by Blitz (`ui::mail_doc`), drawn as a page in the mail's
 /// own colours — white unless it sets a background, in either theme, as other
 /// clients do — with every box, image and line of text where Blitz put it.
-fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
+fn mail_doc_view(s: &Ui, doc: &MailLayout, p: &Palette) -> El {
     let color = |c: [u8; 4]| {
         rune::color::hex(&format!(
             "#{:02x}{:02x}{:02x}{:02x}",
@@ -680,7 +686,8 @@ fn mail_doc_view(s: &Ui, doc: &MailLayout) -> El {
                 let mut t = rich(text.clone(), rune_spans)
                     .font(font(*size, 400.0).lh(*line_height).tracking(*tracking))
                     .strikes(strikes)
-                    .selectable(true);
+                    .selectable(true)
+                    .selection_color(p.sel_bg);
                 if !links.is_empty() {
                     for link in links {
                         t = t.link(link);

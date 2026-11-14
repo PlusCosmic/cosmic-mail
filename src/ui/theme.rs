@@ -76,7 +76,8 @@ pub struct Palette {
     pub fg: Color,
     /// The accent as text and thin marks (`--accent`).
     pub accent: Color,
-    /// Behind selected text.
+    /// Behind selected text: translucent, so it reads on the app's surfaces and on a
+    /// mail's own (usually white) page alike.
     pub sel_bg: Color,
     /// Borders (`--line`).
     pub border: Color,
@@ -125,7 +126,7 @@ impl Palette {
             bg: t.bg,
             fg: t.fg,
             accent: t.accent,
-            sel_bg: mix(t.accent, 0.24, t.bg),
+            sel_bg: t.accent.alpha(0.3),
             border: t.line,
             border_strong: mix(t.fg_soft, 0.35, t.line),
             border_soft: mix(t.line, 0.6, t.bg),
