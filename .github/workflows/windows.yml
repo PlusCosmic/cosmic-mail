@@ -1,10 +1,11 @@
 name: windows
 
-# Windows build. On every pull request and push it builds natively and, in
-# parallel, runs the test suite (the UI tests run on Rune's headless runtime, no
-# GPU needed), and packages an installer and a portable zip. On pushes to main it also publishes
-# them to the commit's GitHub Release, beside the macOS disk image. See docs/RELEASING.md
-# ("Windows").
+# Windows build. On every pull request and push it runs the test suite (the UI
+# tests run on Rune's headless runtime, no GPU needed) and, in parallel, builds
+# natively and packages an installer and a portable zip: on every push, and on a
+# pull request only when packaging inputs changed (the `changes` job). On pushes
+# to main it also publishes them to the commit's GitHub Release, beside the macOS
+# disk image. See docs/RELEASING.md ("Windows").
 
 on:
   push:
@@ -19,6 +20,35 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # On a pull request the release build and packaging run only when something
+  # they depend on changed; the test job always runs. A release-only break
+  # (cfg(debug_assertions), src/main.rs) is rare and still caught on main,
+  # which always builds. Pushes always build.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      build: ${{ github.event_name != 'pull_request' || steps.filter.outputs.build == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            build:
+              - '.github/workflows/windows.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - 'rust-toolchain.toml'
+              - 'scripts/version.sh'
+              - 'src/main.rs'
+              - 'packaging/windows/**'
+              - 'assets/icon.ico'
+              - 'assets/icon-128.png'
+              - 'LICENSE'
+
   # Tests and the release build compile different profiles, so they run side
   # by side; the release job waits for both.
   test:
@@ -51,6 +81,8 @@ jobs:
         run: cargo test --locked --lib
 
   build:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: windows-latest
     env:
       AWS_LC_SYS_PREBUILT_NASM: "1"
