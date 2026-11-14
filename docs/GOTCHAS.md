@@ -152,6 +152,11 @@ related area. When you learn a new one, add it.
   every column between it and the viewport, or the content overflows and never scrolls.
 - **`text_input` wraps unless told otherwise.** Single-line fields need `.single_line()` (the
   placeholder otherwise wraps word by word inside a 30 pt box).
+- **Selectable text needs a `selection_color` and, across elements, a `selection_group`.**
+  Rune's default highlight is 20% white, invisible on a mail's white page (use
+  `Palette::sel_bg`). Each text is its own selection unless an ancestor sets
+  `.selection_group(true)` — and an HTML mail is a text element per line, so without the
+  group (on `reader-content`) a drag can't leave its line. A drag must still start on text.
 - **`El::border_sides` takes `[top, right, bottom, left]`** (CSS order) — easy to get the
   header's bottom rule on its left edge.
 - **`memo(id, version, ..)` reuses the row until `version` changes**, so the version must
