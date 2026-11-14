@@ -539,7 +539,7 @@ dependencies = [
 [[package]]
 name = "blitz-dom"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/PlusCosmic/blitz?rev=597d2b0116baa539e0c95a3e325cb97057a9639e#597d2b0116baa539e0c95a3e325cb97057a9639e"
+source = "git+https://github.com/PlusCosmic/blitz?rev=9702bf9302001a84e340402637060b8fbf116d18#9702bf9302001a84e340402637060b8fbf116d18"
 dependencies = [
  "app_units",
  "atomic_refcell",
@@ -582,7 +582,7 @@ dependencies = [
 [[package]]
 name = "blitz-html"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/PlusCosmic/blitz?rev=597d2b0116baa539e0c95a3e325cb97057a9639e#597d2b0116baa539e0c95a3e325cb97057a9639e"
+source = "git+https://github.com/PlusCosmic/blitz?rev=9702bf9302001a84e340402637060b8fbf116d18#9702bf9302001a84e340402637060b8fbf116d18"
 dependencies = [
  "blitz-dom",
  "blitz-traits",
@@ -593,7 +593,7 @@ dependencies = [
 [[package]]
 name = "blitz-traits"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/PlusCosmic/blitz?rev=597d2b0116baa539e0c95a3e325cb97057a9639e#597d2b0116baa539e0c95a3e325cb97057a9639e"
+source = "git+https://github.com/PlusCosmic/blitz?rev=9702bf9302001a84e340402637060b8fbf116d18#9702bf9302001a84e340402637060b8fbf116d18"
 dependencies = [
  "atomic_refcell",
  "bitflags 2.13.2",
@@ -1166,7 +1166,7 @@ checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 [[package]]
 name = "debug_timer"
 version = "0.1.3"
-source = "git+https://github.com/PlusCosmic/blitz?rev=597d2b0116baa539e0c95a3e325cb97057a9639e#597d2b0116baa539e0c95a3e325cb97057a9639e"
+source = "git+https://github.com/PlusCosmic/blitz?rev=9702bf9302001a84e340402637060b8fbf116d18#9702bf9302001a84e340402637060b8fbf116d18"
 
 [[package]]
 name = "deranged"
@@ -4476,6 +4476,7 @@ dependencies = [
 [[package]]
 name = "rune-taffy"
 version = "0.0.1"
+source = "git+https://github.com/anomalyco/rune?rev=cd36f5a9917ec4a65786caf69213c9cc32919984#cd36f5a9917ec4a65786caf69213c9cc32919984"
 dependencies = [
  "taffy",
 ]
@@ -5273,7 +5274,7 @@ dependencies = [
 [[package]]
 name = "stylo_taffy"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/PlusCosmic/blitz?rev=597d2b0116baa539e0c95a3e325cb97057a9639e#597d2b0116baa539e0c95a3e325cb97057a9639e"
+source = "git+https://github.com/PlusCosmic/blitz?rev=9702bf9302001a84e340402637060b8fbf116d18#9702bf9302001a84e340402637060b8fbf116d18"
 dependencies = [
  "bitflags 2.13.2",
  "stylo",

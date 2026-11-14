@@ -186,11 +186,14 @@ related area. When you learn a new one, add it.
 - **Stylo's build script runs Python 3.** Without it: `Can't find python (tried python.exe)`.
   Linux and the CI runners have it on `PATH`; on Windows the Microsoft Store `python.exe`
   stub doesn't count — install Python or point `PYTHON3` at one (`uv python find`).
-- **blitz-dom forces taffy's `flexbox_balance` feature** (through `stylo_taffy`'s defaults,
-  not optional), which adds `FlexWrap::Balance*` variants that Rune's `rune-taffy` matches
-  exhaustively — Rune stops compiling. `vendor/rune-taffy` is Rune's crate at the pinned rev
-  plus a catch-all arm, wired in with `[patch."https://github.com/anomalyco/rune"]`. **When
-  bumping the Rune rev, re-copy the crate** (or drop the patch once Rune handles it upstream).
+- **Taffy's `flexbox_balance` feature breaks Rune.** It adds `FlexWrap::Balance*` variants
+  that Rune's `rune-taffy` matches exhaustively, and Cargo unifies taffy's features across
+  the build, so any crate turning it on stops Rune compiling. Upstream Blitz turns it on (in
+  `stylo_taffy`'s defaults); our fork makes it an opt-in `stylo_taffy` feature, so `flex-wrap:
+  balance` lays out as `wrap`. **When moving the Blitz fork, keep that commit** (its
+  COSMIC_MAIL.md, "Build"). Check with `cargo tree -e features -i taffy`: no `flexbox_balance`.
+  (It used to be worked around with a vendored, patched `rune-taffy`; a crate vendored inside
+  the repo is never kept by CI's Rust cache, so Rune recompiled on every run.)
 - **The UA stylesheet list replaces Blitz's default sheet** unless it is included:
   `vec![UserAgentStylesheet::default_sheet(), ours]`. Without it `<style>` and `<head>`
   render as text and tables stop being tables.

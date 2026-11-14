@@ -114,9 +114,14 @@ scripts/build-local.sh cosmic-mail ~/Projects/Mail
 `.github/workflows/windows.yml` builds Windows natively on `windows-latest`:
 
 - **Every pull request and push**: two parallel jobs — `test` (`cargo test --locked --lib`,
-  no debug info) and `build` (`cargo build --locked --release`, which then packages `dist/*-setup.exe` (Inno Setup, `packaging/windows/cosmic-mail.iss`) and
-  `dist/*-portable.zip`, uploaded as the `cosmic-mail-windows` workflow artifact). A PR
-  that breaks the Windows build fails here. Each job keeps its own Rust cache, and only
+  no debug info) and `build` (`cargo build --locked --release`, which then packages
+  `dist/*-setup.exe` (Inno Setup, `packaging/windows/cosmic-mail.iss`) and
+  `dist/*-portable.zip`, uploaded as the `cosmic-mail-windows` workflow artifact). On a
+  pull request, `build` runs only when something it depends on changed (the `changes`
+  job's path filter: the packaging files, the workflow, `Cargo.toml`/`Cargo.lock`,
+  `build.rs`, the toolchain, `src/main.rs`, the icons); pushes always run it, so a rare
+  release-only break shows up on `main` at the latest. Add a path to the filter when the
+  build starts depending on a new file. Each job keeps its own Rust cache, and only
   `main` saves one (`save-if` on `Swatinem/rust-cache`, in every workflow): PRs restore
   `main`'s and save nothing, since a PR's cache serves no other branch and per-PR copies
   pushed `main`'s out of the repository's 10 GB cache limit. A cold cache (the first run
@@ -152,7 +157,10 @@ To check the Windows build from Linux without a Windows machine:
 the Windows workflow:
 
 - **Every pull request and push**: two parallel jobs — `test` (`cargo test --locked --lib`,
-  no debug info) and `build`. `build` compiles Apple Silicon only
+  no debug info, then a headless `--snap` of the demo mailbox from the debug binary on the
+  runner's Metal device, uploaded as `snapshot-macos-debug`) and `build`, which runs on a
+  pull request only when something it depends on changed (the same path filter as on
+  Windows; [Windows releases](#windows-releases-github-releases)). `build` compiles Apple Silicon only
   (`cargo build --locked --release --target aarch64-apple-darwin`; Intel Macs are not
   supported), packages it with `packaging/macos/package.sh` into
   `dist/cosmic-mail-<version>-macos-arm64.dmg` (uploaded as the `cosmic-mail-macos`

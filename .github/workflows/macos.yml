@@ -1,9 +1,11 @@
 name: macos
 
 # macOS build. On every pull request and push it runs the test suite (the UI tests run on
-# Rune's headless runtime, no GPU needed) and, in parallel, builds the app for Apple Silicon
-# (Intel Macs are not supported), packages it as "Cosmic Mail.app" in a disk image, and
-# checks the image. Pushes also notarize it; pull requests skip that. On pushes to main it also publishes the image
+# Rune's headless runtime, no GPU needed) and a headless snapshot on the runner's Metal
+# device. In parallel it builds the app for Apple Silicon (Intel Macs are not supported),
+# packages it as "Cosmic Mail.app" in a disk image, and checks the image: on every push,
+# and on a pull request only when packaging inputs changed (the `changes` job). Pushes
+# also notarize it. On pushes to main it also publishes the image
 # to the commit's GitHub Release, beside the Windows files. See docs/RELEASING.md ("macOS").
 
 on:
@@ -19,6 +21,33 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # On a pull request the release build and packaging run only when something
+  # they depend on changed; the test job always runs. A release-only break
+  # (cfg(debug_assertions), src/main.rs) is rare and still caught on main,
+  # which always builds. Pushes always build.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      build: ${{ github.event_name != 'pull_request' || steps.filter.outputs.build == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@v4
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            build:
+              - '.github/workflows/macos.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - 'rust-toolchain.toml'
+              - 'scripts/version.sh'
+              - 'src/main.rs'
+              - 'packaging/macos/**'
+              - 'icon.png'
+
   # Tests and the release build compile different profiles, so they run side
   # by side; the release job waits for both.
   test:
@@ -46,7 +75,22 @@ jobs:
       - name: Test
         run: cargo test --locked --lib
 
+      # The UI must still draw on a real GPU: render the demo mailbox offscreen with
+      # the debug binary. The build job checks the shipped binary the same way, but
+      # does not run on every pull request.
+      - name: Headless snapshot
+        run: |
+          cargo run --locked -- --snap snapshot.png --scale 2
+          test -s snapshot.png
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-macos-debug
+          path: snapshot.png
+
   build:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: macos-latest
     env:
       CARGO_TERM_COLOR: always
