@@ -35,9 +35,7 @@ Builds are unsigned, so Windows SmartScreen warns on first run (More info → Ru
 
 **macOS**
 
-- **Disk image**: \`*-macos-universal.dmg\` (Apple Silicon and Intel, macOS 13 or later): open it and drag Cosmic Mail to Applications.
-
-Builds are not notarized, so macOS blocks the first launch: open System Settings → Privacy & Security and choose Open Anyway."
+- **Disk image**: \`*-macos-arm64.dmg\` (Apple Silicon, macOS 13 or later; Intel Macs are not supported): open it and drag Cosmic Mail to Applications. Signed with a Developer ID and notarized by Apple, so it opens without a warning."
   gh release create "$tag" "$@" \
     --repo "$repo" \
     --target "$GITHUB_SHA" \

@@ -31,6 +31,10 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: a PR's cache serves no other branch and would push
+          # main's out of the 10 GB repository limit. PRs restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Start + seed the GreenMail fixture
         run: |

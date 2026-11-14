@@ -116,9 +116,11 @@ scripts/build-local.sh cosmic-mail ~/Projects/Mail
 - **Every pull request and push**: two parallel jobs — `test` (`cargo test --locked --lib`,
   no debug info) and `build` (`cargo build --locked --release`, which then packages `dist/*-setup.exe` (Inno Setup, `packaging/windows/cosmic-mail.iss`) and
   `dist/*-portable.zip`, uploaded as the `cosmic-mail-windows` workflow artifact). A PR
-  that breaks the Windows build fails here. Each job keeps its own Rust cache; caches
-  saved on `main` are what PRs and later `main` pushes restore, so a cold cache (the
-  first run after a dependency bump) costs ~15 min and a warm one a few minutes.
+  that breaks the Windows build fails here. Each job keeps its own Rust cache, and only
+  `main` saves one (`save-if` on `Swatinem/rust-cache`, in every workflow): PRs restore
+  `main`'s and save nothing, since a PR's cache serves no other branch and per-PR copies
+  pushed `main`'s out of the repository's 10 GB cache limit. A cold cache (the first run
+  after a dependency bump) costs ~15 min and a warm one a few minutes.
 - **Every push to `main`**: once both jobs pass, the `release` job publishes those files
   to the commit's GitHub Release, tagged `v<version>` (see [Versions](#versions)) and
   marked latest. The macOS workflow publishes to the same release; see
@@ -150,20 +152,20 @@ To check the Windows build from Linux without a Windows machine:
 the Windows workflow:
 
 - **Every pull request and push**: two parallel jobs — `test` (`cargo test --locked --lib`,
-  no debug info) and `build`. `build` compiles both architectures in one
-  `cargo build --locked --release --target aarch64-apple-darwin --target x86_64-apple-darwin`,
-  packages them with `packaging/macos/package.sh` into
-  `dist/cosmic-mail-<version>-macos-universal.dmg` (uploaded as the `cosmic-mail-macos`
-  workflow artifact), then mounts that image and checks what ships: both architectures are
-  in the binary, the signature is intact, the bundle carries the right version, the binary
-  starts on each architecture (the Intel half under Rosetta), and a headless `--snap` of
-  the demo mailbox draws (uploaded as `snapshot-macos`).
+  no debug info) and `build`. `build` compiles Apple Silicon only
+  (`cargo build --locked --release --target aarch64-apple-darwin`; Intel Macs are not
+  supported), packages it with `packaging/macos/package.sh` into
+  `dist/cosmic-mail-<version>-macos-arm64.dmg` (uploaded as the `cosmic-mail-macos`
+  workflow artifact), notarizes it outside pull requests (`NOTARIZE` in the workflow), then
+  mounts that image and checks what ships: an arm64-only binary, an intact signature, the
+  right version, a binary that starts, and a headless `--snap` of the demo mailbox that
+  draws (uploaded as `snapshot-macos`).
 - **Every push to `main`**: once both jobs pass, the `release` job attaches the disk image
   to the commit's GitHub Release.
 
 `packaging/macos/package.sh VERSION OUT_DIR BINARY...` is the whole packaging step, and
-runs by hand on a Mac too (see [DEVELOPMENT.md](DEVELOPMENT.md)). It merges the binaries
-with `lipo`, lays out `Cosmic Mail.app` around `packaging/macos/Info.plist`, builds
+runs by hand on a Mac too (see [DEVELOPMENT.md](DEVELOPMENT.md)). It refuses anything
+but an arm64 binary, lays out `Cosmic Mail.app` around `packaging/macos/Info.plist`, builds
 `AppIcon.icns` from the repository's `icon.png` (`sips` + `iconutil`), signs the bundle
 (see [Signing and notarization](#signing-and-notarization)), and writes a compressed disk
 image holding the app and an `/Applications` link to drag it onto. The binary is built for macOS 13 or later (`MACOSX_DEPLOYMENT_TARGET` in the
@@ -186,7 +188,7 @@ consequences:
 Both go away once the repository has a Developer ID certificate and a notary key (an Apple
 Developer Program membership provides both). The `build` job then imports the certificate
 into a throwaway keychain, `package.sh` signs the app with it and the hardened runtime
-(`CODESIGN_IDENTITY`) and signs the image, and the job submits the image to Apple's notary
+(`CODESIGN_IDENTITY`) and signs the image, and, outside pull requests, the job submits the image to Apple's notary
 service, staples the ticket to it, and validates the staple before anything is uploaded.
 The switch is the certificate secret: with it set, a build that cannot sign or notarize
 fails. Pull requests from forks never see secrets, so they stay ad hoc.
