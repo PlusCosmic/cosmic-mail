@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build "Cosmic Mail.app" from release binaries and wrap it in a disk image. macOS only
+# Build "Cosmic Mail.app" from a release binary and wrap it in a disk image. macOS only
 # (lipo, sips, iconutil, codesign, hdiutil).
 #
-#   packaging/macos/package.sh VERSION OUT_DIR BINARY [BINARY...]
+#   packaging/macos/package.sh VERSION OUT_DIR BINARY
 #
-# One BINARY per architecture; two are merged into a universal binary. Writes
-# OUT_DIR/cosmic-mail-VERSION-macos-{universal,arm64,x86_64}.dmg and prints its path.
+# BINARY must be Apple Silicon (arm64); Intel Macs are not supported. Writes
+# OUT_DIR/cosmic-mail-VERSION-macos-arm64.dmg and prints its path.
 #
 # Signs ad hoc unless CODESIGN_IDENTITY names a Developer ID Application identity in the
 # keychain (its name or SHA-1): then the app is signed with it and the hardened runtime,
@@ -16,13 +16,19 @@
 #   packaging/macos/package.sh "$(scripts/version.sh)" target/macos target/release/cosmic-mail
 set -euo pipefail
 
-if [ "$#" -lt 3 ]; then
-  echo "usage: $0 VERSION OUT_DIR BINARY [BINARY...]" >&2
+if [ "$#" -ne 3 ]; then
+  echo "usage: $0 VERSION OUT_DIR BINARY" >&2
   exit 2
 fi
 version=$1
 out_dir=$2
-shift 2
+binary=$3
+
+archs=$(lipo -archs "$binary")
+if [ "$archs" != arm64 ]; then
+  echo "$binary is $archs; only Apple Silicon (arm64) is packaged" >&2
+  exit 1
+fi
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d)
@@ -34,22 +40,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 ln -s /Applications "$work/image/Applications"
 
 exe="$app/Contents/MacOS/cosmic-mail"
-if [ "$#" -eq 1 ]; then
-  cp "$1" "$exe"
-else
-  lipo -create -output "$exe" "$@"
-fi
+cp "$binary" "$exe"
 chmod 755 "$exe"
-
-case "$(lipo -archs "$exe")" in
-  *x86_64*arm64* | *arm64*x86_64*) arch=universal ;;
-  *arm64*) arch=arm64 ;;
-  *x86_64*) arch=x86_64 ;;
-  *)
-    echo "unexpected architectures in $exe: $(lipo -archs "$exe")" >&2
-    exit 1
-    ;;
-esac
 
 sed "s/@VERSION@/$version/g" "$root/packaging/macos/Info.plist" > "$app/Contents/Info.plist"
 plutil -lint "$app/Contents/Info.plist" > /dev/null
@@ -76,7 +68,7 @@ fi
 codesign --verify --strict "$app"
 
 mkdir -p "$out_dir"
-dmg="$out_dir/cosmic-mail-$version-macos-$arch.dmg"
+dmg="$out_dir/cosmic-mail-$version-macos-arm64.dmg"
 # hdiutil now and then fails with "Resource busy" on CI runners; a retry gets through.
 for attempt in 1 2 3; do
   if hdiutil create -volname "Cosmic Mail" -srcfolder "$work/image" \

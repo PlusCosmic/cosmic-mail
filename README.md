@@ -47,10 +47,10 @@ macOS, and an Arch Linux package to a hosted pacman repository
   start at sign-in) and a portable zip. Builds are unsigned, so SmartScreen warns on first
   run (**More info → Run anyway**). Credentials live in Windows Credential Manager, and
   mail is cached under `%APPDATA%`.
-- **macOS**: a disk image (`*-macos-universal.dmg`, Apple Silicon and Intel, macOS 13 or
-  later); open it and drag Cosmic Mail to Applications. Builds are not notarized, so macOS
-  blocks the first launch: open **System Settings → Privacy & Security** and choose
-  **Open Anyway**. Credentials live in the login Keychain, and mail is cached under
+- **macOS**: a disk image (`*-macos-arm64.dmg`, Apple Silicon, macOS 13 or later; Intel
+  Macs are not supported); open it and drag Cosmic Mail to Applications. Builds are signed
+  with a Developer ID and notarized by Apple, so they open without a Gatekeeper warning.
+  Credentials live in the login Keychain, and mail is cached under
   `~/Library/Application Support/cosmic-mail`. There is no menu-bar icon yet: closing the
   window keeps the app running in the Dock.
 - **Linux**: the Arch package (with a systemd user service that keeps it running in the

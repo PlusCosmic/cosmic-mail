@@ -1,10 +1,10 @@
 name: macos
 
 # macOS build. On every pull request and push it runs the test suite (the UI tests run on
-# Rune's headless runtime, no GPU needed) and, in parallel, builds a universal binary (Apple
-# Silicon + Intel), packages it as "Cosmic Mail.app" in a disk image, and checks the image.
-# On pushes to main it also publishes the image to the commit's GitHub Release, beside the
-# Windows files. See docs/RELEASING.md ("macOS").
+# Rune's headless runtime, no GPU needed) and, in parallel, builds the app for Apple Silicon
+# (Intel Macs are not supported), packages it as "Cosmic Mail.app" in a disk image, and
+# checks the image. Pushes also notarize it; pull requests skip that. On pushes to main it also publishes the image
+# to the commit's GitHub Release, beside the Windows files. See docs/RELEASING.md ("macOS").
 
 on:
   push:
@@ -35,6 +35,10 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: a PR's cache serves no other branch and would push
+          # main's out of the 10 GB repository limit. PRs restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The library holds every test that runs (unit + UI behaviour tests on
       # Rune's headless runtime). tests/e2e_greenmail.rs is #[ignore]d and needs
@@ -50,9 +54,13 @@ jobs:
       # same (LSMinimumSystemVersion).
       MACOSX_DEPLOYMENT_TARGET: "13.0"
       # With the Developer ID secrets (docs/RELEASING.md, "Signing and notarization")
-      # the app is signed with the certificate and the image notarized. Without them,
-      # as on a pull request from a fork, the signature is ad hoc.
+      # the app is signed with the certificate and, outside pull requests, the image
+      # notarized. Without them, as on a pull request from a fork, the signature is ad hoc.
       SIGNED: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+      # Pull requests skip notarization: Apple's notary adds a wait, and nothing a pull
+      # request builds is published. Anything that may publish (push, workflow_dispatch)
+      # is notarized.
+      NOTARIZE: ${{ github.event_name != 'pull_request' && secrets.MACOS_CERTIFICATE_P12 != '' }}
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -71,18 +79,20 @@ jobs:
           echo "COSMIC_MAIL_VERSION=$version" >> "$GITHUB_ENV"
           echo "Version: $version"
 
-      # Both architectures, whichever one the runner is.
+      # An explicit target, so the build is Apple Silicon whatever the runner is.
       - name: Install the pinned Rust toolchain
         run: |
           rustup show active-toolchain || rustup toolchain install
-          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: a PR's cache serves no other branch and would push
+          # main's out of the 10 GB repository limit. PRs restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build release (Apple Silicon + Intel)
-        run: |
-          cargo build --locked --release \
-            --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - name: Build release (Apple Silicon)
+        run: cargo build --locked --release --target aarch64-apple-darwin
 
       # A throwaway keychain holding the certificate; package.sh signs with the
       # identity this names (CODESIGN_IDENTITY).
@@ -118,21 +128,21 @@ jobs:
 
       - name: Package the app and the disk image
         run: |
-          packaging/macos/package.sh "$COSMIC_MAIL_VERSION" dist \
-            target/aarch64-apple-darwin/release/cosmic-mail \
-            target/x86_64-apple-darwin/release/cosmic-mail
+          dmg=$(packaging/macos/package.sh "$COSMIC_MAIL_VERSION" dist \
+            target/aarch64-apple-darwin/release/cosmic-mail)
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
           ls -l dist
 
       # Apple scans the image and issues a ticket; stapling attaches it, so the
       # image verifies offline. A refusal prints Apple's log of what it found.
       - name: Notarize the disk image
-        if: env.SIGNED == 'true'
+        if: env.NOTARIZE == 'true'
         env:
           MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
           MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
         run: |
-          dmg="dist/cosmic-mail-$COSMIC_MAIL_VERSION-macos-universal.dmg"
+          dmg="$DMG"
           key="$RUNNER_TEMP/notary-key.p8"
           printf '%s\n' "$MACOS_NOTARY_KEY" > "$key"
           trap 'rm -f "$key"' EXIT
@@ -148,13 +158,12 @@ jobs:
           fi
           xcrun stapler staple "$dmg"
 
-      # Check what ships, from the image itself: both architectures, an intact
-      # signature, the right version, and a binary that starts on each architecture
-      # and draws the demo mailbox (headless, on the runner's Metal device).
+      # Check what ships, from the image itself: an Apple Silicon binary, an intact
+      # signature, the right version, and a binary that starts and draws the demo mailbox (headless, on the runner's Metal device).
       - name: Check the disk image
         run: |
-          dmg="dist/cosmic-mail-$COSMIC_MAIL_VERSION-macos-universal.dmg"
-          if [ "$SIGNED" = true ]; then
+          dmg="$DMG"
+          if [ "$NOTARIZE" = true ]; then
             xcrun stapler validate "$dmg"
           fi
           mount="$RUNNER_TEMP/cosmic-mail-image"
@@ -166,7 +175,7 @@ jobs:
           test -L "$mount/Applications"
           archs=$(lipo -archs "$exe")
           echo "Architectures: $archs"
-          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
+          [ "$archs" = arm64 ]
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign --display --verbose=2 "$app" 2>&1 | grep -E '^(Authority|Signature|TeamIdentifier|Runtime)' || true
           bundled=$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")
@@ -174,11 +183,7 @@ jobs:
           [ "$bundled" = "$COSMIC_MAIL_VERSION" ]
           test -s "$app/Contents/Resources/AppIcon.icns"
 
-          # The Intel half runs under Rosetta.
-          arch -x86_64 /usr/bin/true 2>/dev/null \
-            || sudo softwareupdate --install-rosetta --agree-to-license
-          arch -arm64 "$exe" --list-scenes
-          arch -x86_64 "$exe" --list-scenes
+          "$exe" --list-scenes
           "$exe" --snap snapshot.png --scale 2
           test -s snapshot.png
 

@@ -39,6 +39,10 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: a PR's cache serves no other branch and would push
+          # main's out of the 10 GB repository limit. PRs restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # The library holds every test that runs (unit + UI behaviour tests on
       # Rune's headless runtime). tests/e2e_greenmail.rs is #[ignore]d and needs
@@ -75,6 +79,10 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main saves: a PR's cache serves no other branch and would push
+          # main's out of the 10 GB repository limit. PRs restore main's.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build release
         run: cargo build --locked --release
