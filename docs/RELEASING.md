@@ -29,7 +29,8 @@ compiled into it, with no embedded web assets, webview or runtime dependencies b
 ## Hosted Arch repository
 
 Every merge to `main` is built as an Arch package and published to a pacman repository
-hosted on Backblaze B2. Application self-update stays disabled.
+hosted on Backblaze B2. The app never updates itself on Linux: it only tells the user a
+newer version exists (see [App updates](#app-updates)), and pacman installs it.
 
 ### How it works
 
@@ -240,6 +241,31 @@ What the macOS build does not have yet:
   icon brings the window back, and the application menu's Quit ends it.
 - **No start at sign-in.** Nothing installs a login item; add Cosmic Mail under System
   Settings → General → Login Items to have it start with the session.
+
+## App updates
+
+Release builds check this repository's GitHub Releases for a newer version (`src/update.rs`;
+the contract is "Updates" in [ARCHITECTURE.md](ARCHITECTURE.md)). Windows and macOS install
+it themselves: the installer copy runs the new setup silently, the portable copy and the
+macOS app swap their files in place, each after checking the download's SHA-256 against
+the digest GitHub lists for the release file. Linux shows a notice; pacman installs the
+package. Settings → Updates picks Off, Notify (the default) or Automatic.
+
+What this asks of releases:
+
+- **Keep the file names.** The updater looks for `cosmic-mail-<version>-windows-x64-setup.exe`,
+  `…-windows-x64-portable.zip`, `…-macos-arm64.dmg` and `…-macos-universal.dmg` exactly. A
+  renamed file is invisible to every copy already installed.
+- **Keep the tags `v<MAJOR.MINOR.PATCH>`**, published (not draft or prerelease), and the
+  version growing: the updater takes the highest version above its own.
+- **Keep the layouts.** The portable zip has `cosmic-mail.exe` at its root; the disk image
+  has `Cosmic Mail.app` at its root. The installer keeps its `AppId` and its
+  `/RELAUNCH=foreground|background` handling in `[Run]`/`[Code]`, which starts the new
+  version after a silent update.
+- **A platform's failed build is harmless**: copies on that platform keep the version they
+  have until a release carries their file.
+- Unsigned builds update like signed ones, with the caveats above: macOS asks again for
+  Keychain access after each ad-hoc-signed update.
 
 ## One release per commit
 

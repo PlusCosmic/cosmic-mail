@@ -27,6 +27,7 @@ pub const SCENES: &[Scene] = &[
     ("move", move_picker),
     ("add-account", add_account),
     ("settings", settings),
+    ("settings-update", settings_update),
     ("toasts", toasts),
     ("light", |s| s.appearance = Appearance::Light),
     ("oxblood", |s| s.scheme = ColorScheme::Oxblood),
@@ -368,6 +369,19 @@ fn add_account(s: &mut Ui) {
 fn settings(s: &mut Ui) {
     s.reauth_required.insert("a2".into());
     s.modal = Some(Modal::Settings(SettingsState::default()));
+}
+
+/// Settings scrolled to Updates, with a newer version found.
+fn settings_update(s: &mut Ui) {
+    s.modal = Some(Modal::Settings(SettingsState::default()));
+    s.update = Some(crate::update::UpdateInfo {
+        version: "0.1.160".into(),
+        current_version: "0.1.149".into(),
+        release_url: "https://github.com/PlusCosmic/cosmic-mail/releases/tag/v0.1.160".into(),
+        method: crate::update::UpdateMethod::Installer,
+        ready: false,
+    });
+    s.reveal = Some("updates".into());
 }
 
 fn toasts(s: &mut Ui) {

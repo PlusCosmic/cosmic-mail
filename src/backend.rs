@@ -19,6 +19,7 @@ use crate::shipments;
 use crate::store;
 use crate::sync::imap as sync_imap;
 use crate::sync::SyncManager;
+use crate::update::{self, Found, Prepared, Relaunch, UpdateInfo, UpdateMode, Version};
 use crate::wire::{
     AttachmentInfo, Folder, ImapAccountInput, MessageBody, MessageSummary, SendMessageInput,
     Shipment,
@@ -37,7 +38,27 @@ pub struct Backend {
     sync: SyncManager,
     events: Events,
     runtime: tokio::runtime::Handle,
+    updates: Mutex<UpdateState>,
+    /// Held while an update downloads and prepares, so two never run at once.
+    installing: tokio::sync::Mutex<()>,
 }
+
+/// What the updater knows (see "Updates" in `docs/ARCHITECTURE.md`).
+#[derive(Default)]
+struct UpdateState {
+    /// The newer version the last check found.
+    found: Option<Found>,
+    /// A downloaded, verified update, installed at exit.
+    prepared: Option<(Version, Prepared)>,
+    /// Whether to start the new version after installing it.
+    relaunch: Option<Relaunch>,
+    /// The last `UpdateAvailable` sent: version and `ready`.
+    announced: Option<(Version, bool)>,
+}
+
+/// How long after start the first background update check runs, and the gap between them.
+const FIRST_UPDATE_CHECK: std::time::Duration = std::time::Duration::from_secs(60);
+const UPDATE_CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 impl Backend {
     /// Build the backend over an open database. `runtime` hosts sync tasks and
@@ -48,6 +69,8 @@ impl Backend {
             sync: SyncManager::new(runtime.clone()),
             events,
             runtime,
+            updates: Mutex::new(UpdateState::default()),
+            installing: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -733,6 +756,150 @@ impl Backend {
     pub fn update_settings(&self, settings: Settings) -> AppResult<Settings> {
         settings::save_settings(&settings).map_err(AppError::from)?;
         Ok(settings)
+    }
+
+    // --- updates -----------------------------------------------------------------
+
+    fn update_state(&self) -> std::sync::MutexGuard<'_, UpdateState> {
+        self.updates.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Ask GitHub for a newer version now (whatever `Settings.updates` says). `None` when
+    /// this build is the newest.
+    pub async fn check_for_update(&self) -> AppResult<Option<UpdateInfo>> {
+        let current = update::current_version()
+            .ok_or_else(|| AppError::msg("Development builds don't check for updates"))?;
+        let method = update::detect_method();
+        let found = update::check(current, method)
+            .await
+            .map_err(|e| AppError::msg(format!("Could not check for updates: {e:#}")))?;
+        let mut state = self.update_state();
+        state.found = found.clone();
+        Ok(found.map(|f| {
+            let ready = state
+                .prepared
+                .as_ref()
+                .is_some_and(|(v, _)| *v == f.version);
+            f.info(ready)
+        }))
+    }
+
+    /// Download, verify and prepare the update the last check found; it installs when the
+    /// process exits.
+    pub async fn install_update(&self) -> AppResult<UpdateInfo> {
+        let _one_at_a_time = self.installing.lock().await;
+        let found = self
+            .update_state()
+            .found
+            .clone()
+            .ok_or_else(|| AppError::msg("There is no update to install"))?;
+        if !found.method.installs() {
+            return Err(AppError::msg(
+                "This copy of Cosmic Mail can't install updates itself",
+            ));
+        }
+        let already = self
+            .update_state()
+            .prepared
+            .as_ref()
+            .is_some_and(|(v, _)| *v == found.version);
+        if already {
+            return Ok(found.info(true));
+        }
+        let asset = found
+            .asset
+            .clone()
+            .ok_or_else(|| AppError::msg("The release has no file for this computer"))?;
+        let failed = |e: anyhow::Error| AppError::msg(format!("Could not update: {e:#}"));
+        let dir = update::updates_dir().map_err(failed)?;
+        let file = update::download(&asset, &dir).await.map_err(failed)?;
+        let (method, version) = (found.method, found.version);
+        let prepared = tokio::task::spawn_blocking(move || update::prepare(method, &file, version))
+            .await
+            .map_err(|e| AppError::msg(format!("Could not update: {e}")))?
+            .map_err(failed)?;
+        tracing::info!(%version, "update downloaded and prepared; it installs at exit");
+        self.update_state().prepared = Some((version, prepared));
+        Ok(found.info(true))
+    }
+
+    /// Start the new version after a prepared update installs (`background`: without its
+    /// window). The UI quits the app next.
+    pub fn restart_to_update(&self, background: bool) -> AppResult<()> {
+        let mut state = self.update_state();
+        if state.prepared.is_none() {
+            return Err(AppError::msg("No update is ready to install"));
+        }
+        state.relaunch = Some(if background {
+            Relaunch::Background
+        } else {
+            Relaunch::Foreground
+        });
+        Ok(())
+    }
+
+    /// The prepared update and whether to relaunch after it (the shell, at exit).
+    pub fn take_prepared_update(&self) -> Option<(Prepared, Option<Relaunch>)> {
+        let mut state = self.update_state();
+        let (_, prepared) = state.prepared.take()?;
+        Some((prepared, state.relaunch.take()))
+    }
+
+    /// Background update checks (the shell, at startup): a minute in, then every six
+    /// hours, following `Settings.updates` each time. Release builds only.
+    pub fn start_update_checks(self: &Arc<Self>) {
+        if update::current_version().is_none() {
+            return;
+        }
+        let backend = Arc::clone(self);
+        self.runtime.spawn(async move {
+            tokio::time::sleep(FIRST_UPDATE_CHECK).await;
+            loop {
+                backend.background_update_check().await;
+                tokio::time::sleep(UPDATE_CHECK_EVERY).await;
+            }
+        });
+    }
+
+    async fn background_update_check(&self) {
+        let mode = settings::load_settings().updates;
+        if mode == UpdateMode::Off {
+            tracing::debug!("update checks are off");
+            return;
+        }
+        let mut info = match self.check_for_update().await {
+            Ok(Some(info)) => {
+                tracing::info!(version = %info.version, method = ?info.method, "an update is available");
+                info
+            }
+            Ok(None) => {
+                tracing::debug!("no newer version");
+                return;
+            }
+            Err(err) => {
+                tracing::info!(error = %err, "background update check failed");
+                return;
+            }
+        };
+        if mode == UpdateMode::Auto && info.method.installs() && !info.ready {
+            match self.install_update().await {
+                Ok(ready) => info = ready,
+                Err(err) => tracing::warn!(error = %err, "could not prepare the update"),
+            }
+        }
+        let Some(version) = Version::parse(&info.version) else {
+            return;
+        };
+        let key = (version, info.ready);
+        let new = {
+            let mut state = self.update_state();
+            let new = state.announced != Some(key);
+            state.announced = Some(key);
+            new
+        };
+        if new {
+            self.events.emit(AppEvent::UpdateAvailable(info));
+        }
     }
 
     // --- helpers -----------------------------------------------------------------

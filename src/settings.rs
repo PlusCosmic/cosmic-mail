@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub use crate::update::UpdateMode;
+
 /// Whether [`Settings::window_title_bar`] means anything here. Windows and macOS always draw
 /// the app's own titlebar into a framed window; only Linux (and other freedesktop systems)
 /// offers going frameless for a tiling window manager.
@@ -35,6 +37,9 @@ pub struct Settings {
     /// When true, new-mail notifications play a sound (one per sync batch).
     /// Defaults to `true`.
     pub notification_sound: bool,
+    /// What the background update check does: nothing, tell the user, or download the
+    /// update and install it at exit. Defaults to [`UpdateMode::Notify`].
+    pub updates: UpdateMode,
 }
 
 impl Default for Settings {
@@ -43,6 +48,7 @@ impl Default for Settings {
             always_download_remote_images: false,
             window_title_bar: true,
             notification_sound: true,
+            updates: UpdateMode::Notify,
         }
     }
 }
@@ -141,6 +147,7 @@ mod tests {
             always_download_remote_images: true,
             window_title_bar: false,
             notification_sound: false,
+            updates: UpdateMode::Auto,
         };
         save_to(&path, &settings).expect("save");
         assert_eq!(load_from(&path), settings);
@@ -155,6 +162,7 @@ mod tests {
         assert!(loaded.always_download_remote_images);
         assert!(loaded.window_title_bar);
         assert!(loaded.notification_sound);
+        assert_eq!(loaded.updates, UpdateMode::Notify);
     }
 
     #[test]
@@ -173,5 +181,6 @@ mod tests {
         assert!(raw.contains("alwaysDownloadRemoteImages"));
         assert!(!raw.contains("always_download_remote_images"));
         assert!(raw.contains("windowTitleBar"));
+        assert!(raw.contains(r#""updates": "notify""#));
     }
 }

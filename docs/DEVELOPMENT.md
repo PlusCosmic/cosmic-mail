@@ -183,6 +183,28 @@ Inspect sync progress without the UI (Linux path shown):
   permanently), and `m` to open the folder picker and move. Confirm the selected row is removed
   locally, the next message is selected, folder totals/unread settle after the next STATUS, and the
   message reappears in the destination on its next sync with no duplicates.
+- **Updates**: `cargo test --lib` covers choosing a release (`update::pick`: drafts,
+  prereleases, missing files and digests, Apple Silicon versus universal images), digest
+  parsing, the portable and bundle swaps with their rollbacks, and the Settings section.
+  `--scene settings-update` renders it with an update found. Development builds never
+  check; a debug build checks as an older version with `COSMIC_MAIL_UPDATE_AS=0.1.100`.
+  `cargo test --lib -- --ignored live_check` asks GitHub for real. For a live install,
+  build a release as an old version and run it with automatic updates from a throwaway
+  profile, so it can't touch your accounts or a running Cosmic Mail (macOS shown):
+  ```sh
+  COSMIC_MAIL_VERSION=0.1.100 cargo build --release
+  dmg=$(packaging/macos/package.sh 0.1.100 /tmp/cm target/release/cosmic-mail | tail -1)
+  hdiutil attach -nobrowse -readonly -mountpoint /tmp/cm/mnt "$dmg"
+  ditto "/tmp/cm/mnt/Cosmic Mail.app" "/tmp/cm/Apps/Cosmic Mail.app"; hdiutil detach /tmp/cm/mnt
+  mkdir -p /tmp/cm/config/cosmic-mail && echo '{"updates":"auto"}' > /tmp/cm/config/cosmic-mail/settings.json
+  # XDG_RUNTIME_DIR keeps the single-instance socket apart; keep it short (108-byte limit).
+  XDG_CONFIG_HOME=/tmp/cm/config XDG_DATA_HOME=/tmp/cm/data XDG_RUNTIME_DIR=$(mktemp -d) \
+    "/tmp/cm/Apps/Cosmic Mail.app/Contents/MacOS/cosmic-mail" --background
+  ```
+  About a minute later it logs `update downloaded and prepared`, quits, swaps the bundle
+  (the `Info.plist` version changes) and starts the new version with `--background`.
+  Verified on macOS 2026-11-15 (0.1.100 → 0.1.149). On Windows, do the same with the
+  installer and with the portable zip.
 - **Discovery**: `cargo test --lib -- --ignored` covers ISPDB (gmx.de), provider
   autoconfig (fastmail.com), and the MX→provider path (pluscosmic.dev/Purelymail).
 - **Gmail e2e**: verified working 2026-07-09 (OAuth → XOAUTH2 → folder LIST → envelope

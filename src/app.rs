@@ -19,6 +19,7 @@ use crate::events::{AppEvent, Events};
 use crate::store;
 use crate::sync;
 use crate::ui::{demo, view, Inbox, Ui};
+use crate::update;
 
 /// The UI fonts: the foundation's Instrument Sans for text and Fraunces for display, bundled
 /// so every desktop renders the same face.
@@ -35,6 +36,12 @@ fn setup(s: &mut Ui, waker: Waker) {
 
 fn poll(s: &mut Ui, now: f64, tx: &mut Tx) -> bool {
     s.poll(now, tx)
+}
+
+/// The window is closing (it hides; the app keeps running): a ready automatic update
+/// installs now.
+fn on_close(s: &mut Ui, _tx: &mut Tx) {
+    s.on_window_close();
 }
 
 /// The window's spec (shared by the app and headless runs).
@@ -111,6 +118,10 @@ pub fn run() {
         return;
     }
 
+    // Started by an update: let the old process finish exiting before claiming the
+    // instance, or this launch would hand itself to it and quit.
+    update::wait_for_previous_instance();
+
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let background = desktop::is_background_launch(&args);
     #[cfg(unix)]
@@ -136,6 +147,9 @@ pub fn run() {
         tracing::info!("cosmic-mail is already running; handed the launch over");
         return;
     }
+
+    // This process owns the instance now: an earlier update's files can go.
+    update::clean_leftovers();
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -164,16 +178,19 @@ pub fn run() {
         Err(err) => tracing::warn!(error = %err, "snippet healing failed"),
     }
 
-    let mut app = app().keep_running().window_options(rune::WindowOptions {
-        // Linux keeps the platform title bar (move, minimise, close) unless
-        // the user turned it off for a tiling WM that draws its own borders.
-        // Decorations are fixed at window creation: a change in Settings
-        // applies on the next start. Windows and macOS always have a frame:
-        // the app draws its titlebar into it (`view::titlebar`).
-        borderless: crate::settings::HAS_TITLE_BAR_SETTING
-            && !crate::settings::load_settings().window_title_bar,
-        ..Default::default()
-    });
+    let mut app = app()
+        .keep_running()
+        .on_close(on_close)
+        .window_options(rune::WindowOptions {
+            // Linux keeps the platform title bar (move, minimise, close) unless
+            // the user turned it off for a tiling WM that draws its own borders.
+            // Decorations are fixed at window creation: a change in Settings
+            // applies on the next start. Windows and macOS always have a frame:
+            // the app draws its titlebar into it (`view::titlebar`).
+            borderless: crate::settings::HAS_TITLE_BAR_SETTING
+                && !crate::settings::load_settings().window_title_bar,
+            ..Default::default()
+        });
     if background {
         app = app.windowless();
     }
@@ -241,6 +258,7 @@ pub fn run() {
     let _tray = tray(handle.clone(), backend.clone());
 
     backend.start_all_syncs();
+    backend.start_update_checks();
 
     let prefs_path = crate::paths::config_dir().map(|d| d.join("cosmic-mail").join("ui.json"));
     {
@@ -256,6 +274,15 @@ pub fn run() {
         });
     }
     app.run();
+
+    // A prepared update installs as the process ends, however the app was quit; it starts
+    // the new version only when the user (or an automatic update) asked to restart.
+    if let Some((prepared, relaunch)) = backend.take_prepared_update() {
+        tracing::info!(?relaunch, "installing the prepared update");
+        if let Err(err) = update::apply(prepared, relaunch) {
+            tracing::error!(error = %format!("{err:#}"), "could not install the update");
+        }
+    }
     drop(runtime);
 }
 

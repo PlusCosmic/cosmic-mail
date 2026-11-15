@@ -24,6 +24,7 @@ src/
   store.rs          # rusqlite: schema, migrations, queries
   accounts.rs       # Account model, accounts.json persistence, keyring secrets
   notifications.rs  # notify-rust wrapper (all three platforms); click -> AppEvent::Activate
+  update.rs         # update checks against GitHub Releases; download, SHA-256 check, install at exit
   sync/
     mod.rs          # SyncManager: per-account background task on the tokio runtime, IDLE loop
     imap.rs         # async-imap + tokio-rustls connector, LOGIN + XOAUTH2
@@ -154,6 +155,24 @@ interface Settings {                    // settings.rs::Settings — global pref
   notificationSound: boolean;           // on by default; new-mail notifications play a sound
                                         // (macOS system alert sound, Windows "Mail", Linux
                                         // `message-new-email` sound-name hint), once per batch.
+  updates: UpdateMode;                  // "notify" by default; see "Updates"
+}
+
+type UpdateMode = "off" | "notify" | "auto";   // auto: download in the background, install at exit
+
+type UpdateMethod =             // how this copy of the app gets a newer version (update.rs)
+  | "installer"                 // Windows, installed by the Inno Setup installer: run the new one silently
+  | "portable"                  // Windows, unzipped portable copy: swap cosmic-mail.exe in place
+  | "macApp"                    // macOS, a Cosmic Mail.app in a folder we can write: swap the bundle
+  | "download"                  // can't replace itself (a folder it can't write): open the release page
+  | "packageManager";           // Linux and other systems: the package manager owns the files
+
+interface UpdateInfo {
+  version: string;              // the newer release, e.g. "0.1.150"
+  currentVersion: string;       // this build's version
+  releaseUrl: string;           // the release's GitHub page
+  method: UpdateMethod;
+  ready: boolean;               // downloaded, verified and prepared: installs when the app exits
 }
 ```
 
@@ -187,6 +206,9 @@ interface Settings {                    // settings.rs::Settings — global pref
 | `discover_account_config` | `email: string` | `DiscoveredConfig` (never errors on "not found" — falls back to a `guess` with `confident: false`; errors only on invalid email) |
 | `get_settings` | — | `Settings` (never errors; a missing/malformed settings file yields defaults) |
 | `update_settings` | `settings: Settings` | `Settings` (persists to `settings.json`, returns the stored value) |
+| `check_for_update` | — | `UpdateInfo \| null` (asks GitHub now, whatever `Settings.updates` says; `null` when this build is the newest; errors when the check fails or this build doesn't update — a development build) |
+| `install_update` | — | `UpdateInfo` (downloads, verifies and prepares the update the last check found, `ready: true`; it installs when the process exits. Errors for a `download`/`packageManager` method, when nothing newer was found, or when the download or its digest check fails) |
+| `restart_to_update` | `background: boolean` | `void` (a prepared update relaunches the app after installing: in the background (`--background`) or with its window. Errors when nothing is prepared. The UI then quits the app with `Tx::quit`; see "Updates") |
 
 Arguments are the method's parameters (snake_case in Rust). Methods that touch the network are
 `async` and run on the backend's tokio runtime; the UI calls every method through
@@ -204,6 +226,7 @@ shows it in a toast. Backend-only helpers used by the shell (not the UI): `start
 | `mail:sync-state` | `SyncState` | `{ accountId, state: SyncState, error: string \| null, needsReauth: boolean }` (`needsReauth` is `true` only when the failure is classified `AuthExpired` — see the Gmail section — meaning retrying cannot help and the UI should offer Reconnect) |
 | — | `Activate` | none: show and focus the window (notification click). The shell handles it directly with `AppHandle::open` so it works while the window is closed. |
 | `accounts:changed` | `AccountsChanged` | none: an account was added or removed from outside the UI (Postmaster); the UI reloads the account list, and if it was showing a removed account it falls back to the unified inbox as Remove in Settings does. |
+| `update:available` | `UpdateAvailable` | `UpdateInfo`: the background check found a newer version (once per version), or, with `Settings.updates` `auto`, finished preparing it (`ready: true`). |
 
 Delivery: `app.rs` installs a sink that forwards every event except `Activate` to the UI's
 `Inbox`, which runs it on the UI thread via `AppHandle::update` (this works while the window is
@@ -376,6 +399,71 @@ Global preferences (non-secret) live in `$XDG_CONFIG_HOME/cosmic-mail/settings.j
   appearance (system/light/dark) are UI preferences in `ui.json` (`colorScheme`, `appearance`),
   not backend settings, and the palette is rebuilt each frame from them and the desktop's
   light/dark preference, so a change re-renders at once.
+
+## Updates (update.rs)
+
+Releases come from GitHub Releases of `PlusCosmic/cosmic-mail` (public: no token). Every
+merge to `main` is a release `v<version>` (RELEASING.md), and each platform attaches its
+files separately, so a release can lack this platform's file.
+
+- **Which builds check:** release builds only, the ones with `COSMIC_MAIL_VERSION` set at
+  compile time. A development build never checks (`check_for_update` errors). Debug builds
+  only: `COSMIC_MAIL_UPDATE_AS=<version>` makes the build check as if it were that version,
+  to try the flow live.
+- **The check:** `GET https://api.github.com/repos/PlusCosmic/cosmic-mail/releases?per_page=20`
+  with a generic `cosmic-mail/<version>` User-Agent and nothing else about the user. Skip
+  drafts and prereleases, parse each tag `vMAJOR.MINOR.PATCH`, and take the newest release
+  above the running version that carries this platform's file, named exactly
+  `cosmic-mail-<version><suffix>`, with a `sha256:` digest:
+  - Windows installer: `-windows-x64-setup.exe`; portable: `-windows-x64-portable.zip`.
+  - macOS: `-macos-arm64.dmg` (Apple Silicon) or `-macos-universal.dmg` (either architecture).
+  - Linux (`packageManager`): no file; the newest release counts, and the app only says so.
+- **The method** (`UpdateMethod`) comes from where the running executable is. Windows: an
+  `unins000.exe` beside it means the installer put it there; otherwise it is the portable copy.
+  macOS: the `.app` bundle around it. If the folder to replace isn't writable by this user (an
+  all-users install, a read-only volume), the method is `download` instead. Linux and other
+  systems are `packageManager`: a system package is never touched by the app.
+- **Background checks** (`Backend::start_update_checks`, a shell helper started with sync):
+  one minute after start, then every six hours, reading `Settings.updates` each time; `off`
+  skips. A newer version emits `UpdateAvailable` once per version. With `auto` and a method
+  that installs (`installer`, `portable`, `macApp`) the check goes on to prepare it and emits
+  `UpdateAvailable` with `ready: true` instead.
+- **Prepare** (`install_update`): stream the file into `<data dir>/cosmic-mail/updates/`,
+  hashing as it goes; a size or SHA-256 mismatch deletes it and fails. Then:
+  - `installer`: nothing more; the downloaded setup is what runs.
+  - `portable`: unpack the zip with Windows' own `tar.exe` (fixed arguments) and require a
+    `cosmic-mail.exe` in it.
+  - `macApp`: `hdiutil attach -nobrowse -readonly` the image, `ditto` its `Cosmic Mail.app` to
+    a hidden `.cosmic-mail-update.app` beside the installed bundle (same volume, so the swap
+    is a rename), detach, and `codesign --verify --strict` the copy.
+- **Install at exit:** a prepared update is applied by the shell after `App::run` returns,
+  whatever ended the app (Restart to update, tray Quit, macOS Quit). It relaunches only when
+  `restart_to_update` asked for it, with `--background` when the window was closed.
+  - `installer`: start the setup with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+    /CLOSEAPPLICATIONS /CURRENTUSER` and `/RELAUNCH=foreground|background` when relaunching;
+    the installer's `[Run]` section starts the new version (the `--background` sign-in entry
+    and other tasks carry over from the previous install).
+  - `portable`: rename the running `cosmic-mail.exe` to `cosmic-mail.exe.old` (Windows allows
+    renaming a running exe), move the new files in, and start it. The next start deletes the
+    `.old` file.
+  - `macApp`: rename the installed bundle to `.cosmic-mail-old.app`, rename the prepared one
+    into its place, delete the old one, and start the new bundle's executable. If the second
+    rename fails, the first is undone.
+  - A relaunched process must not hand itself to the exiting one over the single-instance
+    socket or pipe: it starts with `COSMIC_MAIL_AFTER_UPDATE=1` and a stdin pipe the old
+    process holds open, and reads stdin to its end (at most 30 s) before claiming the instance.
+    The pipe closes when the old process exits.
+- **At startup**, leftovers are deleted: the `updates/` folder, a portable `.old` exe, and the
+  macOS `.cosmic-mail-update.app` / `.cosmic-mail-old.app` beside the bundle.
+- **UI:** Settings → Updates shows the version and status, `Check now`, the mode (Off /
+  Notify / Automatic; Linux has no Automatic) and the action the method allows: `Install and
+  restart` (`install_update`, then `restart_to_update(false)` and `Tx::quit`), `Open download
+  page`, or a line saying the package manager installs it. `UpdateAvailable` toasts once. A
+  `ready` update with `auto` restarts at once in the background when the window is closed,
+  and otherwise when the user closes the window (`App::on_close`).
+- **Trust:** an update is as trustworthy as the GitHub release it comes from: the digest
+  protects against a damaged or swapped download, not against someone who can publish
+  releases. Code signing (Developer ID on macOS, Authenticode on Windows) is the next step.
 
 ## UI pane layout
 

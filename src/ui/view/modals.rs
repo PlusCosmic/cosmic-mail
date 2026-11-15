@@ -12,8 +12,9 @@ use super::{
 use crate::autoconfig::{DiscoveredKind, DiscoverySource};
 use crate::ui::theme::{mix, scheme_words, Appearance, Palette};
 use crate::ui::{
-    Action, AddAccountForm, AddTab, ComposeForm, Modal, PaletteState, SettingsState, Ui,
+    Action, AddAccountForm, AddTab, ComposeForm, Modal, PaletteState, SettingsState, Ui, UpdateBusy,
 };
+use crate::update::{UpdateMethod, UpdateMode};
 
 /// The open modal over a dimming scrim.
 pub fn modal(s: &Ui, m: &Modal, p: &Palette) -> El {
@@ -739,6 +740,153 @@ fn appearance(s: &Ui, p: &Palette) -> El {
     col().w_full().gap(12.0).child(modes).child(schemes)
 }
 
+/// Settings → Updates: where things stand, Check now, the action this copy allows, and the mode.
+fn updates(s: &Ui, p: &Palette) -> El {
+    let enabled = crate::update::current_version().is_some();
+    let busy = s.update_busy;
+    let status = if !enabled && s.update.is_none() {
+        "This is a development build. It doesn't check for updates.".to_string()
+    } else {
+        match (busy, &s.update) {
+            (Some(UpdateBusy::Checking), _) => "Checking for updates…".to_string(),
+            (Some(UpdateBusy::Installing), Some(u)) => {
+                format!("Downloading Cosmic Mail {}…", u.version)
+            }
+            (_, Some(u)) if u.ready => format!(
+                "Cosmic Mail {} is ready. It installs when Cosmic Mail restarts.",
+                u.version
+            ),
+            (_, Some(u)) => match u.method {
+                UpdateMethod::PackageManager => format!(
+                    "Cosmic Mail {} is available. Install it with your system's package manager.",
+                    u.version
+                ),
+                UpdateMethod::Download => format!(
+                    "Cosmic Mail {} is available. This copy can't replace itself: \
+                     download it from the release page.",
+                    u.version
+                ),
+                _ => format!("Cosmic Mail {} is available.", u.version),
+            },
+            (_, None) if s.update_checked => "Cosmic Mail is up to date.".to_string(),
+            (_, None) => format!("You have Cosmic Mail {}.", crate::VERSION),
+        }
+    };
+
+    let mut actions = row().gap(8.0).center_y().child(button(
+        "update-check",
+        "Check now",
+        p,
+        false,
+        enabled && busy.is_none(),
+        |s, _| s.check_for_update(),
+    ));
+    if let Some(u) = &s.update {
+        if u.method.installs() {
+            actions = actions.child(button(
+                "update-install",
+                if u.ready {
+                    "Restart to update"
+                } else {
+                    "Install and restart"
+                },
+                p,
+                true,
+                busy.is_none(),
+                |s, _| s.install_update(),
+            ));
+        } else if u.method == UpdateMethod::Download {
+            actions = actions.child(button(
+                "update-download",
+                "Open download page",
+                p,
+                true,
+                true,
+                |s, _| s.install_update(),
+            ));
+        }
+    }
+
+    let choices: &[(UpdateMode, &str)] = if crate::update::CAN_INSTALL {
+        &[
+            (UpdateMode::Off, "Off"),
+            (UpdateMode::Notify, "Notify"),
+            (UpdateMode::Auto, "Automatic"),
+        ]
+    } else {
+        &[(UpdateMode::Off, "Off"), (UpdateMode::Notify, "Notify")]
+    };
+    let mut modes = row()
+        .key("update-mode")
+        .self_start()
+        .role("radiogroup")
+        .label("Update checks")
+        .gap(2.0)
+        .px(3.0)
+        .py(3.0)
+        .radius(RADIUS)
+        .fill(p.panel_2)
+        .border(1.0, p.border);
+    for &(mode, caption) in choices {
+        let chosen = mode == s.settings.updates;
+        let name = serde_json::to_value(mode)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        modes = modes.child(
+            row()
+                .key(format!("update-mode-{name}"))
+                .role("radio")
+                .label(caption)
+                .checked(chosen)
+                .h(26.0)
+                .px(14.0)
+                .center()
+                .radius(RADIUS)
+                .fill(if chosen { p.panel } else { p.panel_2 })
+                .focusable(true)
+                .cursor(Cursor::Pointer)
+                .on_press(move |s: &mut Ui| s.set_update_mode(mode))
+                .child(label(
+                    caption,
+                    font(12.5, 600.0),
+                    if chosen { p.fg } else { p.muted },
+                )),
+        );
+    }
+    let explain = match s.settings.updates {
+        UpdateMode::Off => "Cosmic Mail doesn't look for new versions by itself.",
+        UpdateMode::Notify => "Cosmic Mail looks for new versions on GitHub and tells you.",
+        UpdateMode::Auto => {
+            "Cosmic Mail downloads new versions from GitHub and installs them when you \
+             close the window or quit."
+        }
+    };
+
+    col()
+        .key("updates")
+        .w_full()
+        .gap(12.0)
+        .child(
+            text(status)
+                .key("update-status")
+                .font(font(13.0, 500.0).lh(19.0))
+                .color(p.fg)
+                .wrap()
+                .w_full(),
+        )
+        .child(actions)
+        .child(
+            col().w_full().gap(8.0).child(modes).child(
+                text(explain)
+                    .font(font(12.5, 400.0).lh(18.0))
+                    .color(p.muted)
+                    .wrap()
+                    .w_full(),
+            ),
+        )
+}
+
 fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
     let remote_row = setting_toggle(
         "setting-remote-images",
@@ -939,6 +1087,7 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                 .child(section("Notifications", notifications))
                 .children(title_bar_row.map(|row| section("Window", row)))
                 .child(section("Accounts", accounts))
+                .child(section("Updates", updates(s, p)))
                 .child(section(
                     "About",
                     label(
