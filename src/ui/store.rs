@@ -5,7 +5,7 @@
 //! before applying it. Flag, read, move, archive and delete are optimistic and
 //! roll back (or refetch) on failure.
 
-use rune::Tx;
+use rune::{TextEdit, Tx};
 
 use super::compose::ComposeSeed;
 use super::{html, AddTab, Filter, Modal, SettingsState, Ui, UpdateBusy, PAGE_LIMIT};
@@ -421,6 +421,57 @@ impl Ui {
                         ui.toast(format!("Reconnected {}", account.email), false);
                     }
                     Err(err) => ui.error("Failed to reconnect account", err),
+                }
+            },
+        );
+    }
+
+    /// The settings dialog's "Edit name": edit an account's display name in place.
+    pub fn start_rename(&mut self, account_id: &str) {
+        let Some(acc) = self.accounts.iter().find(|a| a.id == account_id) else {
+            return;
+        };
+        let mut edit = TextEdit::new(acc.display_name.clone());
+        edit.focused = true;
+        if let Some(Modal::Settings(st)) = &mut self.modal {
+            st.pending_removal = None;
+            st.renaming = Some(Box::new((account_id.to_string(), edit)));
+        }
+    }
+
+    pub fn cancel_rename(&mut self) {
+        if let Some(Modal::Settings(st)) = &mut self.modal {
+            st.renaming = None;
+        }
+    }
+
+    /// Save the edited display name: shown at once, rolled back if it can't be stored.
+    pub fn save_rename(&mut self) {
+        let Some(Modal::Settings(st)) = &mut self.modal else {
+            return;
+        };
+        let Some((account_id, edit)) = st.renaming.take().map(|r| *r) else {
+            return;
+        };
+        let name = edit.text.trim().to_string();
+        let Some(acc) = self.accounts.iter_mut().find(|a| a.id == account_id) else {
+            return;
+        };
+        if acc.display_name == name {
+            return;
+        }
+        let prev = std::mem::replace(&mut acc.display_name, name.clone());
+        self.spawn(
+            move |b| async move {
+                let r = b.rename_account(account_id.clone(), name);
+                (account_id, r)
+            },
+            move |ui, (account_id, result), _| {
+                if let Err(err) = result {
+                    if let Some(acc) = ui.accounts.iter_mut().find(|a| a.id == account_id) {
+                        acc.display_name = prev;
+                    }
+                    ui.error("Failed to rename account", err);
                 }
             },
         );
@@ -1305,6 +1356,21 @@ impl Ui {
     }
 
     /// Whether this account is Gmail (offers Reconnect).
+    /// The account's colour slot (`Palette::slot`): its place in the account list, so
+    /// the first accounts get clearly different colours.
+    pub fn account_slot(&self, account_id: &str) -> usize {
+        self.accounts
+            .iter()
+            .position(|a| a.id == account_id)
+            .unwrap_or(0)
+    }
+
+    pub fn set_account_marker(&mut self, marker: crate::settings::AccountMarker) {
+        let mut next = self.settings.clone();
+        next.account_marker = marker;
+        self.update_settings(next);
+    }
+
     pub fn is_gmail(&self, account_id: &str) -> bool {
         self.accounts
             .iter()

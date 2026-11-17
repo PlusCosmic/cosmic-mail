@@ -227,6 +227,8 @@ pub struct SettingsState {
     pub pending_removal: Option<(String, Option<f64>)>,
     /// The account whose Gmail consent is running.
     pub reauthing: Option<String>,
+    /// The account whose display name is being edited, and the edit.
+    pub renaming: Option<Box<(String, TextEdit)>>,
 }
 
 /// Update work in flight (Settings → Updates).
@@ -387,6 +389,8 @@ pub struct Ui {
     /// The open message's images by `src`.
     pub body_images: HashMap<String, BodyImage>,
     pub(crate) image_cache: Option<Arc<rune::image::ImageCache>>,
+    /// The app's icon, drawn in the titlebar (and the rail and welcome page).
+    pub(crate) logo: Option<rune::image::Image>,
     /// `decoded_images()` at the last poll.
     pub(crate) decoded_seen: usize,
 
@@ -459,6 +463,7 @@ impl Ui {
             remote_allowed: HashSet::new(),
             body_images: HashMap::new(),
             image_cache: None,
+            logo: None,
             decoded_seen: 0,
             toasts: Vec::new(),
             toast_seq: 0,

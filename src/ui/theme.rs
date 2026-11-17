@@ -113,8 +113,9 @@ pub struct Palette {
     pub tip_ink: Color,
     /// The base of shadows and modal scrims.
     pub shadow: Color,
-    /// Colours that tell accounts apart, each readable as text on `bg`.
-    slots: [Color; 4],
+    /// Colours that tell accounts apart (the accent, then distinct hues), each readable
+    /// on `bg`.
+    slots: [Color; ACCOUNT_COLOURS],
     pub dark: bool,
 }
 
@@ -147,7 +148,7 @@ impl Palette {
             tip_bg: t.tip_bg,
             tip_ink: t.tip_ink,
             shadow: t.shadow,
-            slots: [t.accent, t.info, t.fg_soft, mix(t.accent, 0.5, t.info)],
+            slots: account_colours(t.accent, l.dark),
             dark: l.dark,
         }
     }
@@ -157,7 +158,7 @@ impl Palette {
         Palette::from_look(look(scheme, dark))
     }
 
-    /// An account's colour (see `format::avatar_slot`).
+    /// The colour of the `i`th account (`Ui::account_slot`), repeating past the last.
     pub fn slot(&self, i: usize) -> Color {
         self.slots[i % self.slots.len()]
     }
@@ -166,6 +167,28 @@ impl Palette {
     pub fn primary(&self) -> Color {
         self.fill
     }
+}
+
+/// How many accounts get a colour of their own before they repeat.
+pub const ACCOUNT_COLOURS: usize = 6;
+
+/// The accent, then blue, amber, rose, violet, teal and green (OKLCH hues), leaving out
+/// hues close to a coloured accent's, so each account gets a clearly different colour.
+fn account_colours(accent: Color, dark: bool) -> [Color; ACCOUNT_COLOURS] {
+    const HUES: [f32; 6] = [255.0, 75.0, 0.0, 300.0, 190.0, 145.0];
+    let [_, a, b, _] = accent.to_oklab();
+    let chroma = (a * a + b * b).sqrt();
+    let accent_hue = b.atan2(a).to_degrees().rem_euclid(360.0);
+    let (l, c) = if dark { (0.78, 0.12) } else { (0.55, 0.14) };
+    let mut out = [accent; ACCOUNT_COLOURS];
+    let distinct = HUES.iter().filter(|&&h| {
+        let d = (h - accent_hue).abs() % 360.0;
+        chroma < 0.04 || d.min(360.0 - d) > 40.0
+    });
+    for (slot, &h) in out.iter_mut().skip(1).zip(distinct) {
+        *slot = rune::oklch(l, c, h);
+    }
+    out
 }
 
 impl Default for Palette {
@@ -195,7 +218,7 @@ mod tests {
                     contrast(p.fill_ink, p.fill) >= 4.5,
                     "{scheme:?} {dark}: button"
                 );
-                for i in 0..4 {
+                for i in 0..ACCOUNT_COLOURS {
                     assert!(
                         contrast(p.slot(i), p.bg) >= 3.0,
                         "{scheme:?} {dark}: slot {i}"

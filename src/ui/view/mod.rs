@@ -5,7 +5,7 @@
 //! float above. The look is the UI foundation's: its tokens (through [`Palette`]), Instrument
 //! Sans for text, Fraunces for display, 3 pt corners and small-capital eyebrows.
 
-mod chrome;
+pub(crate) mod chrome;
 pub mod icons;
 mod list;
 mod modals;
@@ -216,7 +216,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
     }
 
     if welcome {
-        root = root.child(chrome::welcome(p));
+        root = root.child(chrome::welcome(s, p));
     } else {
         let main = col()
             .key("main")
@@ -241,7 +241,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
                 .w_full()
                 .grow(1.0)
                 .min_h(0.0)
-                .child(chrome::rail(s, p))
+                .child(chrome::rail(s, p, !drawn_titlebar))
                 .child(main),
         );
     }

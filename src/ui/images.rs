@@ -41,6 +41,13 @@ pub fn short_hash(s: &str) -> String {
 impl Ui {
     /// The decoder images go through (set once the window has a waker).
     pub fn set_image_cache(&mut self, cache: Arc<ImageCache>) {
+        let logo = cache.load(&include_bytes!("../../assets/icon-128.png")[..]);
+        // A 128 px PNG decodes in a millisecond; waiting means the first frame (and every
+        // headless render) already shows it.
+        if let Err(err) = logo.wait() {
+            tracing::warn!(error = %err, "app icon failed to decode");
+        }
+        self.logo = Some(logo);
         self.image_cache = Some(cache);
     }
 

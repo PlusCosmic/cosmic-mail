@@ -156,7 +156,12 @@ interface Settings {                    // settings.rs::Settings — global pref
                                         // (macOS system alert sound, Windows "Mail", Linux
                                         // `message-new-email` sound-name hint), once per batch.
   updates: UpdateMode;                  // "notify" by default; see "Updates"
+  accountMarker: AccountMarker;         // "rightInset" by default; how unified-inbox rows show
+                                        // their account (UI only)
 }
+
+type AccountMarker =            // the account's name in a label, or a bar in its colour
+  | "label" | "leftLine" | "leftInset" | "rightLine" | "rightInset";
 
 type UpdateMode = "off" | "notify" | "auto";   // auto: download in the background, install at exit
 
@@ -185,6 +190,7 @@ interface UpdateInfo {
 | `start_gmail_oauth` | — | `Account` (opens browser, blocks until redirect or 5 min timeout) |
 | `reauth_gmail_account` | `accountId: string` | `Account` (re-runs the same interactive consent for an **existing** Gmail account, in place — cache/folders/settings untouched; errors without storing anything if the completed consent belongs to a different address than the account's) |
 | `remove_account` | `accountId: string` | `void` |
+| `rename_account` | `accountId: string, displayName: string` | `Account` (sets the display name outgoing mail is sent under, trimmed; empty sends the bare address. Persists to `accounts.json`; the next `send_message` uses it. Errors if there's no such account) |
 | `add_handed_over_account` | `input: ImapAccountInput` | `Account` (Postmaster's hand-off over the instance socket: refused if an account already has `input.email`, compared case-insensitively; otherwise exactly `add_imap_account`, then emits `AccountsChanged`) |
 | `remove_account_by_email` | `email: string` | `void` (Postmaster's removal: the account with that address, compared case-insensitively, exactly as `remove_account`, then emits `AccountsChanged`; errors if there's none) |
 | `list_folders` | `accountId: string` | `Folder[]` |

@@ -1,11 +1,12 @@
 //! The message list: filter chips, rows, and "load more".
 
-use rune::{col, el, memo, row, Cursor, El, ScrollSpec};
+use rune::{col, el, memo, row, Color, Cursor, El, ScrollSpec};
 
 use super::chrome::account_tag;
 use super::{btn, font, glyph, icons, label, Kind, RADIUS, SMALL};
+use crate::settings::AccountMarker;
 use crate::sync::SyncState;
-use crate::ui::format::{avatar_slot, relative_date};
+use crate::ui::format::relative_date;
 use crate::ui::theme::Palette;
 use crate::ui::{Filter, Ui};
 use crate::wire::MessageSummary;
@@ -139,17 +140,18 @@ pub fn list_pane(s: &Ui, p: &Palette) -> El {
                 s.accounts
                     .iter()
                     .find(|a| a.id == m.account_id)
-                    .map(|a| (account_tag(s, &a.id), avatar_slot(&a.email)))
+                    .map(|a| (account_tag(s, &a.id), s.account_slot(&a.id)))
             } else {
                 None
             };
             let palette = *p;
             let msg = (*m).clone();
             let when = relative_date(&m.date);
+            let marker = s.settings.account_marker;
             rows = rows.child(memo(
                 format!("msg-{}", m.id),
-                (&msg, selected, &account, &palette, &when),
-                || message_row(&msg, selected, account.clone(), &when, &palette),
+                (&msg, selected, &account, &palette, &when, marker),
+                || message_row(&msg, selected, account.clone(), marker, &when, &palette),
             ));
         }
         if s.has_more {
@@ -190,11 +192,13 @@ pub fn list_pane(s: &Ui, p: &Palette) -> El {
         ))
 }
 
-/// One message row: unread dot; sender, account and date; subject; snippet.
+/// One message row: unread dot; sender, account label and date; subject; snippet. In the
+/// unified inbox (`account` is set) the row shows its account per `marker`.
 fn message_row(
     m: &MessageSummary,
     selected: bool,
     account: Option<(String, usize)>,
+    marker: AccountMarker,
     when: &str,
     p: &Palette,
 ) -> El {
@@ -223,7 +227,8 @@ fn message_row(
             .shrink()
             .min_w(0.0),
     );
-    if let Some((name, slot)) = account {
+    if let (Some((name, slot)), AccountMarker::Label) = (&account, marker) {
+        let (name, slot) = (name.clone(), *slot);
         top = top.child(
             row()
                 .px(6.0)
@@ -291,7 +296,14 @@ fn message_row(
         .on_press(move |s: &mut Ui| s.select_message(id))
         .child(dot)
         .child(text_col);
-    if selected {
+    let bar = account
+        .as_ref()
+        .and_then(|(name, slot)| account_bar(marker, selected, p.slot(*slot), name));
+    let left_bar = matches!(marker, AccountMarker::LeftLine | AccountMarker::LeftInset);
+    if let Some(bar) = bar {
+        r = r.child(bar);
+    }
+    if selected && !(left_bar && account.is_some()) {
         // The selection's accent edge, inside the row.
         r = r.child(
             el().pin(Some(0.0), Some(0.0), None, Some(0.0))
@@ -300,4 +312,33 @@ fn message_row(
         );
     }
     r
+}
+
+/// The account's colour down one edge of a row: full height, or a short rounded bar inset
+/// from the row's ends. A left bar takes the selection edge's place, so it thickens when
+/// the row is selected. `None` for the label marker.
+fn account_bar(marker: AccountMarker, selected: bool, color: Color, name: &str) -> Option<El> {
+    let (left, inset) = match marker {
+        AccountMarker::Label => return None,
+        AccountMarker::LeftLine => (true, false),
+        AccountMarker::LeftInset => (true, true),
+        AccountMarker::RightLine => (false, false),
+        AccountMarker::RightInset => (false, true),
+    };
+    let w = if left && selected { 5.0 } else { 3.0 };
+    let (end, gap) = if inset { (12.0, 4.0) } else { (0.0, 0.0) };
+    let (l, r) = if left {
+        (Some(gap), None)
+    } else {
+        (None, Some(gap))
+    };
+    let mut bar = el()
+        .pin(l, Some(end), r, Some(end))
+        .w(w)
+        .fill(color)
+        .help(name.to_string());
+    if inset {
+        bar = bar.radius(w / 2.0);
+    }
+    Some(bar)
 }
