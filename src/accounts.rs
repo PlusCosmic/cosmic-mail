@@ -196,6 +196,18 @@ pub fn remove_account_from_disk(account_id: &str) -> Result<Option<Account>> {
     }
 }
 
+/// Set an account's display name on disk, returning the updated account (`None` if absent).
+pub fn rename_account_on_disk(account_id: &str, display_name: &str) -> Result<Option<Account>> {
+    let mut accounts = load_accounts()?;
+    let Some(account) = accounts.iter_mut().find(|a| a.id == account_id) else {
+        return Ok(None);
+    };
+    account.display_name = display_name.to_string();
+    let updated = account.clone();
+    save_accounts(&accounts)?;
+    Ok(Some(updated))
+}
+
 /// Append an account to the on-disk list and persist.
 pub fn add_account_to_disk(account: &Account) -> Result<()> {
     let mut accounts = load_accounts()?;

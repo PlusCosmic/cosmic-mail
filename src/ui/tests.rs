@@ -662,3 +662,97 @@ fn the_update_mode_setting_switches() {
         assert!(rt.find("update-mode-auto").is_none());
     }
 }
+
+#[test]
+fn account_tags_tell_same_domain_accounts_apart() {
+    use super::view::chrome::account_tag;
+    use crate::accounts::{AccountKind, AccountPublic};
+    let acc = |id: &str, email: &str, kind| AccountPublic {
+        id: id.into(),
+        email: email.into(),
+        display_name: "Harry".into(),
+        kind,
+    };
+    let mut s = demo::state();
+    s.accounts = vec![
+        acc("a", "harry@pluscosmic.dev", AccountKind::Imap),
+        acc("b", "harry2@pluscosmic.dev", AccountKind::Imap),
+        acc("c", "harry@reelshelf.app", AccountKind::Imap),
+        acc("d", "one@gmail.com", AccountKind::Gmail),
+    ];
+    let tags: Vec<String> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|id| account_tag(&s, id))
+        .collect();
+    assert_eq!(
+        tags,
+        [
+            "harry@pluscosmic",
+            "harry2@pluscosmic",
+            "reelshelf",
+            "Gmail"
+        ]
+    );
+
+    s.accounts
+        .push(acc("e", "two@gmail.com", AccountKind::Gmail));
+    assert_eq!(account_tag(&s, "d"), "one@gmail");
+    assert_eq!(account_tag(&s, "e"), "two@gmail");
+}
+
+#[test]
+fn settings_edits_an_accounts_display_name() {
+    let mut rt = runtime(demo::state());
+    click(&mut rt, "rail-settings");
+    let name = |rt: &Runtime<Ui>| {
+        rt.state
+            .accounts
+            .iter()
+            .find(|a| a.id == "a1")
+            .map(|a| a.display_name.clone())
+    };
+
+    // Escape leaves the name as it was.
+    click(&mut rt, "rename-account-a1");
+    assert!(rt.find("rename-a1").is_some());
+    typed(&mut rt, " Leach");
+    key(&mut rt, Key::Escape);
+    assert!(rt.find("rename-a1").is_none());
+    assert_eq!(name(&rt).as_deref(), Some("Harry"));
+
+    // Enter saves it, trimmed.
+    click(&mut rt, "rename-account-a1");
+    typed(&mut rt, " Leach  ");
+    key(&mut rt, Key::Enter);
+    assert!(rt.find("rename-a1").is_none());
+    assert_eq!(name(&rt).as_deref(), Some("Harry Leach"));
+    assert!(matches!(rt.state.modal, Some(Modal::Settings(_))));
+}
+
+#[test]
+fn settings_picks_the_account_marker() {
+    use crate::settings::AccountMarker;
+    let mut rt = runtime(demo::state());
+    assert_eq!(rt.state.settings.account_marker, AccountMarker::RightInset);
+    click(&mut rt, "rail-settings");
+    for (key, marker) in [
+        ("account-marker-label", AccountMarker::Label),
+        ("account-marker-leftLine", AccountMarker::LeftLine),
+        ("account-marker-leftInset", AccountMarker::LeftInset),
+        ("account-marker-rightLine", AccountMarker::RightLine),
+        ("account-marker-rightInset", AccountMarker::RightInset),
+    ] {
+        click(&mut rt, key);
+        assert_eq!(rt.state.settings.account_marker, marker);
+    }
+}
+
+#[test]
+fn accounts_take_distinct_colours_in_order() {
+    let s = demo::state();
+    let p = s.palette(true);
+    let a = p.slot(s.account_slot("a1"));
+    let b = p.slot(s.account_slot("a2"));
+    assert_eq!(a, p.accent, "the first account wears the accent");
+    assert_ne!(a, b);
+}

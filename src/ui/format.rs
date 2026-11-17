@@ -25,19 +25,6 @@ pub fn initials(name: &str, addr: &str) -> String {
     out.to_uppercase()
 }
 
-/// Palette slots avatars cycle through (`--c2`..`--c6`, `--c12`..`--c14`).
-pub const AVATAR_SLOTS: [usize; 8] = [2, 3, 4, 5, 6, 12, 13, 14];
-
-/// Deterministic avatar palette slot for a seed string (a 31-multiplier string
-/// hash over UTF-16 code units, as the web UI computed it).
-pub fn avatar_slot(seed: &str) -> usize {
-    let mut h: u32 = 0;
-    for unit in seed.encode_utf16() {
-        h = h.wrapping_mul(31).wrapping_add(u32::from(unit));
-    }
-    AVATAR_SLOTS[h as usize % AVATAR_SLOTS.len()]
-}
-
 /// Display label per shipment carrier code.
 pub fn carrier_label(carrier: &str) -> &str {
     match carrier {
@@ -182,15 +169,6 @@ mod tests {
         assert_eq!(initials("  ", ""), "?");
         assert_eq!(initials("Harry (Gmail)", "h@gmail.com"), "HG");
         assert_eq!(initials("", "+++@x.com"), "?");
-    }
-
-    #[test]
-    fn avatar_slot_is_deterministic_and_in_range() {
-        let a = avatar_slot("jane@example.com");
-        assert_eq!(a, avatar_slot("jane@example.com"));
-        assert!(AVATAR_SLOTS.contains(&a));
-        // The hash matches the web UI's: "a" is 97 → 97 % 8 = 1 → slot 3.
-        assert_eq!(avatar_slot("a"), 3);
     }
 
     #[test]

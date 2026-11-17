@@ -40,6 +40,44 @@ pub struct Settings {
     /// What the background update check does: nothing, tell the user, or download the
     /// update and install it at exit. Defaults to [`UpdateMode::Notify`].
     pub updates: UpdateMode,
+    /// How the unified inbox marks each message's account. Defaults to
+    /// [`AccountMarker::RightInset`].
+    pub account_marker: AccountMarker,
+}
+
+/// How a unified-inbox row shows which account it came from: the account's name in a
+/// small label, or a bar in the account's colour down one edge of the row (full height,
+/// or inset as a short rounded bar).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum AccountMarker {
+    Label,
+    LeftLine,
+    LeftInset,
+    RightLine,
+    #[default]
+    RightInset,
+}
+
+impl AccountMarker {
+    pub const ALL: [AccountMarker; 5] = [
+        AccountMarker::Label,
+        AccountMarker::LeftLine,
+        AccountMarker::LeftInset,
+        AccountMarker::RightLine,
+        AccountMarker::RightInset,
+    ];
+
+    /// The Settings caption.
+    pub fn caption(self) -> &'static str {
+        match self {
+            AccountMarker::Label => "Label",
+            AccountMarker::LeftLine => "Left line",
+            AccountMarker::LeftInset => "Left inset",
+            AccountMarker::RightLine => "Right line",
+            AccountMarker::RightInset => "Right inset",
+        }
+    }
 }
 
 impl Default for Settings {
@@ -49,6 +87,7 @@ impl Default for Settings {
             window_title_bar: true,
             notification_sound: true,
             updates: UpdateMode::Notify,
+            account_marker: AccountMarker::default(),
         }
     }
 }
@@ -148,6 +187,7 @@ mod tests {
             window_title_bar: false,
             notification_sound: false,
             updates: UpdateMode::Auto,
+            account_marker: AccountMarker::LeftLine,
         };
         save_to(&path, &settings).expect("save");
         assert_eq!(load_from(&path), settings);
@@ -182,5 +222,24 @@ mod tests {
         assert!(!raw.contains("always_download_remote_images"));
         assert!(raw.contains("windowTitleBar"));
         assert!(raw.contains(r#""updates": "notify""#));
+        assert!(raw.contains(r#""accountMarker": "rightInset""#));
+    }
+
+    #[test]
+    fn account_markers_serialize_camelcase() {
+        let names: Vec<String> = AccountMarker::ALL
+            .iter()
+            .map(|m| serde_json::to_value(m).expect("serialize").to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                r#""label""#,
+                r#""leftLine""#,
+                r#""leftInset""#,
+                r#""rightLine""#,
+                r#""rightInset""#
+            ]
+        );
     }
 }

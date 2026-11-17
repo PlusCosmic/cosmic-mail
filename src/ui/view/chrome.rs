@@ -6,14 +6,14 @@ use rune::{col, el, rich, row, text, text_input, ChromeInsets, Cursor, El, Key, 
 
 use super::icons;
 use super::{btn, display, eyebrow, font, glyph, kbd, label, Kind, BODY, RADIUS, RADIUS_LG, SMALL};
-use crate::accounts::AccountKind;
+use crate::accounts::{AccountKind, AccountPublic};
 use crate::sync::SyncState;
-use crate::ui::format::{avatar_slot, cap_badge, folder_title};
+use crate::ui::format::{cap_badge, folder_title};
 use crate::ui::theme::Palette;
 use crate::ui::{AddTab, Ui};
 
 /// Shown when no account is configured: what the app is, and the way in.
-pub fn welcome(p: &Palette) -> El {
+pub fn welcome(s: &Ui, p: &Palette) -> El {
     let headline = "Your mail, kept close.";
     let accent_from = headline.find("kept").unwrap_or(0);
     let feature = |keys: El, words: &str| {
@@ -153,7 +153,7 @@ pub fn welcome(p: &Palette) -> El {
                 .py(20.0)
                 .gap(10.0)
                 .center_y()
-                .child(mark(p, 28.0))
+                .child(mark(s, 28.0))
                 .child(
                     rich("Cosmic Mail", vec![Span::new(7, 11).color(p.accent)])
                         .font(display(19.0))
@@ -175,14 +175,14 @@ pub fn welcome(p: &Palette) -> El {
 }
 
 /// The app's mark: a lower-case c in the display face on the fill.
-fn mark(p: &Palette, size: f32) -> El {
-    row()
-        .size(size, size)
-        .center()
-        .radius(RADIUS)
-        .fill(p.fill)
-        .a11y_hidden()
-        .child(label("c", display(size * 0.68).lh(size * 0.7), p.fill_ink))
+/// The app's icon at `size`, or (until it decodes, and in tests without an image cache) an
+/// empty square holding its place.
+fn mark(s: &Ui, size: f32) -> El {
+    let m = el().size(size, size).a11y_hidden();
+    match &s.logo {
+        Some(img) => m.pixels(img.pixels()),
+        None => m,
+    }
 }
 
 /// One square rail button with an optional unread count.
@@ -236,8 +236,9 @@ fn rail_button(
     b
 }
 
-/// The account switcher down the left edge.
-pub fn rail(s: &Ui, p: &Palette) -> El {
+/// The account switcher down the left edge, topped by the app's icon when no drawn titlebar
+/// (`with_mark`: Linux) already shows it.
+pub fn rail(s: &Ui, p: &Palette, with_mark: bool) -> El {
     let mut rail = col()
         .key("rail")
         .role("navigation")
@@ -250,9 +251,12 @@ pub fn rail(s: &Ui, p: &Palette) -> El {
         .gap(8.0)
         .items_center()
         .fill(p.rail)
-        .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
-        .child(mark(p, 32.0))
-        .child(el().w(26.0).h(1.0).my(4.0).fill(p.border));
+        .border_sides([0.0, 1.0, 0.0, 0.0], p.border);
+    if with_mark {
+        rail = rail
+            .child(mark(s, 32.0))
+            .child(el().w(26.0).h(1.0).my(4.0).fill(p.border));
+    }
 
     rail = rail.child(rail_button(
         "rail-unified".into(),
@@ -271,7 +275,7 @@ pub fn rail(s: &Ui, p: &Palette) -> El {
         };
         // The account's tag ("Gmail", "pluscosmic"), as one letter: two accounts of one
         // person share initials, not tags.
-        let letter = account_tag(s, &acc.id)
+        let letter = base_tag(acc)
             .chars()
             .next()
             .map(|c| c.to_uppercase().to_string())
@@ -283,7 +287,7 @@ pub fn rail(s: &Ui, p: &Palette) -> El {
                 .size(28.0, 28.0)
                 .center()
                 .radius(14.0)
-                .fill(p.slot(avatar_slot(&acc.email)))
+                .fill(p.slot(s.account_slot(&acc.id)))
                 .child(label(letter, font(12.0, 700.0), p.bg)),
             !s.unified && s.selected_account.as_deref() == Some(acc.id.as_str()),
             s.account_unread(&acc.id),
@@ -350,19 +354,31 @@ pub fn sync_color(state: SyncState, p: &Palette) -> rune::Color {
     }
 }
 
-/// A short name for an account: "Gmail", or the first part of its domain.
-pub fn account_tag(s: &Ui, account_id: &str) -> String {
-    if s.is_gmail(account_id) {
+/// An account's base tag: "Gmail", or the first part of its email's domain.
+pub fn base_tag(acc: &AccountPublic) -> String {
+    if acc.kind == AccountKind::Gmail {
         return "Gmail".into();
     }
-    s.accounts
+    let domain = acc.email.split('@').nth(1).unwrap_or(&acc.email);
+    domain.split('.').next().unwrap_or(domain).to_string()
+}
+
+/// A short name for an account: its base tag ("Gmail", "pluscosmic"), or — when another
+/// account shares that tag — the mailbox name in front of it ("harry2@pluscosmic").
+pub fn account_tag(s: &Ui, account_id: &str) -> String {
+    let Some(acc) = s.accounts.iter().find(|a| a.id == account_id) else {
+        return String::new();
+    };
+    let base = base_tag(acc);
+    let shared = s
+        .accounts
         .iter()
-        .find(|a| a.id == account_id)
-        .map(|a| {
-            let domain = a.email.split('@').nth(1).unwrap_or(&a.email);
-            domain.split('.').next().unwrap_or(domain).to_string()
-        })
-        .unwrap_or_default()
+        .any(|o| o.id != acc.id && base_tag(o) == base);
+    if !shared {
+        return base;
+    }
+    let local = acc.email.split('@').next().unwrap_or(&acc.email);
+    format!("{local}@{}", base.to_lowercase())
 }
 
 /// Title, search field (`with_search`: unless the titlebar has it), and sync status.
@@ -408,23 +424,27 @@ pub fn header(s: &Ui, p: &Palette, with_search: bool) -> El {
         .key("header")
         .w_full()
         .px(22.0)
-        .py(12.0)
+        .py(9.0)
         .gap(18.0)
         .center_y()
         .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
         .child(
-            col()
-                .gap(2.0)
+            // Title and its counts share one line to keep the header short.
+            row()
+                .gap(12.0)
+                .center_y()
                 .shrink()
                 .min_w(0.0)
-                .child(eyebrow(subtitle, p).key("header-subtitle"))
                 .child(
                     title_el
-                        .font(display(25.0))
+                        .font(display(20.0))
                         .color(p.fg)
                         .key("header-title")
+                        .shrink()
+                        .min_w(0.0)
                         .truncate(),
-                ),
+                )
+                .child(eyebrow(subtitle, p).key("header-subtitle").truncate()),
         )
         .child(el().grow(1.0));
 
@@ -562,7 +582,7 @@ pub fn titlebar(s: &Ui, p: &Palette, insets: ChromeInsets, with_search: bool) ->
         .min_w(0.0)
         .gap(8.0)
         .center_y()
-        .child(mark(p, 16.0))
+        .child(mark(s, 16.0))
         .child(
             label("Cosmic Mail", font(12.5, 600.0), p.muted)
                 .truncate()

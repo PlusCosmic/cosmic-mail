@@ -4,6 +4,7 @@
 //! profile or the network. Nothing here is reachable from a normal launch.
 
 use crate::accounts::{AccountKind, AccountPublic};
+use crate::settings::AccountMarker;
 use crate::sync::SyncState;
 use crate::wire::{AttachmentInfo, Folder, MessageBody, MessageSummary, Shipment};
 
@@ -28,6 +29,20 @@ pub const SCENES: &[Scene] = &[
     ("add-account", add_account),
     ("settings", settings),
     ("settings-update", settings_update),
+    ("settings-rename", settings_rename),
+    ("marker-label", |s| three_accounts(s, AccountMarker::Label)),
+    ("marker-left-line", |s| {
+        three_accounts(s, AccountMarker::LeftLine)
+    }),
+    ("marker-left-inset", |s| {
+        three_accounts(s, AccountMarker::LeftInset)
+    }),
+    ("marker-right-line", |s| {
+        three_accounts(s, AccountMarker::RightLine)
+    }),
+    ("marker-right-inset", |s| {
+        three_accounts(s, AccountMarker::RightInset)
+    }),
     ("toasts", toasts),
     ("light", |s| s.appearance = Appearance::Light),
     ("oxblood", |s| s.scheme = ColorScheme::Oxblood),
@@ -369,6 +384,26 @@ fn add_account(s: &mut Ui) {
 fn settings(s: &mut Ui) {
     s.reauth_required.insert("a2".into());
     s.modal = Some(Modal::Settings(SettingsState::default()));
+}
+
+/// The unified inbox with a second account on the first one's domain, marking accounts
+/// with `marker`.
+fn three_accounts(s: &mut Ui, marker: AccountMarker) {
+    s.accounts.insert(
+        1,
+        account("a3", "harry2@pluscosmic.dev", "Harry", AccountKind::Imap),
+    );
+    s.sync_states.insert("a3".into(), SyncState::Idle);
+    for m in s.messages.iter_mut().filter(|m| [103, 105].contains(&m.id)) {
+        m.account_id = "a3".into();
+    }
+    s.settings.account_marker = marker;
+}
+
+/// Settings editing an account's display name.
+fn settings_rename(s: &mut Ui) {
+    settings(s);
+    s.start_rename("a1");
 }
 
 /// Settings scrolled to Updates, with a newer version found.

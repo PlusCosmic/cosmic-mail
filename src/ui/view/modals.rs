@@ -4,7 +4,7 @@ use rune::{col, el, row, text, text_input, Cursor, El, Key, KeyEvent, ScrollSpec
 
 use rune::Icon;
 
-use super::chrome::account_tag;
+use super::chrome::{account_tag, base_tag};
 use super::{
     btn, button, display, eyebrow, field_box, font, glyph, icon_button, icons, kbd, label, Kind,
     BODY, RADIUS, RADIUS_LG, SMALL,
@@ -740,6 +740,61 @@ fn appearance(s: &Ui, p: &Palette) -> El {
     col().w_full().gap(12.0).child(modes).child(schemes)
 }
 
+/// Settings → Unified inbox: how each row shows its account.
+fn account_marker(s: &Ui, p: &Palette) -> El {
+    use crate::settings::AccountMarker;
+    let mut choices = row()
+        .key("account-marker")
+        .self_start()
+        .role("radiogroup")
+        .label("Account marker")
+        .gap(2.0)
+        .px(3.0)
+        .py(3.0)
+        .radius(RADIUS)
+        .fill(p.panel_2)
+        .border(1.0, p.border);
+    for marker in AccountMarker::ALL {
+        let chosen = marker == s.settings.account_marker;
+        let name = serde_json::to_value(marker)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        choices = choices.child(
+            row()
+                .key(format!("account-marker-{name}"))
+                .role("radio")
+                .label(marker.caption())
+                .checked(chosen)
+                .h(26.0)
+                .px(14.0)
+                .center()
+                .radius(RADIUS)
+                .fill(if chosen { p.panel } else { p.panel_2 })
+                .focusable(true)
+                .cursor(Cursor::Pointer)
+                .on_press(move |s: &mut Ui| s.set_account_marker(marker))
+                .child(label(
+                    marker.caption(),
+                    font(12.5, 600.0),
+                    if chosen { p.fg } else { p.muted },
+                )),
+        );
+    }
+    let explain = match s.settings.account_marker {
+        AccountMarker::Label => "Each message shows its account's name.",
+        _ => {
+            "Each message carries its account's colour, the same as the account's \
+             circle down the left. Hover the bar for the account's name."
+        }
+    };
+    col().w_full().gap(10.0).child(choices).child(
+        label(explain, font(12.5, 400.0).lh(18.0), p.muted)
+            .wrap()
+            .w_full(),
+    )
+}
+
 /// Settings → Updates: where things stand, Check now, the action this copy allows, and the mode.
 fn updates(s: &Ui, p: &Palette) -> El {
     let enabled = crate::update::current_version().is_some();
@@ -951,7 +1006,57 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
         } else {
             acc.display_name.clone()
         };
-        let tag = account_tag(s, &acc.id);
+        let renaming = st
+            .renaming
+            .as_deref()
+            .filter(|(i, _)| i == &acc.id)
+            .map(|(_, e)| e);
+        let heading = match renaming {
+            Some(edit) => field_box(
+                format!("rename-{id}-box"),
+                edit.focused,
+                p,
+                text_input(edit, BODY)
+                    .key(format!("rename-{id}"))
+                    .label("Name on sent mail")
+                    .color(p.fg)
+                    .placeholder("Name on sent mail", p.muted_2)
+                    .single_line()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .on_edit(|s: &mut Ui| match &mut s.modal {
+                        Some(Modal::Settings(SettingsState {
+                            renaming: Some(r), ..
+                        })) => &mut r.1,
+                        _ => &mut s.scratch_edit,
+                    })
+                    .on_submit(|s: &mut Ui, tx: &mut Tx| {
+                        s.save_rename();
+                        tx.blur();
+                    })
+                    .on_input_key(|s: &mut Ui, ev: &KeyEvent, tx: &mut Tx| {
+                        if ev.key != Key::Escape {
+                            return false;
+                        }
+                        s.cancel_rename();
+                        tx.blur();
+                        true
+                    }),
+            ),
+            None => row()
+                .gap(8.0)
+                .center_y()
+                .child(label(name, font(13.5, 650.0), p.fg).truncate().shrink())
+                .child(
+                    row()
+                        .px(6.0)
+                        .h(18.0)
+                        .center()
+                        .radius(RADIUS)
+                        .border(1.0, p.border)
+                        .child(label(kind, font(10.5, 600.0), p.muted)),
+                ),
+        };
         let mut r = row()
             .key(format!("settings-account-{}", acc.id))
             .w_full()
@@ -967,9 +1072,10 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                     .size(32.0, 32.0)
                     .center()
                     .radius(16.0)
-                    .fill(p.slot(crate::ui::format::avatar_slot(&acc.email)))
+                    .fill(p.slot(s.account_slot(&acc.id)))
                     .child(label(
-                        tag.chars()
+                        base_tag(acc)
+                            .chars()
                             .next()
                             .map(|c| c.to_uppercase().to_string())
                             .unwrap_or_default(),
@@ -982,25 +1088,29 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                     .grow(1.0)
                     .min_w(0.0)
                     .gap(2.0)
-                    .child(
-                        row()
-                            .gap(8.0)
-                            .center_y()
-                            .child(label(name, font(13.5, 650.0), p.fg).truncate().shrink())
-                            .child(
-                                row()
-                                    .px(6.0)
-                                    .h(18.0)
-                                    .center()
-                                    .radius(RADIUS)
-                                    .border(1.0, p.border)
-                                    .child(label(kind, font(10.5, 600.0), p.muted)),
-                            ),
-                    )
+                    .child(heading)
                     .child(info),
             );
         let armed = st.pending_removal.as_ref().map(|(i, _)| i) == Some(&acc.id);
-        if armed {
+        if renaming.is_some() {
+            r = r
+                .child(button(
+                    format!("save-rename-{id}"),
+                    "Save",
+                    p,
+                    true,
+                    true,
+                    |s, _| s.save_rename(),
+                ))
+                .child(button(
+                    format!("cancel-rename-{id}"),
+                    "Cancel",
+                    p,
+                    false,
+                    true,
+                    |s, _| s.cancel_rename(),
+                ));
+        } else if armed {
             let confirm_id = id.clone();
             r = r
                 .child(
@@ -1027,6 +1137,15 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                     },
                 ));
         } else {
+            let rename_id = id.clone();
+            r = r.child(button(
+                format!("rename-account-{id}"),
+                "Edit name",
+                p,
+                false,
+                true,
+                move |s, _| s.start_rename(&rename_id),
+            ));
             if s.is_gmail(&acc.id) {
                 let reauth_id = id.clone();
                 let busy = st.reauthing.is_some();
@@ -1084,6 +1203,7 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
                 .gap(22.0)
                 .child(section("Appearance", appearance(s, p)))
                 .child(section("Reading", remote_row))
+                .child(section("Unified inbox", account_marker(s, p)))
                 .child(section("Notifications", notifications))
                 .children(title_bar_row.map(|row| section("Window", row)))
                 .child(section("Accounts", accounts))

@@ -282,6 +282,19 @@ impl Backend {
         Ok(())
     }
 
+    /// Set the name mail from this account is sent under (trimmed; empty sends the bare
+    /// address). Sending reads the account from disk, so the next message uses it.
+    pub fn rename_account(
+        &self,
+        account_id: String,
+        display_name: String,
+    ) -> AppResult<accounts::AccountPublic> {
+        accounts::rename_account_on_disk(&account_id, display_name.trim())
+            .map_err(AppError::from)?
+            .map(|a| a.public())
+            .ok_or_else(|| AppError::msg("account not found"))
+    }
+
     /// List a folder's folders.
     pub fn list_folders(&self, account_id: String) -> AppResult<Vec<Folder>> {
         let conn = self
