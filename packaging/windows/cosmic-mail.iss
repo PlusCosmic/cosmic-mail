@@ -80,7 +80,18 @@ Root: HKCU; Subkey: "Software\Classes\AppUserModelId\dev.pluscosmic.mail"; Value
 
 [Run]
 Filename: "{app}\cosmic-mail.exe"; Description: "{cm:LaunchProgram,Cosmic Mail}"; Flags: nowait postinstall skipifsilent
+; An update the app installed itself (src/update.rs) runs this setup silently, with
+; /RELAUNCH=foreground or /RELAUNCH=background when the new version should start.
+Filename: "{app}\cosmic-mail.exe"; Flags: nowait; Check: RelaunchAfterUpdate('foreground')
+Filename: "{app}\cosmic-mail.exe"; Parameters: "--background"; Flags: nowait; Check: RelaunchAfterUpdate('background')
 
 [UninstallRun]
 ; The app keeps running in the tray after its window closes.
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM cosmic-mail.exe"; Flags: runhidden; RunOnceId: "StopCosmicMail"
+
+[Code]
+// The app's own updates pass /RELAUNCH=<mode>; a silent install without it starts nothing.
+function RelaunchAfterUpdate(Mode: String): Boolean;
+begin
+  Result := WizardSilent and (CompareText(ExpandConstant('{param:RELAUNCH|}'), Mode) = 0);
+end;

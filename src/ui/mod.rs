@@ -36,6 +36,7 @@ use crate::backend::Backend;
 use crate::events::AppEvent;
 use crate::settings::Settings;
 use crate::sync::SyncState;
+use crate::update::UpdateInfo;
 use crate::wire::{Folder, MessageBody, MessageSummary, Shipment};
 
 use self::compose::ComposeSeed;
@@ -228,6 +229,13 @@ pub struct SettingsState {
     pub reauthing: Option<String>,
 }
 
+/// Update work in flight (Settings → Updates).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateBusy {
+    Checking,
+    Installing,
+}
+
 /// The compose dialog.
 pub struct ComposeForm {
     pub seed: ComposeSeed,
@@ -392,6 +400,11 @@ pub struct Ui {
     pub search_query: String,
 
     pub settings: Settings,
+    /// The newer version the last check found (`ready`: it installs at exit).
+    pub update: Option<UpdateInfo>,
+    pub update_busy: Option<UpdateBusy>,
+    /// A check from Settings finished (so "up to date" means something).
+    pub update_checked: bool,
     pub modal: Option<Modal>,
     /// Takes edits addressed to a dialog field after the dialog closed.
     pub(crate) scratch_edit: TextEdit,
@@ -454,6 +467,9 @@ impl Ui {
             search_active: false,
             search_query: String::new(),
             settings: Settings::default(),
+            update: None,
+            update_busy: None,
+            update_checked: false,
             modal: None,
             scratch_edit: TextEdit::new(""),
             pane_ratio: pane::DEFAULT_LIST_PANE_RATIO,

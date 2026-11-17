@@ -579,3 +579,86 @@ fn a_drag_selects_from_the_subject_into_the_body() {
         "subject and body are one selection: {picked:?}"
     );
 }
+
+fn update_info(version: &str, ready: bool) -> crate::update::UpdateInfo {
+    crate::update::UpdateInfo {
+        version: version.into(),
+        current_version: "0.1.149".into(),
+        release_url: format!("https://github.com/PlusCosmic/cosmic-mail/releases/tag/v{version}"),
+        method: crate::update::UpdateMethod::Installer,
+        ready,
+    }
+}
+
+#[test]
+fn an_available_update_toasts_once_and_shows_in_settings() {
+    let mut rt = runtime(demo::state());
+    for _ in 0..2 {
+        rt.state
+            .inbox
+            .event(AppEvent::UpdateAvailable(update_info("0.1.160", false)));
+    }
+    poll(&mut rt, 1.0);
+    assert_eq!(rt.state.toasts.len(), 1, "one toast per version");
+    assert!(rt.state.toasts[0].message.contains("0.1.160"));
+
+    // A newer one toasts again.
+    rt.state
+        .inbox
+        .event(AppEvent::UpdateAvailable(update_info("0.1.161", false)));
+    poll(&mut rt, 2.0);
+    assert_eq!(rt.state.toasts.len(), 2);
+
+    click(&mut rt, "rail-settings");
+    assert!(rt.find("update-install").is_some());
+    assert!(rt.find("update-download").is_none());
+}
+
+#[test]
+fn a_ready_automatic_update_waits_for_the_window_to_close() {
+    let mut rt = runtime(demo::state());
+    rt.state.settings.updates = crate::update::UpdateMode::Auto;
+    rt.state
+        .inbox
+        .event(AppEvent::UpdateAvailable(update_info("0.1.160", true)));
+    poll(&mut rt, 1.0);
+    // No window handle here, so it counts as open: the user is told, nothing restarts.
+    assert_eq!(rt.state.toasts.len(), 1);
+    assert!(rt.state.toasts[0].message.contains("close the window"));
+    assert!(rt.state.update.as_ref().is_some_and(|u| u.ready));
+}
+
+#[test]
+fn a_copy_that_cant_replace_itself_offers_the_download_page() {
+    let mut s = demo::state();
+    s.update = Some(crate::update::UpdateInfo {
+        method: crate::update::UpdateMethod::Download,
+        ..update_info("0.1.160", false)
+    });
+    let mut rt = runtime(s);
+    click(&mut rt, "rail-settings");
+    assert!(rt.find("update-download").is_some());
+    assert!(rt.find("update-install").is_none());
+}
+
+#[test]
+fn the_update_mode_setting_switches() {
+    use crate::update::UpdateMode;
+    let mut rt = runtime(demo::state());
+    assert_eq!(
+        rt.state.settings.updates,
+        UpdateMode::Notify,
+        "notify by default"
+    );
+    click(&mut rt, "rail-settings");
+    rt.state.reveal = Some("update-mode".into());
+    poll(&mut rt, 1.0);
+    click(&mut rt, "update-mode-off");
+    assert_eq!(rt.state.settings.updates, UpdateMode::Off);
+    if crate::update::CAN_INSTALL {
+        click(&mut rt, "update-mode-auto");
+        assert_eq!(rt.state.settings.updates, UpdateMode::Auto);
+    } else {
+        assert!(rt.find("update-mode-auto").is_none());
+    }
+}

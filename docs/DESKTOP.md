@@ -51,6 +51,24 @@ second sync engine. `--background` starts the process without a window.
   a fixed-argument `hyprctl` fallback, because Wayland focus-stealing prevention can ignore
   a background client.
 
+## Updates
+
+Release builds look for a newer version on GitHub (Settings → Updates: Off, Notify, or
+Automatic; Notify by default) a minute after starting and then every six hours, and
+**Check now** asks straight away.
+
+- **Windows**: **Install and restart** downloads the new installer (or the portable zip for
+  the portable copy), checks it, and installs it as the app restarts. A copy in a folder
+  this user can't write (an install for all users) opens the release page instead.
+- **macOS**: the same, swapping `Cosmic Mail.app` in place; a copy in a folder this user
+  can't write opens the release page. Ad-hoc-signed builds make macOS ask again for
+  Keychain access after an update.
+- **Linux**: the app says a newer version exists. The package manager installs it.
+
+With **Automatic**, the update downloads in the background and installs when the window
+closes (straight away if it is already closed), and the app comes back in the background.
+Quitting from the tray or the menu also installs a downloaded update, without restarting.
+
 ## System tray
 
 The tray icon offers **Open Cosmic Mail**, **Sync now** (restart sync for every account)

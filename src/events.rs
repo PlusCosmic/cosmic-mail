@@ -10,6 +10,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::sync::SyncState;
+use crate::update::UpdateInfo;
 use crate::wire::MessageSummary;
 
 /// One backend event.
@@ -36,6 +37,9 @@ pub enum AppEvent {
     /// `accounts:changed`: an account was added or removed from outside the UI (Postmaster,
     /// over the single-instance socket); reload the account list.
     AccountsChanged,
+    /// `update:available`: the background check found a newer version, or (automatic
+    /// updates) finished preparing it (`ready`).
+    UpdateAvailable(UpdateInfo),
 }
 
 /// Where backend events go. Cheap to clone; callable from any thread.

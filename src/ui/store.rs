@@ -8,11 +8,13 @@
 use rune::Tx;
 
 use super::compose::ComposeSeed;
-use super::{html, AddTab, Filter, Modal, SettingsState, Ui, PAGE_LIMIT};
+use super::{html, AddTab, Filter, Modal, SettingsState, Ui, UpdateBusy, PAGE_LIMIT};
 use crate::accounts::AccountKind;
+use crate::error::AppError;
 use crate::events::AppEvent;
 use crate::settings::Settings;
 use crate::sync::SyncState;
+use crate::update::{UpdateInfo, UpdateMethod, UpdateMode};
 use crate::wire::{AttachmentInfo, Folder, ImapAccountInput, MessageSummary, SendMessageInput};
 
 /// Which list a page was fetched for; a result lands only if it still matches.
@@ -1004,6 +1006,118 @@ impl Ui {
         );
     }
 
+    // ---- Updates ----------------------------------------------------------
+
+    /// Settings → Check now.
+    pub fn check_for_update(&mut self) {
+        if self.update_busy.is_some() || self.backend.is_none() {
+            return;
+        }
+        self.update_busy = Some(UpdateBusy::Checking);
+        self.spawn(
+            |b| async move { b.check_for_update().await },
+            |ui, result, _| {
+                ui.update_busy = None;
+                match result {
+                    Ok(found) => {
+                        ui.update = found;
+                        ui.update_checked = true;
+                    }
+                    Err(err) => ui.error("Update check failed", err),
+                }
+            },
+        );
+    }
+
+    /// Settings → Install and restart, or Open download page, as the method allows.
+    pub fn install_update(&mut self) {
+        let Some(info) = self.update.clone() else {
+            return;
+        };
+        if !info.method.installs() {
+            if info.method == UpdateMethod::Download {
+                self.open_link(&info.release_url);
+            }
+            return;
+        }
+        if self.update_busy.is_some() || self.backend.is_none() {
+            return;
+        }
+        self.update_busy = Some(UpdateBusy::Installing);
+        self.spawn(
+            |b| async move {
+                let info = b.install_update().await?;
+                b.restart_to_update(false)?;
+                Ok::<_, AppError>(info)
+            },
+            |ui, result, tx| {
+                ui.update_busy = None;
+                match result {
+                    Ok(info) => {
+                        ui.update = Some(info);
+                        // The update installs as the app exits, then starts the new one.
+                        tx.quit();
+                    }
+                    Err(err) => ui.error("Update failed", err),
+                }
+            },
+        );
+    }
+
+    /// Install a prepared update now and come back in the background (the window is closed).
+    fn restart_in_background_for_update(&mut self) {
+        self.spawn(
+            |b| async move { b.restart_to_update(true) },
+            |ui, result, tx| match result {
+                Ok(()) => tx.quit(),
+                Err(err) => ui.error("Update failed", err),
+            },
+        );
+    }
+
+    pub fn set_update_mode(&mut self, mode: UpdateMode) {
+        let mut next = self.settings.clone();
+        next.updates = mode;
+        self.update_settings(next);
+    }
+
+    fn on_update_available(&mut self, info: UpdateInfo) {
+        let seen = self
+            .update
+            .as_ref()
+            .is_some_and(|u| u.version == info.version && u.ready == info.ready);
+        let auto_ready = info.ready && self.settings.updates == UpdateMode::Auto;
+        let version = info.version.clone();
+        self.update = Some(info);
+        let window_closed = self.window.as_ref().is_some_and(|w| !w.is_visible());
+        if auto_ready && window_closed {
+            self.restart_in_background_for_update();
+            return;
+        }
+        if seen {
+            return;
+        }
+        if auto_ready {
+            self.toast(
+                format!("Cosmic Mail {version} is ready. It installs when you close the window."),
+                false,
+            );
+        } else {
+            self.toast(
+                format!("Cosmic Mail {version} is available. See Settings → Updates."),
+                false,
+            );
+        }
+    }
+
+    /// The window is closing: an automatic update that is ready installs now.
+    pub fn on_window_close(&mut self) {
+        let ready = self.update.as_ref().is_some_and(|u| u.ready);
+        if ready && self.settings.updates == UpdateMode::Auto {
+            self.restart_in_background_for_update();
+        }
+    }
+
     // ---- Modals -----------------------------------------------------------
 
     pub fn open_add_account(&mut self) {
@@ -1079,6 +1193,7 @@ impl Ui {
             } => self.on_sync_state(account_id, state, error, needs_reauth),
             AppEvent::Activate => self.activate_requested = true,
             AppEvent::AccountsChanged => self.load_accounts(),
+            AppEvent::UpdateAvailable(info) => self.on_update_available(info),
         }
     }
 

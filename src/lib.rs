@@ -21,6 +21,7 @@ pub mod shipments;
 pub mod store;
 pub mod sync;
 pub mod ui;
+pub mod update;
 pub mod wire;
 
 pub use app::run;
