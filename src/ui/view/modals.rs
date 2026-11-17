@@ -39,7 +39,7 @@ pub fn modal(s: &Ui, m: &Modal, p: &Palette) -> El {
     if top {
         scrim.pt(110.0).child(dialog)
     } else {
-        scrim.justify_center().child(dialog)
+        scrim.justify_center().py(24.0).child(dialog)
     }
 }
 
@@ -1194,10 +1194,20 @@ fn settings(s: &Ui, st: &SettingsState, p: &Palette) -> El {
         .role("dialog")
         .label("Settings")
         .w(700.0)
+        .shrink()
+        .min_h(0.0)
         .child(dialog_head("Settings", None, p, true))
         .child(
+            // Taller than the window (more accounts, platform-only sections):
+            // shrink to fit and scroll rather than spill off both edges.
             col()
+                .key("settings-body")
                 .w_full()
+                .shrink()
+                .min_h(0.0)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
                 .px(22.0)
                 .py(18.0)
                 .gap(22.0)
