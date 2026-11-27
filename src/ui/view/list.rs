@@ -54,7 +54,7 @@ pub fn list_pane(s: &Ui, p: &Palette) -> El {
     let loaded = s
         .messages
         .iter()
-        .filter(|m| !s.pending_removals.contains(&m.id));
+        .filter(|m| !s.pending_removals.contains_key(&m.id));
     let (all, unread, flagged) = loaded.fold((0, 0, 0), |(a, u, f), m| {
         (a + 1, u + usize::from(!m.seen), f + usize::from(m.flagged))
     });

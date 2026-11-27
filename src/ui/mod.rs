@@ -343,6 +343,36 @@ impl PaletteState {
     }
 }
 
+/// An in-flight optimistic `\Seen` update for one message.
+///
+/// While `mark_read` is in flight, refetches overlay `desired` and folder
+/// reloads wait until the account's pending ops settle, so an earlier
+/// command's `MessagesUpdated` or a background sync never flashes the old
+/// unread indicator or badge back. Rapid toggles on one message coalesce so
+/// only one `mark_read` runs per message at a time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingSeen {
+    pub account_id: String,
+    pub folder_id: i64,
+    /// The last `seen` state confirmed on the server and DB.
+    pub confirmed: bool,
+    /// The `seen` state the currently-running `mark_read` call is writing.
+    pub in_flight: bool,
+    /// The `seen` state currently shown in the UI.
+    pub desired: bool,
+}
+
+/// An in-flight optimistic `\Flagged` update for one message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingFlagged {
+    /// The last `flagged` state confirmed on the server and DB.
+    pub confirmed: bool,
+    /// The `flagged` state the currently-running `mark_flagged` call is writing.
+    pub in_flight: bool,
+    /// The `flagged` state currently shown in the UI.
+    pub desired: bool,
+}
+
 /// The whole UI state.
 pub struct Ui {
     pub(crate) backend: Option<Arc<Backend>>,
@@ -372,11 +402,24 @@ pub struct Ui {
     pub offset: i64,
     pub has_more: bool,
     pub loading_messages: bool,
+    /// Bumped on every view reset or full page replace so out-of-order DB reads are dropped.
+    pub(crate) list_gen: u64,
+    /// Bumped on every view reset so stale `load_more` appends are dropped.
+    pub(crate) view_gen: u64,
+    /// Per-account generation for folder reloads so out-of-order DB reads are dropped.
+    pub(crate) folders_gen: HashMap<String, u64>,
 
     pub selected_message: Option<i64>,
-    /// Messages removed optimistically whose server move hasn't answered yet;
-    /// a refetch issued before the move must not bring them back.
-    pub(crate) pending_removals: HashSet<i64>,
+    /// Messages removed optimistically (`id -> account_id`) whose server move
+    /// hasn't answered yet; a refetch issued before the move must not bring them back.
+    pub(crate) pending_removals: HashMap<i64, String>,
+    /// Messages whose `\Seen` flag is being updated on the server.
+    pub(crate) pending_seen: HashMap<i64, PendingSeen>,
+    /// Messages whose `\Flagged` flag is being updated on the server.
+    pub(crate) pending_flagged: HashMap<i64, PendingFlagged>,
+    /// Accounts whose folder-count reload was deferred while optimistic unread/removal
+    /// ops were in flight, to run as soon as those ops settle.
+    pub(crate) pending_folder_reload: HashSet<String>,
     pub body: Option<MessageBody>,
     /// `body.html` rendered for the reader.
     pub body_lines: Vec<html::Line>,
@@ -453,8 +496,14 @@ impl Ui {
             offset: 0,
             has_more: false,
             loading_messages: false,
+            list_gen: 0,
+            view_gen: 0,
+            folders_gen: HashMap::new(),
             selected_message: None,
-            pending_removals: HashSet::new(),
+            pending_removals: HashMap::new(),
+            pending_seen: HashMap::new(),
+            pending_flagged: HashMap::new(),
+            pending_folder_reload: HashSet::new(),
             body: None,
             body_lines: Vec::new(),
             mail: Default::default(),

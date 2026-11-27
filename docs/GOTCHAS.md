@@ -169,9 +169,14 @@ related area. When you learn a new one, add it.
   `AppHandle::update`, which runs on the UI thread even while the window is hidden; in tests
   and headless runs there is no handle, jobs queue and `Ui::poll` drains them — a test must
   call `poll` (via `Runtime::update`) to see backend results or events.
-- **A refetch issued before an optimistic removal can land after it** and resurrect the row
-  (the E2E caught this). `Ui::pending_removals` filters rows whose move/delete hasn't been
-  answered out of every refetch and live insert until the server replies.
+- **A refetch issued before an optimistic update can land after it** and resurrect a removed
+  row or flash an old unread/flag indicator back (clicking quickly through unread mail used to
+  bounce dots and unread badges on every earlier `MessagesUpdated`). `Ui::pending_removals`,
+  `Ui::pending_seen`, and `Ui::pending_flagged` overlay in-flight state onto every refetch,
+  page load, and live insert; rapid read/flag toggles on one message coalesce so only one
+  server call runs per message at a time; `list_gen`/`view_gen`/`folders_gen` drop out-of-order
+  DB reads; and `Ui::pending_folder_reload` defers authoritative folder-count reloads for an
+  account until its in-flight unread/removal actions settle.
 - **html2text ignores presentational `<b>`/`<i>`** (it annotates only `<strong>`/`<em>`), and
   mail uses them constantly. `ui::html` rewrites the tags first, carefully leaving `<br>`,
   `<body>`, `<blockquote>`, `<img>` alone.

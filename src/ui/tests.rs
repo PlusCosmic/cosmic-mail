@@ -763,3 +763,19 @@ fn accounts_take_distinct_colours_in_order() {
     assert_eq!(a, p.accent, "the first account wears the accent");
     assert_ne!(a, b);
 }
+
+#[test]
+fn clicking_through_unread_messages_updates_indicators_and_counts_immediately() {
+    let mut rt = runtime(demo::state());
+    let unread_before = rt.state.unified_unread();
+    // Demo starts with 101, 102, 103 unread and 101 selected (not yet clicked).
+    click(&mut rt, "msg-102");
+    assert_eq!(rt.state.selected_message, Some(102));
+    assert!(rt.state.messages.iter().any(|m| m.id == 102 && m.seen));
+    assert_eq!(rt.state.unified_unread(), unread_before - 1);
+
+    click(&mut rt, "msg-103");
+    assert_eq!(rt.state.selected_message, Some(103));
+    assert!(rt.state.messages.iter().any(|m| m.id == 103 && m.seen));
+    assert_eq!(rt.state.unified_unread(), unread_before - 2);
+}

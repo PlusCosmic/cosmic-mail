@@ -534,8 +534,10 @@ impl Backend {
         sync_imap::set_seen_flag(&mut session, uid, seen)
             .await
             .map_err(AppError::from)?;
-        let _ = session.logout().await;
 
+        // Update SQLite as soon as the server accepts the flag (before the
+        // extra logout RTT) so any concurrent IDLE STATUS wakeup or UI refetch
+        // sees the local row already in sync with the server.
         let mut sibling_folders = Vec::new();
         {
             let conn = self
@@ -562,6 +564,7 @@ impl Backend {
                 }
             }
         }
+        let _ = session.logout().await;
 
         self.emit_messages_updated(folder_id);
         for sibling_folder_id in sibling_folders {
@@ -591,7 +594,6 @@ impl Backend {
         sync_imap::set_flagged_flag(&mut session, uid, flagged)
             .await
             .map_err(AppError::from)?;
-        let _ = session.logout().await;
 
         {
             let conn = self
@@ -600,6 +602,7 @@ impl Backend {
                 .map_err(|_| AppError::msg("db lock poisoned"))?;
             store::set_flagged(&conn, message_id, flagged).map_err(AppError::from)?;
         }
+        let _ = session.logout().await;
 
         self.emit_messages_updated(folder_id);
         Ok(())
