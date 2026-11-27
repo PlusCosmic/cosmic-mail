@@ -51,7 +51,14 @@ fn ctrl(rt: &mut Runtime<Ui>, c: char) {
     step(rt);
 }
 
+/// Scrolls `key` into view first, as a user would, so targets below a scroll fold
+/// (Settings on a short window) stay clickable.
 fn click(rt: &mut Runtime<Ui>, key: &str) {
+    let k = key.to_string();
+    rt.update(move |_, tx| {
+        tx.scroll_into_view(k);
+    });
+    step(rt);
     let (x, y) = rt
         .find(key)
         .unwrap_or_else(|| panic!("no element keyed {key:?}"));
