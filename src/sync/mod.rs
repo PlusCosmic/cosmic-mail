@@ -78,6 +78,11 @@ const INITIAL_SYNC_LIMIT: u32 = 200;
 /// IDLE wakeups and re-issue passes (issue #17). Full sweeps reconcile all
 /// cached UIDs in the folder.
 const FLAG_RECONCILE_IDLE_LIMIT: u32 = 200;
+/// Default number of older envelopes fetched per on-demand backfill batch.
+pub const BACKFILL_BATCH_LIMIT: u32 = INITIAL_SYNC_LIMIT;
+/// Upper bound on a single backfill request so a caller can't ask for an entire
+/// 100k-message archive in one IMAP command.
+pub const BACKFILL_MAX_LIMIT: u32 = 500;
 const BODY_PREFETCH_WORKING_SET: u32 = 20;
 const BODY_PREFETCH_LIMIT: u32 = 5;
 const BODY_PREFETCH_MAX_BYTES: u32 = 1024 * 1024;
@@ -483,28 +488,7 @@ async fn sync_folder_uids(
     {
         let conn = db.lock().expect("db poisoned");
         for env in &envelopes {
-            // No body has been fetched yet at envelope-sync time, so there is
-            // nothing to summarize; leave the snippet empty rather than
-            // seeding it from the subject (which just duplicates the subject
-            // line in the UI until the body is prefetched or opened).
-            let snippet = String::new();
-            let upsert = MessageUpsert {
-                folder_id,
-                uid: env.uid,
-                message_id: env.message_id.clone(),
-                subject: env.subject.clone(),
-                from_name: env.from_name.clone(),
-                from_addr: env.from_addr.clone(),
-                to_addrs: env.to_addrs.clone(),
-                cc_addrs: env.cc_addrs.clone(),
-                date: env.date.clone(),
-                snippet,
-                seen: env.seen,
-                flagged: env.flagged,
-                has_attachments: env.has_attachments,
-                rfc822_size: env.rfc822_size,
-            };
-            let id = store::upsert_message(&conn, &upsert)?;
+            let id = upsert_envelope(&conn, folder_id, env)?;
             highest_uid = highest_uid.max(env.uid);
 
             let summary = crate::wire::MessageSummary {
@@ -529,6 +513,15 @@ async fn sync_folder_uids(
                     subject: env.subject.clone(),
                 });
             }
+        }
+        if last_uid == 0 {
+            // Initial sync fetched the newest INITIAL_SYNC_LIMIT messages; if
+            // the folder holds no more than that, history is already complete.
+            store::set_folder_history_complete(
+                &conn,
+                folder_id,
+                server_exists <= INITIAL_SYNC_LIMIT,
+            )?;
         }
         if role == FolderRole::Inbox {
             store::set_last_seen_uid(&conn, folder_id, highest_uid)?;
@@ -584,6 +577,99 @@ async fn sync_folder_uids(
     }
 
     Ok(())
+}
+
+/// Persist one fetched IMAP envelope into `messages` without touching cached bodies.
+fn upsert_envelope(
+    conn: &rusqlite::Connection,
+    folder_id: i64,
+    env: &imap::EnvelopeSummary,
+) -> Result<i64> {
+    // No body has been fetched yet at envelope-sync time, so there is nothing
+    // to summarize; leave the snippet empty rather than seeding it from the
+    // subject (which duplicates the subject line in the UI until cached).
+    let upsert = MessageUpsert {
+        folder_id,
+        uid: env.uid,
+        message_id: env.message_id.clone(),
+        subject: env.subject.clone(),
+        from_name: env.from_name.clone(),
+        from_addr: env.from_addr.clone(),
+        to_addrs: env.to_addrs.clone(),
+        cc_addrs: env.cc_addrs.clone(),
+        date: env.date.clone(),
+        snippet: String::new(),
+        seen: env.seen,
+        flagged: env.flagged,
+        has_attachments: env.has_attachments,
+        rfc822_size: env.rfc822_size,
+    };
+    store::upsert_message(conn, &upsert)
+}
+
+/// Fetch up to `limit` older envelopes from IMAP before a folder's oldest
+/// cached UID, persist them without touching `last_seen_uid` or notifying, and
+/// mark `history_complete` once the start of the mailbox is reached.
+pub async fn backfill_folder(
+    events: &Events,
+    db: &Db,
+    account: &Account,
+    folder_id: i64,
+    limit: u32,
+) -> Result<u32> {
+    let limit = if limit == 0 {
+        BACKFILL_BATCH_LIMIT
+    } else {
+        limit.min(BACKFILL_MAX_LIMIT)
+    };
+    let folder = {
+        let conn = db.lock().expect("db poisoned");
+        store::get_folder(&conn, folder_id)?.context("folder not found")?
+    };
+    if folder.history_complete {
+        return Ok(0);
+    }
+    let role = FolderRole::from_db_str(&folder.role);
+
+    let mut session = imap::connect(account).await?;
+    let status = imap::status(&mut session, &folder.name).await?;
+    let wiped = {
+        let conn = db.lock().expect("db poisoned");
+        let (_, wiped) =
+            store::upsert_folder(&conn, &account.id, &folder.name, role, status.uidvalidity)?;
+        store::set_folder_counts(&conn, folder_id, status.exists, status.unseen)?;
+        wiped
+    };
+    imap::select(&mut session, &folder.name).await?;
+
+    let oldest_uid = {
+        let conn = db.lock().expect("db poisoned");
+        store::min_uid(&conn, folder_id)?
+    };
+
+    let (envelopes, reached_start) = if wiped || oldest_uid == 0 {
+        let envs = imap::fetch_recent_envelopes(&mut session, status.exists, limit).await?;
+        (envs, status.exists <= limit)
+    } else {
+        imap::fetch_older_envelopes(&mut session, oldest_uid, limit).await?
+    };
+
+    let added = envelopes.len() as u32;
+    {
+        let conn = db.lock().expect("db poisoned");
+        for env in &envelopes {
+            upsert_envelope(&conn, folder_id, env)?;
+        }
+        if reached_start {
+            store::set_folder_history_complete(&conn, folder_id, true)?;
+        }
+    }
+    let _ = session.logout().await;
+
+    if added > 0 || reached_start || wiped {
+        events.emit(AppEvent::MessagesUpdated { folder_id });
+    }
+    Ok(added)
 }
 
 async fn prefetch_message_bodies(db: &Db, folder_id: i64, session: &mut imap::ImapSession) {

@@ -341,6 +341,84 @@ impl Backend {
             .collect())
     }
 
+    /// Fetch up to `limit` older message envelopes from IMAP before a folder's
+    /// oldest cached UID, caching them persistently in SQLite.
+    pub async fn load_older_messages(&self, folder_id: i64, limit: u32) -> AppResult<u32> {
+        let folder = {
+            let conn = self
+                .db
+                .lock()
+                .map_err(|_| AppError::msg("db lock poisoned"))?;
+            store::get_folder(&conn, folder_id)
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::msg("folder not found"))?
+        };
+        if folder.history_complete {
+            return Ok(0);
+        }
+        let account = load_account(&folder.account_id)?;
+        crate::sync::backfill_folder(&self.events, &self.db, &account, folder_id, limit)
+            .await
+            .map_err(AppError::from)
+    }
+
+    /// Backfill up to `limit` older message envelopes from every account's
+    /// incomplete `inbox`-role folder, for the unified inbox view.
+    pub async fn load_older_unified_messages(&self, limit: u32) -> AppResult<u32> {
+        let folders = {
+            let conn = self
+                .db
+                .lock()
+                .map_err(|_| AppError::msg("db lock poisoned"))?;
+            store::list_incomplete_inbox_folders(&conn).map_err(AppError::from)?
+        };
+        if folders.is_empty() {
+            return Ok(0);
+        }
+
+        let accounts = crate::accounts::load_accounts().map_err(AppError::from)?;
+        let mut tasks = Vec::new();
+        for folder in folders {
+            let Some(account) = accounts.iter().find(|a| a.id == folder.account_id).cloned() else {
+                continue;
+            };
+            let events = self.events.clone();
+            let db = self.db.clone();
+            tasks.push(async move {
+                crate::sync::backfill_folder(&events, &db, &account, folder.id, limit).await
+            });
+        }
+        if tasks.is_empty() {
+            return Ok(0);
+        }
+
+        let results = futures::future::join_all(tasks).await;
+        let mut total_added = 0u32;
+        let mut any_ok = false;
+        let mut first_err: Option<anyhow::Error> = None;
+        for result in results {
+            match result {
+                Ok(n) => {
+                    any_ok = true;
+                    total_added = total_added.saturating_add(n);
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "unified inbox backfill failed for one account");
+                    if first_err.is_none() {
+                        first_err = Some(err);
+                    }
+                }
+            }
+        }
+        if any_ok {
+            Ok(total_added)
+        } else {
+            Err(AppError::from(
+                first_err.unwrap_or_else(|| anyhow::anyhow!("backfill failed")),
+            ))
+        }
+    }
+
     /// Full-text search over the local cache, relevance-ranked.
     ///
     /// Searches cached envelopes and bodies via SQLite FTS5. When `account_id` is

@@ -452,6 +452,100 @@ fn recent_sequence_set(exists: u32, limit: u32) -> Option<String> {
     Some(format!("{start}:*"))
 }
 
+/// Compress a slice of UIDs into a compact RFC 3501 sequence-set string
+/// (ascending, deduplicated, contiguous runs collapsed to `a:b`).
+pub fn compress_uid_set(uids: &[u32]) -> String {
+    if uids.is_empty() {
+        return String::new();
+    }
+    let mut sorted = uids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut parts: Vec<String> = Vec::new();
+    let mut start = sorted[0];
+    let mut end = sorted[0];
+    for &uid in &sorted[1..] {
+        if uid == end.saturating_add(1) {
+            end = uid;
+        } else {
+            if start == end {
+                parts.push(start.to_string());
+            } else {
+                parts.push(format!("{start}:{end}"));
+            }
+            start = uid;
+            end = uid;
+        }
+    }
+    if start == end {
+        parts.push(start.to_string());
+    } else {
+        parts.push(format!("{start}:{end}"));
+    }
+    parts.join(",")
+}
+
+/// Choose up to `limit` newest UIDs strictly below `oldest_cached_uid`.
+///
+/// Returns `(batch_uids, reached_start)` where `reached_start` is `true` iff no
+/// older UIDs remain beyond this batch.
+pub fn select_older_uid_batch(
+    mut uids: Vec<u32>,
+    oldest_cached_uid: u32,
+    limit: u32,
+) -> (Vec<u32>, bool) {
+    uids.retain(|&u| u > 0 && u < oldest_cached_uid);
+    uids.sort_unstable();
+    uids.dedup();
+
+    if uids.is_empty() {
+        return (Vec::new(), true);
+    }
+    let limit = limit as usize;
+    if limit == 0 {
+        return (Vec::new(), false);
+    }
+    if uids.len() <= limit {
+        return (uids, true);
+    }
+    let split = uids.len() - limit;
+    (uids.split_off(split), false)
+}
+
+/// Fetch up to `limit` envelopes strictly older than `oldest_cached_uid` in the
+/// currently selected mailbox.
+///
+/// Uses `UID SEARCH UID 1:<oldest - 1>` to enumerate older UIDs regardless of
+/// UID sparsity or concurrent expunges, then fetches only the newest `limit`
+/// of those UIDs with a compressed `UID FETCH`. Returns `(envelopes, reached_start)`.
+pub async fn fetch_older_envelopes(
+    session: &mut ImapSession,
+    oldest_cached_uid: u32,
+    limit: u32,
+) -> Result<(Vec<EnvelopeSummary>, bool)> {
+    if oldest_cached_uid <= 1 {
+        return Ok((Vec::new(), true));
+    }
+    if limit == 0 {
+        return Ok((Vec::new(), false));
+    }
+    let query = format!("UID 1:{}", oldest_cached_uid - 1);
+    let found = session
+        .uid_search(&query)
+        .await
+        .context("issuing UID SEARCH for older messages")?;
+    let (batch_uids, reached_start) =
+        select_older_uid_batch(found.into_iter().collect(), oldest_cached_uid, limit);
+    if batch_uids.is_empty() {
+        return Ok((Vec::new(), true));
+    }
+    let uid_set = compress_uid_set(&batch_uids);
+    let mut envelopes = fetch_envelopes(session, &uid_set).await?;
+    envelopes.retain(|e| e.uid < oldest_cached_uid);
+    Ok((envelopes, reached_start))
+}
+
 fn envelope_from_fetch(fetch: &Fetch) -> Option<EnvelopeSummary> {
     let uid = fetch.uid?;
     let env = fetch.envelope()?;
@@ -1386,10 +1480,11 @@ fn is_tag_start(chars: &[char], idx: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        body_structure_has_real_attachment, decode_mime_words, deglue, fetch_flags, parse_body,
-        recent_sequence_set, replace_ascii_case_insensitive, snippet_for_body, snippet_from_text,
-        tls_client_with_config, unquote_display_name, ClientConfig, ImapTls, RootCertStore,
-        BODY_FETCH_QUERY, SNIPPET_MAX_CHARS,
+        body_structure_has_real_attachment, compress_uid_set, decode_mime_words, deglue,
+        fetch_flags, fetch_older_envelopes, parse_body, recent_sequence_set,
+        replace_ascii_case_insensitive, select_older_uid_batch, snippet_for_body,
+        snippet_from_text, tls_client_with_config, unquote_display_name, ClientConfig, ImapTls,
+        RootCertStore, BODY_FETCH_QUERY, SNIPPET_MAX_CHARS,
     };
     use async_imap::imap_proto::{
         BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentDisposition,
@@ -2428,6 +2523,170 @@ mod tests {
         assert_eq!(flags.get(&10), Some(&(true, true)));
         assert_eq!(flags.get(&11), Some(&(false, false)));
         assert!(!flags.contains_key(&12));
+
+        session.logout().await.expect("logout");
+        server.await.expect("server task");
+    }
+
+    #[test]
+    fn compress_uid_set_collapses_runs_and_sorts() {
+        assert_eq!(compress_uid_set(&[]), "");
+        assert_eq!(compress_uid_set(&[42]), "42");
+        assert_eq!(compress_uid_set(&[5, 1, 2, 3, 2, 8, 7, 10]), "1:3,5,7:8,10");
+    }
+
+    #[test]
+    fn select_older_uid_batch_handles_sparse_uids_and_boundaries() {
+        // Ignores UIDs >= oldest_cached_uid and picks the newest `limit` older ones.
+        let (batch, done) =
+            select_older_uid_batch(vec![10, 20, 21, 22, 400, 401, 500, 999], 500, 3);
+        assert_eq!(batch, vec![22, 400, 401]);
+        assert!(!done);
+
+        // Exact fit or fewer marks history complete.
+        let (batch, done) = select_older_uid_batch(vec![10, 20, 21], 22, 3);
+        assert_eq!(batch, vec![10, 20, 21]);
+        assert!(done);
+
+        // Empty older set marks history complete.
+        let (batch, done) = select_older_uid_batch(vec![500], 500, 200);
+        assert!(batch.is_empty());
+        assert!(done);
+    }
+
+    #[tokio::test]
+    async fn fetch_older_envelopes_uses_uid_search_and_compressed_uid_fetch() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let (client_cfg, acceptor) = test_tls_pair();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let tls = acceptor.accept(stream).await.expect("tls accept");
+            let mut tls = BufReader::new(tls);
+            tls.write_all(b"* OK ready\r\n").await.expect("greeting");
+            tls.flush().await.expect("flush");
+
+            // LOGIN
+            let mut line = String::new();
+            tls.read_line(&mut line).await.expect("login");
+            let tag = line.trim().split(' ').next().expect("tag");
+            tls.write_all(format!("{tag} OK logged in\r\n").as_bytes())
+                .await
+                .expect("ok login");
+            tls.flush().await.expect("flush");
+
+            // Batch 1: UID SEARCH UID 1:499 -> 6 sparse UIDs; client takes newest 3 (22,400:401).
+            line.clear();
+            tls.read_line(&mut line).await.expect("search 1");
+            let mut parts = line.trim().splitn(2, ' ');
+            let tag = parts.next().expect("tag");
+            assert_eq!(parts.next(), Some("UID SEARCH UID 1:499"));
+            tls.write_all(
+                format!("* SEARCH 10 20 21 22 400 401\r\n{tag} OK search done\r\n").as_bytes(),
+            )
+            .await
+            .expect("search 1 resp");
+            tls.flush().await.expect("flush");
+
+            line.clear();
+            tls.read_line(&mut line).await.expect("fetch 1");
+            let mut parts = line.trim().splitn(2, ' ');
+            let tag = parts.next().expect("tag");
+            assert!(
+                parts
+                    .next()
+                    .unwrap_or("")
+                    .starts_with("UID FETCH 22,400:401 "),
+                "unexpected fetch command: {line:?}"
+            );
+            for (seq, uid, subj) in [(1, 22, "Old 22"), (2, 400, "Old 400"), (3, 401, "Old 401")] {
+                let resp = format!(
+                    "* {seq} FETCH (UID {uid} FLAGS (\\Seen) INTERNALDATE \"10-Jul-2026 12:00:00 +0000\" \
+                     RFC822.SIZE 128 ENVELOPE (\"Fri, 10 Jul 2026 12:00:00 +0000\" \"{subj}\" \
+                     ((\"Alice\" NIL \"alice\" \"example.com\")) NIL NIL NIL NIL NIL NIL \"<m{uid}@example.com>\"))\r\n"
+                );
+                tls.write_all(resp.as_bytes()).await.expect("fetch item");
+            }
+            tls.write_all(format!("{tag} OK fetch done\r\n").as_bytes())
+                .await
+                .expect("ok fetch 1");
+            tls.flush().await.expect("flush");
+
+            // Batch 2: UID SEARCH UID 1:21 -> remaining 3 UIDs; reaches start.
+            line.clear();
+            tls.read_line(&mut line).await.expect("search 2");
+            let mut parts = line.trim().splitn(2, ' ');
+            let tag = parts.next().expect("tag");
+            assert_eq!(parts.next(), Some("UID SEARCH UID 1:21"));
+            tls.write_all(format!("* SEARCH 10 20 21\r\n{tag} OK search done\r\n").as_bytes())
+                .await
+                .expect("search 2 resp");
+            tls.flush().await.expect("flush");
+
+            line.clear();
+            tls.read_line(&mut line).await.expect("fetch 2");
+            let mut parts = line.trim().splitn(2, ' ');
+            let tag = parts.next().expect("tag");
+            assert!(
+                parts
+                    .next()
+                    .unwrap_or("")
+                    .starts_with("UID FETCH 10,20:21 "),
+                "unexpected fetch command: {line:?}"
+            );
+            for (seq, uid, subj) in [(1, 10, "Old 10"), (2, 20, "Old 20"), (3, 21, "Old 21")] {
+                let resp = format!(
+                    "* {seq} FETCH (UID {uid} FLAGS (\\Seen) INTERNALDATE \"09-Jul-2026 12:00:00 +0000\" \
+                     RFC822.SIZE 64 ENVELOPE (\"Thu, 09 Jul 2026 12:00:00 +0000\" \"{subj}\" \
+                     ((\"Alice\" NIL \"alice\" \"example.com\")) NIL NIL NIL NIL NIL NIL \"<m{uid}@example.com>\"))\r\n"
+                );
+                tls.write_all(resp.as_bytes()).await.expect("fetch item 2");
+            }
+            tls.write_all(format!("{tag} OK fetch done\r\n").as_bytes())
+                .await
+                .expect("ok fetch 2");
+            tls.flush().await.expect("flush");
+
+            // LOGOUT
+            line.clear();
+            tls.read_line(&mut line).await.expect("logout");
+            let tag = line.trim().split(' ').next().expect("tag");
+            tls.write_all(format!("* BYE bye\r\n{tag} OK logout\r\n").as_bytes())
+                .await
+                .expect("ok logout");
+            tls.flush().await.expect("flush");
+        });
+
+        let client = tls_client_with_config("localhost", port, ImapTls::Implicit, client_cfg)
+            .await
+            .expect("client");
+        let mut session = client
+            .login("alice", "secret")
+            .await
+            .map_err(|(e, _)| e)
+            .expect("login");
+
+        let (batch1, done1) = fetch_older_envelopes(&mut session, 500, 3)
+            .await
+            .expect("batch 1");
+        assert!(!done1);
+        assert_eq!(
+            batch1.iter().map(|e| e.uid).collect::<Vec<_>>(),
+            vec![22, 400, 401]
+        );
+
+        let (batch2, done2) = fetch_older_envelopes(&mut session, 22, 3)
+            .await
+            .expect("batch 2");
+        assert!(done2);
+        assert_eq!(
+            batch2.iter().map(|e| e.uid).collect::<Vec<_>>(),
+            vec![10, 20, 21]
+        );
 
         session.logout().await.expect("logout");
         server.await.expect("server task");

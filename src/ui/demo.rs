@@ -20,6 +20,7 @@ pub const SCENES: &[Scene] = &[
     ("default", |_| {}),
     ("welcome", welcome),
     ("folder", folder_view),
+    ("backfill", backfill_view),
     ("unread", |s| s.filter = super::Filter::Unread),
     ("search", search),
     ("compose", compose),
@@ -73,6 +74,8 @@ fn folder(id: i64, account: &str, name: &str, role: &str, unread: i64, total: i6
         role: role.into(),
         unread_count: unread,
         total_count: total,
+        cached_count: total,
+        history_complete: true,
     }
 }
 
@@ -330,6 +333,20 @@ fn folder_view(s: &mut Ui) {
     s.selected_account = Some("a1".into());
     s.selected_folder = Some(1);
     s.messages.retain(|m| m.account_id == "a1");
+}
+
+fn backfill_view(s: &mut Ui) {
+    folder_view(s);
+    s.has_more = false;
+    if let Some(inbox) = s
+        .folders
+        .get_mut("a1")
+        .and_then(|list| list.iter_mut().find(|f| f.id == 1))
+    {
+        inbox.total_count = 1_497;
+        inbox.cached_count = 200;
+        inbox.history_complete = false;
+    }
 }
 
 fn search(s: &mut Ui) {

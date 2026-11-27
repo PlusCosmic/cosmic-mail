@@ -68,6 +68,8 @@ interface Folder {
   role: FolderRole;           // from SPECIAL-USE attrs, fallback name heuristics
   unreadCount: number;          // authoritative server UNSEEN count from IMAP STATUS
   totalCount: number;           // authoritative server MESSAGES count, not local cache size
+  cachedCount: number;          // envelopes currently cached locally in SQLite
+  historyComplete: boolean;     // true once all older envelopes in the folder have been cached
 }
 
 interface MessageSummary {
@@ -200,6 +202,8 @@ interface UpdateInfo {
 | `list_folders` | `accountId: string` | `Folder[]` |
 | `list_messages` | `folderId: number, offset: number, limit: number` | `MessageSummary[]` (date DESC) |
 | `list_unified_messages` | `offset: number, limit: number` | `MessageSummary[]` (date DESC across all folders with role 'inbox', all accounts) |
+| `load_older_messages` | `folderId: number, limit: number` | `number` (fetches up to `limit` — default 200, max 500 — older envelopes from IMAP before the folder's oldest cached UID via `UID SEARCH UID 1:<min-1>` + compressed `UID FETCH`; caches persistently without touching `last_seen_uid` or notifying; sets `historyComplete = true` once no older UIDs remain; emits `mail:messages-updated`; returns newly cached count) |
+| `load_older_unified_messages` | `limit: number` | `number` (backfills up to `limit` older envelopes from every account's incomplete `inbox`-role folder; emits `mail:messages-updated` per updated folder; returns total newly cached count) |
 | `search_messages` | `query: string, accountId: string \| null, offset: number, limit: number` | `MessageSummary[]` (relevance-ranked; local FTS5 over cached envelopes/bodies. `accountId` null = all accounts, else scoped to that account; all folder roles; empty/whitespace query ⇒ `[]`) |
 | `get_message_body` | `messageId: number` | `MessageBody` (fetches from server if not cached) |
 | `list_shipments_for_message` | `messageId: number` | `Shipment[]` (empty until the body has been cached, or if none were detected; see "Shipment detection" below) |
@@ -255,6 +259,7 @@ CREATE TABLE IF NOT EXISTS folders (
   last_seen_uid INTEGER NOT NULL DEFAULT 0,   -- high-water mark for notification dedupe
   unread_count INTEGER NOT NULL DEFAULT 0, -- server UNSEEN count from latest STATUS
   total_count INTEGER NOT NULL DEFAULT 0,  -- server MESSAGES count (cache may hold fewer)
+  history_complete INTEGER NOT NULL DEFAULT 0, -- 1 once all older envelopes are cached
   UNIQUE(account_id, name)
 );
 CREATE TABLE IF NOT EXISTS messages (
@@ -715,7 +720,18 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   it) rather than idling. Only a clean drain may enter IDLE (`sync::drain_action`).
 - Initial sync: use message sequence numbers from `STATUS MESSAGES` to `FETCH` exactly the
   newest 200 existing messages per folder (or all when fewer than 200), including `UID` in the
-  response. Do not `UID FETCH 1:*` and trim afterward.
+  response. Do not `UID FETCH 1:*` and trim afterward. Sets `history_complete = 1` immediately
+  when `STATUS MESSAGES <= 200`; otherwise leaves it `0` for on-demand backfill.
+- On-demand history backfill (`load_older_messages` / `load_older_unified_messages`): when the user
+  pages past locally cached envelopes in a folder (or the unified inbox) where `history_complete`
+  is `0`, the backend connects, checks `UIDVALIDITY`, runs `UID SEARCH UID 1:<min_uid - 1>`, takes
+  the newest `limit` UIDs (default 200) to handle arbitrary UID gaps and server expunges without
+  sequence-number drift, and `UID FETCH`es their envelopes with a compressed UID set. Marks
+  `history_complete = 1` once no older UIDs remain; never updates `last_seen_uid`, never fires
+  notifications, and never prefetches bodies.
+- Cache-size policy: backfilled envelopes remain cached persistently in SQLite (no automatic
+  eviction) so local FTS5 search covers all loaded history and restarts never re-fetch; message
+  bodies stay lazy-fetched on open.
 - Incremental sync: `UID FETCH <cached-max-uid+1>:*` and ignore any duplicate boundary item.
   Folder `totalCount`/`unreadCount` stay server-authoritative even when only 200 envelopes are
   cached; successful local flag changes adjust the stored server count until the next STATUS.
