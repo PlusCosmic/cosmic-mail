@@ -5,6 +5,7 @@
 //! - `LOGIN` with a keyring password (plain IMAP accounts), and
 //! - SASL `AUTHENTICATE XOAUTH2` (Gmail), via [`async_imap::Authenticator`].
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -380,6 +381,37 @@ pub async fn fetch_envelopes(
         if let Some(summary) = envelope_from_fetch(&fetch) {
             out.push(summary);
         }
+    }
+    Ok(out)
+}
+
+/// Fetch `(UID FLAGS)` for a UID range (e.g. `"10:500"`) in the selected
+/// mailbox, returning `uid -> (seen, flagged)` for every surviving message.
+pub async fn fetch_flags(
+    session: &mut ImapSession,
+    uid_set: &str,
+) -> Result<HashMap<u32, (bool, bool)>> {
+    let mut stream = session
+        .uid_fetch(uid_set, "(UID FLAGS)")
+        .await
+        .context("issuing UID FETCH for flags")?;
+
+    let mut out = HashMap::new();
+    while let Some(item) = stream.next().await {
+        let fetch = item.context("reading flag fetch item")?;
+        let Some(uid) = fetch.uid else {
+            continue;
+        };
+        let mut seen = false;
+        let mut flagged = false;
+        for flag in fetch.flags() {
+            match flag {
+                async_imap::types::Flag::Seen => seen = true,
+                async_imap::types::Flag::Flagged => flagged = true,
+                _ => {}
+            }
+        }
+        out.insert(uid, (seen, flagged));
     }
     Ok(out)
 }
@@ -1354,7 +1386,7 @@ fn is_tag_start(chars: &[char], idx: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        body_structure_has_real_attachment, decode_mime_words, deglue, parse_body,
+        body_structure_has_real_attachment, decode_mime_words, deglue, fetch_flags, parse_body,
         recent_sequence_set, replace_ascii_case_insensitive, snippet_for_body, snippet_from_text,
         tls_client_with_config, unquote_display_name, ClientConfig, ImapTls, RootCertStore,
         BODY_FETCH_QUERY, SNIPPET_MAX_CHARS,
@@ -2327,6 +2359,76 @@ mod tests {
             .await
             .map_err(|(e, _)| e)
             .expect("login over implicit TLS");
+        session.logout().await.expect("logout");
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn fetch_flags_parses_seen_flagged_and_omits_expunged_uids() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let (client_cfg, acceptor) = test_tls_pair();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let tls = acceptor.accept(stream).await.expect("tls accept");
+            let mut tls = BufReader::new(tls);
+            tls.write_all(b"* OK ready\r\n").await.expect("greeting");
+            tls.flush().await.expect("flush");
+
+            let mut line = String::new();
+            tls.read_line(&mut line).await.expect("login");
+            let tag = line.trim().split(' ').next().expect("tag");
+            tls.write_all(format!("{tag} OK logged in\r\n").as_bytes())
+                .await
+                .expect("ok login");
+            tls.flush().await.expect("flush");
+
+            line.clear();
+            tls.read_line(&mut line).await.expect("fetch flags");
+            let mut parts = line.trim().splitn(2, ' ');
+            let tag = parts.next().expect("tag");
+            assert_eq!(parts.next(), Some("UID FETCH 10:12 (UID FLAGS)"));
+            tls.write_all(
+                format!(
+                    "* 1 FETCH (UID 10 FLAGS (\\Seen \\Flagged))\r\n\
+                     * 2 FETCH (UID 11 FLAGS ())\r\n\
+                     {tag} OK fetch done\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("flags resp");
+            tls.flush().await.expect("flush");
+
+            line.clear();
+            tls.read_line(&mut line).await.expect("logout");
+            let tag = line.trim().split(' ').next().expect("tag");
+            tls.write_all(format!("* BYE bye\r\n{tag} OK logout\r\n").as_bytes())
+                .await
+                .expect("ok logout");
+            tls.flush().await.expect("flush");
+        });
+
+        let client = tls_client_with_config("localhost", port, ImapTls::Implicit, client_cfg)
+            .await
+            .expect("client");
+        let mut session = client
+            .login("alice", "secret")
+            .await
+            .map_err(|(e, _)| e)
+            .expect("login");
+
+        let flags = fetch_flags(&mut session, "10:12")
+            .await
+            .expect("fetch flags");
+        assert_eq!(flags.get(&10), Some(&(true, true)));
+        assert_eq!(flags.get(&11), Some(&(false, false)));
+        assert!(!flags.contains_key(&12));
+
         session.logout().await.expect("logout");
         server.await.expect("server task");
     }

@@ -700,9 +700,10 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
   command's own response before its `+ idling` continuation — onto
   `Session::unsolicited_responses`, a `bounded(100)` channel that is otherwise never read. Before
   entering IDLE, and again immediately after `Handle::init()` succeeds, the loop drains that
-  channel with `try_recv` (`sync::drain_mailbox_changed`) and treats any `Exists`/`Recent` as
-  "mailbox changed — re-sync now, don't idle yet," repeating the STATUS/SELECT/FETCH pass until a
-  drain comes back clean before calling `session.idle()`. The check is a local, non-blocking read
+  channel with `try_recv` (`sync::drain_mailbox_changed`) and treats any `Exists`/`Recent`/`Expunge`
+  or unsolicited `FETCH` as "mailbox changed — re-sync now, don't idle yet," repeating the
+  STATUS/SELECT/FETCH pass until a drain comes back clean before calling `session.idle()`. The check
+  is a local, non-blocking read
   with no `.await` between it and entering IDLE, so there is no remaining gap — closing a race that
   a bare "re-sync precedes every IDLE" structure (the previous fix, commit 0f1354e) left open,
   since that re-sync happened without ever reading this channel. Bounded by
@@ -718,6 +719,18 @@ IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com
 - Incremental sync: `UID FETCH <cached-max-uid+1>:*` and ignore any duplicate boundary item.
   Folder `totalCount`/`unreadCount` stay server-authoritative even when only 200 envelopes are
   cached; successful local flag changes adjust the stored server count until the next STATUS.
+- **External flag & removal reconciliation (issue #17):** after incremental new-mail fetch (and
+  after emitting `NewMessages` / firing notifications so notification latency is unaffected), any
+  folder that already had cached rows before this pass reconciles cached flags and external
+  deletions/moves via `UID FETCH <window_min>:<window_max> (UID FLAGS)` (skipped on initial sync,
+  and short-circuited without a `UID FETCH` when `STATUS MESSAGES == 0`):
+  - INBOX IDLE wakeups / re-issue passes reconcile the newest 200 cached UIDs; full folder sweeps
+    and manual syncs reconcile all cached UIDs in the folder.
+  - Rows inside `[window_min, window_max]` whose `\Seen` or `\Flagged` changed on the server are
+    updated in one transaction; rows inside the queried window whose UID disappeared from the server
+    (deleted or moved elsewhere) are removed from SQLite (FTS5 delete triggers and attachment /
+    shipment cascades clean up derived rows; `STATUS` already wrote authoritative folder counts).
+  - `mail:messages-updated` is emitted only when at least one row actually changed or was removed.
 - **Body prefetch timing (issue #40):** opportunistically cache at most 5 bodies from the newest
   20 unread and newest 20 overall cached inbox envelopes (`BODY_PREFETCH_WORKING_SET` = 20,
   `BODY_PREFETCH_LIMIT` = 5). Prefetch is sequential and best-effort so an individual body failure
