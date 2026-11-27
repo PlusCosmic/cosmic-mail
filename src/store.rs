@@ -4,6 +4,7 @@
 //! [`rusqlite::Connection`] is shared across threads behind a mutex (see
 //! [`crate::state`]); this is adequate for the current scale.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -1336,6 +1337,119 @@ pub fn max_uid(conn: &Connection, folder_id: i64) -> Result<u32> {
     Ok(v as u32)
 }
 
+/// Inclusive `(min_uid, max_uid)` window of cached messages in `folder_id` with
+/// `uid <= up_to_uid`, optionally bounded to the newest `limit` cached rows.
+///
+/// Returns `None` if no cached rows fall within the bound.
+pub fn cached_uid_window_up_to(
+    conn: &Connection,
+    folder_id: i64,
+    up_to_uid: u32,
+    limit: Option<u32>,
+) -> Result<Option<(u32, u32)>> {
+    let row: (Option<i64>, Option<i64>) = match limit {
+        Some(limit) => conn
+            .query_row(
+                "SELECT MIN(uid), MAX(uid) FROM ( \
+                   SELECT uid FROM messages WHERE folder_id = ?1 AND uid <= ?2 \
+                   ORDER BY uid DESC LIMIT ?3 \
+                 )",
+                params![folder_id, up_to_uid, limit],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .context("computing bounded cached uid window")?,
+        None => conn
+            .query_row(
+                "SELECT MIN(uid), MAX(uid) FROM messages WHERE folder_id = ?1 AND uid <= ?2",
+                params![folder_id, up_to_uid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .context("computing full cached uid window")?,
+    };
+    match row {
+        (Some(min), Some(max)) if min > 0 && max >= min => Ok(Some((min as u32, max as u32))),
+        _ => Ok(None),
+    }
+}
+
+/// Result of reconciling cached messages in a UID window against server `(UID FLAGS)`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlagReconcileOutcome {
+    pub updated: usize,
+    pub removed: usize,
+}
+
+impl FlagReconcileOutcome {
+    pub fn changed(self) -> bool {
+        self.updated > 0 || self.removed > 0
+    }
+}
+
+/// Reconcile cached rows in `[min_uid, max_uid]` against authoritative server
+/// `uid -> (seen, flagged)` flags returned by `UID FETCH min:max (UID FLAGS)`.
+///
+/// Updates only rows whose `seen` or `flagged` actually differ (never touches
+/// FTS-indexed columns), and deletes cached rows inside `[min_uid, max_uid]`
+/// whose UID is missing from `server_flags` (expunged or moved elsewhere).
+/// Leaves `folders.total_count`/`unread_count` untouched because IMAP `STATUS`
+/// owns those server-authoritative counters.
+pub fn reconcile_folder_flags(
+    conn: &Connection,
+    folder_id: i64,
+    min_uid: u32,
+    max_uid: u32,
+    server_flags: &HashMap<u32, (bool, bool)>,
+) -> Result<FlagReconcileOutcome> {
+    let tx = conn
+        .unchecked_transaction()
+        .context("beginning flag reconcile transaction")?;
+    let cached: Vec<(i64, u32, bool, bool)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, uid, seen, flagged FROM messages \
+                 WHERE folder_id = ?1 AND uid >= ?2 AND uid <= ?3",
+            )
+            .context("preparing cached flag lookup")?;
+        let rows = stmt
+            .query_map(params![folder_id, min_uid, max_uid], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)? as u32,
+                    r.get::<_, i64>(2)? != 0,
+                    r.get::<_, i64>(3)? != 0,
+                ))
+            })
+            .context("querying cached flags")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("collecting cached flags")?;
+        rows
+    };
+
+    let mut outcome = FlagReconcileOutcome::default();
+    for (id, uid, seen, flagged) in cached {
+        match server_flags.get(&uid) {
+            Some(&(srv_seen, srv_flagged)) => {
+                if srv_seen != seen || srv_flagged != flagged {
+                    tx.execute(
+                        "UPDATE messages SET seen = ?1, flagged = ?2 WHERE id = ?3",
+                        params![srv_seen as i64, srv_flagged as i64, id],
+                    )
+                    .context("updating reconciled message flags")?;
+                    outcome.updated += 1;
+                }
+            }
+            None => {
+                tx.execute("DELETE FROM messages WHERE id = ?1", params![id])
+                    .context("pruning externally removed message")?;
+                outcome.removed += 1;
+            }
+        }
+    }
+    tx.commit()
+        .context("committing flag reconcile transaction")?;
+    Ok(outcome)
+}
+
 /// Lowest UID currently cached for a folder (0 if empty).
 pub fn min_uid(conn: &Connection, folder_id: i64) -> Result<u32> {
     let v: i64 = conn
@@ -2353,6 +2467,85 @@ mod tests {
         let after = search_messages(&conn, "shared", None, 0, 50).expect("search");
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].account_id, "acct-b");
+    }
+
+    #[test]
+    fn reconcile_folder_flags_updates_changed_prunes_missing_and_respects_window() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        init_schema(&conn).expect("initialize schema");
+        let (folder_id, _) =
+            upsert_folder(&conn, "acct", "INBOX", FolderRole::Inbox, 1).expect("folder");
+        set_folder_counts(&conn, folder_id, 4, 2).expect("counts");
+
+        let insert_uid = |uid: u32, seen: bool, flagged: bool, subject: &str| {
+            upsert_message(
+                &conn,
+                &MessageUpsert {
+                    folder_id,
+                    uid,
+                    message_id: None,
+                    subject: subject.into(),
+                    from_name: "Sender".into(),
+                    from_addr: "s@example.com".into(),
+                    to_addrs: Vec::new(),
+                    cc_addrs: Vec::new(),
+                    date: format!("2026-07-{uid:02}T00:00:00Z"),
+                    snippet: String::new(),
+                    seen,
+                    flagged,
+                    has_attachments: false,
+                    rfc822_size: 100,
+                },
+            )
+            .expect("insert")
+        };
+
+        // Older row outside the bounded recent window (uid 10).
+        insert_uid(10, false, false, "old keep");
+        // Inside the window: 20 changes seen+flagged, 21 stays identical, 22 was deleted on server.
+        insert_uid(20, false, false, "changed");
+        insert_uid(21, true, false, "unchanged");
+        insert_uid(22, false, false, "deleted elsewhere");
+
+        // Bounded window of newest 3 covers 20..=22, leaving 10 untouched.
+        assert_eq!(
+            cached_uid_window_up_to(&conn, folder_id, 22, Some(3)).expect("bounded window"),
+            Some((20, 22))
+        );
+        assert_eq!(
+            cached_uid_window_up_to(&conn, folder_id, 22, None).expect("full window"),
+            Some((10, 22))
+        );
+
+        let mut server = HashMap::new();
+        server.insert(20, (true, true));
+        server.insert(21, (true, false));
+        // UID 22 intentionally absent (removed on another client).
+
+        let outcome = reconcile_folder_flags(&conn, folder_id, 20, 22, &server).expect("reconcile");
+        assert_eq!(
+            outcome,
+            FlagReconcileOutcome {
+                updated: 1,
+                removed: 1,
+            }
+        );
+
+        // Second pass with identical server state is a no-op.
+        let again = reconcile_folder_flags(&conn, folder_id, 20, 22, &server).expect("reconcile 2");
+        assert!(!again.changed());
+
+        let rows = page_messages(&conn, folder_id, 0, 10).expect("page");
+        let by_uid: HashMap<i64, (bool, bool)> =
+            rows.iter().map(|r| (r.uid, (r.seen, r.flagged))).collect();
+        // Outside window (10) untouched; 20 updated; 21 unchanged; 22 pruned (also from FTS).
+        assert_eq!(by_uid.get(&10), Some(&(false, false)));
+        assert_eq!(by_uid.get(&20), Some(&(true, true)));
+        assert_eq!(by_uid.get(&21), Some(&(true, false)));
+        assert!(!by_uid.contains_key(&22));
+        assert!(search_messages(&conn, "deleted elsewhere", None, 0, 10)
+            .expect("fts search")
+            .is_empty());
     }
 
     #[test]

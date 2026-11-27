@@ -74,6 +74,10 @@ use crate::shipments;
 use crate::store::{self, FolderRole, MessageUpsert};
 
 const INITIAL_SYNC_LIMIT: u32 = 200;
+/// Number of newest cached UIDs whose flags/removals are reconciled on INBOX
+/// IDLE wakeups and re-issue passes (issue #17). Full sweeps reconcile all
+/// cached UIDs in the folder.
+const FLAG_RECONCILE_IDLE_LIMIT: u32 = 200;
 /// Default number of older envelopes fetched per on-demand backfill batch.
 pub const BACKFILL_BATCH_LIMIT: u32 = INITIAL_SYNC_LIMIT;
 /// Upper bound on a single backfill request so a caller can't ask for an entire
@@ -243,6 +247,7 @@ async fn run_once(events: &Events, db: &Db, account: &Account, initial: bool) ->
             folder.role,
             initial,
             status.exists,
+            ReconcileScope::All,
             &mut session,
         )
         .await?;
@@ -307,6 +312,7 @@ async fn run_once(events: &Events, db: &Db, account: &Account, initial: bool) ->
             FolderRole::Inbox,
             false,
             status.exists,
+            ReconcileScope::Recent(FLAG_RECONCILE_IDLE_LIMIT),
             &mut session,
         )
         .await?;
@@ -423,8 +429,18 @@ async fn run_once(events: &Events, db: &Db, account: &Account, initial: bool) ->
     Ok(())
 }
 
-/// Fetch new UIDs for a folder, upsert them, emit events, and (for inbox,
-/// non-initial) notify.
+/// How much of a folder's cached UID history to reconcile against server flags
+/// and external deletions/moves (issue #17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconcileScope {
+    /// Full folder sweep / manual sync: reconcile every cached UID in the folder.
+    All,
+    /// INBOX IDLE wakeup / re-issue pass: reconcile the newest `n` cached UIDs.
+    Recent(u32),
+}
+
+/// Fetch new UIDs for a folder, upsert them, emit events, (for inbox,
+/// non-initial) notify, and reconcile cached flags + external removals.
 ///
 /// Deliberately does *not* prefetch bodies (issue #40): this is called for
 /// every folder on every full sweep, but prefetch is inbox-only and its
@@ -441,6 +457,7 @@ async fn sync_folder_uids(
     role: FolderRole,
     initial: bool,
     server_exists: u32,
+    reconcile: ReconcileScope,
     session: &mut imap::ImapSession,
 ) -> Result<()> {
     imap::select(session, folder_name).await?;
@@ -512,9 +529,8 @@ async fn sync_folder_uids(
     }
 
     if !envelopes.is_empty() {
-        // Emit and notify immediately; body prefetch (now handled by the
-        // caller, never here — see the doc comment above) must never sit
-        // between new mail landing in the DB and this notification.
+        // Emit and notify immediately; flag reconciliation and body prefetch
+        // must never sit between new mail landing in the DB and this toast.
         events.emit(AppEvent::NewMessages {
             account_id: account.id.clone(),
             folder_id,
@@ -525,6 +541,38 @@ async fn sync_folder_uids(
         if !notify_list.is_empty() {
             let sound = crate::settings::load_settings().notification_sound;
             notifications::notify_new_mail(events, &account.email, &notify_list, sound);
+        }
+    }
+
+    // Reconcile flags and external deletions/moves for previously cached rows
+    // (skip on initial sync when `last_uid == 0`, since every cached row was
+    // just fetched fresh above).
+    if last_uid > 0 {
+        let limit = match reconcile {
+            ReconcileScope::All => None,
+            ReconcileScope::Recent(n) => Some(n),
+        };
+        let window = {
+            let conn = db.lock().expect("db poisoned");
+            store::cached_uid_window_up_to(&conn, folder_id, last_uid, limit)?
+        };
+        if let Some((min_uid, max_uid)) = window {
+            let server_flags = if server_exists == 0 {
+                // Mailbox is empty on the server; skip UID FETCH (some strict
+                // servers reject UID FETCH on an empty mailbox) and prune all
+                // cached rows in the window directly.
+                HashMap::new()
+            } else {
+                let uid_set = format!("{min_uid}:{max_uid}");
+                imap::fetch_flags(session, &uid_set).await?
+            };
+            let outcome = {
+                let conn = db.lock().expect("db poisoned");
+                store::reconcile_folder_flags(&conn, folder_id, min_uid, max_uid, &server_flags)?
+            };
+            if outcome.changed() {
+                events.emit(AppEvent::MessagesUpdated { folder_id });
+            }
         }
     }
 
@@ -699,20 +747,25 @@ async fn prefetch_message_bodies(db: &Db, folder_id: i64, session: &mut imap::Im
     }
 }
 
-/// Whether an [`UnsolicitedResponse`] means the mailbox changed and a
-/// re-sync is owed before the next IDLE, as opposed to a kind we can safely
-/// ignore for this purpose (e.g. `Status` for a *different* mailbox pushed by
-/// a server extension, or `Expunge`, which shrinks the mailbox and is already
-/// handled by the ordinary UID-based re-sync catching up next time around).
+/// Whether an [`UnsolicitedResponse`] means the selected mailbox changed and a
+/// re-sync (new envelopes + flag/removal reconciliation) is owed before the
+/// next IDLE, as opposed to a kind scoped elsewhere (e.g. `Status` for another
+/// mailbox).
 ///
-/// `Exists` and `Recent` are exactly the RFC 3501 §7.3.1/§7.3.2 signals a
-/// server uses to announce new mail arriving in the selected mailbox — the
-/// two kinds this whole fix exists to stop dropping.
+/// - `Exists` / `Recent`: new mail arrived (issue #39).
+/// - `Expunge`: a message was removed elsewhere (issue #17).
+/// - `Other(Fetch)`: an external flag update (`* N FETCH (FLAGS ...)`) landed
+///   mid-command (issue #17).
 fn mailbox_changed(resp: &UnsolicitedResponse) -> bool {
-    matches!(
-        resp,
-        UnsolicitedResponse::Exists(_) | UnsolicitedResponse::Recent(_)
-    )
+    match resp {
+        UnsolicitedResponse::Exists(_)
+        | UnsolicitedResponse::Recent(_)
+        | UnsolicitedResponse::Expunge(_) => true,
+        UnsolicitedResponse::Other(data) => {
+            matches!(data.parsed(), async_imap::imap_proto::Response::Fetch(_, _))
+        }
+        UnsolicitedResponse::Status { .. } => false,
+    }
 }
 
 /// Drain every response currently queued on an `async-imap` session's
@@ -1068,20 +1121,17 @@ mod tests {
     // -- issue #39: drain unsolicited EXISTS/RECENT before every IDLE --
 
     #[test]
-    fn mailbox_changed_flags_exists_and_recent() {
-        // These are the two RFC 3501 signals a server uses to announce new
-        // mail in the selected mailbox — exactly what this fix must stop
-        // dropping.
+    fn mailbox_changed_flags_exists_recent_expunge_and_unsolicited_fetch() {
+        // Exists/Recent announce new mail (#39); Expunge and unsolicited FETCH
+        // announce external removals and flag changes (#17).
         assert!(mailbox_changed(&UnsolicitedResponse::Exists(42)));
         assert!(mailbox_changed(&UnsolicitedResponse::Recent(3)));
+        assert!(mailbox_changed(&UnsolicitedResponse::Expunge(1)));
     }
 
     #[test]
     fn mailbox_changed_ignores_other_response_kinds() {
-        // Expunge shrinks the mailbox (handled by the ordinary UID re-sync
-        // catching up), and Status is scoped to a mailbox name, not
-        // necessarily the selected one — neither means "re-sync INBOX now".
-        assert!(!mailbox_changed(&UnsolicitedResponse::Expunge(1)));
+        // Status is scoped to a mailbox name, not necessarily the selected one.
         assert!(!mailbox_changed(&UnsolicitedResponse::Status {
             mailbox: "Other".to_string(),
             attributes: Vec::new(),
@@ -1108,7 +1158,6 @@ mod tests {
     #[test]
     fn drain_mailbox_changed_ignores_non_mailbox_kinds() {
         let (tx, rx) = async_channel::bounded(8);
-        tx.try_send(UnsolicitedResponse::Expunge(1)).unwrap();
         tx.try_send(UnsolicitedResponse::Status {
             mailbox: "Other".to_string(),
             attributes: Vec::new(),
@@ -1124,7 +1173,11 @@ mod tests {
         // announcements. One call must empty it completely regardless of how
         // many items (or what kind) are queued.
         let (tx, rx) = async_channel::bounded(8);
-        tx.try_send(UnsolicitedResponse::Expunge(1)).unwrap();
+        tx.try_send(UnsolicitedResponse::Status {
+            mailbox: "Other".to_string(),
+            attributes: Vec::new(),
+        })
+        .unwrap();
         tx.try_send(UnsolicitedResponse::Exists(9)).unwrap();
         tx.try_send(UnsolicitedResponse::Recent(2)).unwrap();
 
