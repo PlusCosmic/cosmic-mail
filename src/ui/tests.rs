@@ -779,3 +779,89 @@ fn clicking_through_unread_messages_updates_indicators_and_counts_immediately() 
     assert!(rt.state.messages.iter().any(|m| m.id == 103 && m.seen));
     assert_eq!(rt.state.unified_unread(), unread_before - 2);
 }
+
+#[test]
+fn add_account_tls_toggle_syncs_default_ports_and_preserves_custom_ports() {
+    use crate::accounts::ImapTls;
+
+    let mut rt = runtime(demo::state());
+    click(&mut rt, "rail-add");
+    assert!(matches!(rt.state.modal, Some(Modal::AddAccount(_))));
+
+    // The redundant eyebrow copy is gone.
+    assert!(
+        rt.elements()
+            .iter()
+            .filter_map(|e| e.text.as_deref())
+            .all(|t| !t.contains("ANYTHING ELSE USES IMAP")),
+        "redundant add-account eyebrow should be removed"
+    );
+
+    // Starts on SSL/TLS : 993.
+    match &rt.state.modal {
+        Some(Modal::AddAccount(f)) => {
+            assert_eq!(f.imap_tls, ImapTls::Implicit);
+            assert_eq!(f.imap_port.text, "993");
+        }
+        _ => panic!("expected add-account modal"),
+    }
+
+    // Switching to STARTTLS swaps default 993 -> 143, and switching back swaps 143 -> 993.
+    click(&mut rt, "add-imap-tls-starttls");
+    match &rt.state.modal {
+        Some(Modal::AddAccount(f)) => {
+            assert_eq!(f.imap_tls, ImapTls::Starttls);
+            assert_eq!(f.imap_port.text, "143");
+        }
+        _ => panic!("expected add-account modal"),
+    }
+    click(&mut rt, "add-imap-tls-implicit");
+    match &rt.state.modal {
+        Some(Modal::AddAccount(f)) => {
+            assert_eq!(f.imap_tls, ImapTls::Implicit);
+            assert_eq!(f.imap_port.text, "993");
+        }
+        _ => panic!("expected add-account modal"),
+    }
+
+    // Custom ports (e.g. Proton Bridge 1143) stay intact when toggling security mode.
+    rt.update(|s, _| {
+        if let Some(Modal::AddAccount(f)) = &mut s.modal {
+            f.imap_port.replace_text("1143");
+            s.imap_port_edited();
+        }
+    });
+    step(&mut rt);
+    click(&mut rt, "add-imap-tls-starttls");
+    match &rt.state.modal {
+        Some(Modal::AddAccount(f)) => {
+            assert_eq!(f.imap_tls, ImapTls::Starttls);
+            assert_eq!(f.imap_port.text, "1143");
+        }
+        _ => panic!("expected add-account modal"),
+    }
+
+    // Typing well-known port 993/143 mirrors back to the security mode.
+    rt.update(|s, _| {
+        if let Some(Modal::AddAccount(f)) = &mut s.modal {
+            f.imap_port.replace_text("993");
+            s.imap_port_edited();
+        }
+    });
+    step(&mut rt);
+    match &rt.state.modal {
+        Some(Modal::AddAccount(f)) => assert_eq!(f.imap_tls, ImapTls::Implicit),
+        _ => panic!("expected add-account modal"),
+    }
+    rt.update(|s, _| {
+        if let Some(Modal::AddAccount(f)) = &mut s.modal {
+            f.imap_port.replace_text("143");
+            s.imap_port_edited();
+        }
+    });
+    step(&mut rt);
+    match &rt.state.modal {
+        Some(Modal::AddAccount(f)) => assert_eq!(f.imap_tls, ImapTls::Starttls),
+        _ => panic!("expected add-account modal"),
+    }
+}

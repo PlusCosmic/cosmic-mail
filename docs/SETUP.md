@@ -31,8 +31,9 @@ it runs shows and focuses the existing window instead of starting a second proce
 
 Enter an email address and password in the add-account dialog. Cosmic Mail attempts
 provider autoconfiguration, Mozilla ISPDB lookup, DNS discovery, and conventional IMAP
-hostnames. The connector currently supports implicit TLS on port 993; STARTTLS-only
-providers are not yet supported.
+hostnames. Both implicit TLS (typically port 993) and required STARTTLS (typically port
+143, or custom ports such as local mail bridges) are supported; plaintext IMAP is never
+used.
 
 The password is stored in the platform keyring (see [Local data](#local-data)) and is never
 written to the account

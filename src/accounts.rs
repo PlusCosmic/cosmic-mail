@@ -25,6 +25,35 @@ pub enum AccountKind {
     Gmail,
 }
 
+/// How the IMAP connection establishes TLS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ImapTls {
+    /// Implicit TLS from byte 0 (IMAPS, typically port 993).
+    #[default]
+    Implicit,
+    /// Plain TCP greeting upgraded via required `STARTTLS` (typically port 143).
+    Starttls,
+}
+
+impl ImapTls {
+    pub const ALL: [ImapTls; 2] = [ImapTls::Implicit, ImapTls::Starttls];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ImapTls::Implicit => "SSL/TLS",
+            ImapTls::Starttls => "STARTTLS",
+        }
+    }
+
+    pub fn default_port(self) -> u16 {
+        match self {
+            ImapTls::Implicit => 993,
+            ImapTls::Starttls => 143,
+        }
+    }
+}
+
 /// Full account record persisted to `accounts.json` (contains no secrets).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,8 +70,11 @@ pub struct Account {
     // Connection details. For Gmail these are hardcoded to the Gmail servers.
     /// IMAP host, e.g. `imap.gmail.com`.
     pub imap_host: String,
-    /// IMAP port (implicit TLS, usually 993).
+    /// IMAP port (typically 993 for implicit TLS, 143 for STARTTLS).
     pub imap_port: u16,
+    /// How the IMAP connection establishes TLS (defaults to implicit for older profiles).
+    #[serde(default)]
+    pub imap_tls: ImapTls,
     /// SMTP host, e.g. `smtp.gmail.com`.
     pub smtp_host: String,
     /// SMTP port (STARTTLS 587 or implicit 465).
@@ -214,4 +246,36 @@ pub fn add_account_to_disk(account: &Account) -> Result<()> {
     accounts.push(account.clone());
     save_accounts(&accounts)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn account_without_imap_tls_defaults_to_implicit() {
+        let legacy = r#"{
+            "id": "acct-1",
+            "email": "user@example.com",
+            "displayName": "User",
+            "kind": "imap",
+            "imapHost": "localhost",
+            "imapPort": 3993,
+            "smtpHost": "localhost",
+            "smtpPort": 3025,
+            "username": "user"
+        }"#;
+        let acc: Account = serde_json::from_str(legacy).expect("deserialize legacy account");
+        assert_eq!(acc.imap_tls, ImapTls::Implicit);
+
+        let starttls_json = serde_json::to_string(&Account {
+            imap_tls: ImapTls::Starttls,
+            ..acc
+        })
+        .expect("serialize starttls account");
+        assert!(starttls_json.contains(r#""imapTls":"starttls""#));
+        let roundtrip: Account =
+            serde_json::from_str(&starttls_json).expect("deserialize starttls account");
+        assert_eq!(roundtrip.imap_tls, ImapTls::Starttls);
+    }
 }

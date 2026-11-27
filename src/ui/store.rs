@@ -350,6 +350,7 @@ impl Ui {
             display_name: form.display_name.text.trim().to_string(),
             imap_host: form.imap_host.text.trim().to_string(),
             imap_port,
+            imap_tls: form.imap_tls,
             smtp_host: form.smtp_host.text.trim().to_string(),
             smtp_port,
             // Username often equals the email if left blank.
@@ -442,12 +443,13 @@ impl Ui {
                         {
                             form.imap_host.replace_text(cfg.imap_host.clone());
                             form.imap_port.replace_text(cfg.imap_port.to_string());
+                            form.imap_tls = cfg.imap_tls;
                             form.smtp_host.replace_text(cfg.smtp_host.clone());
                             form.smtp_port.replace_text(cfg.smtp_port.to_string());
                             if !cfg.username.is_empty() {
                                 form.username.replace_text(cfg.username.clone());
                             }
-                            form.autofilled = Some(form.host_fields());
+                            form.autofilled = Some(form.host_snapshot());
                         }
                         form.discovered = Some(cfg);
                         form.discovered_for = Some(email);
@@ -473,6 +475,38 @@ impl Ui {
                 form.discovered = None;
                 form.discovered_for = None;
             }
+        }
+    }
+
+    /// Switch the add-account IMAP security mode (SSL/TLS vs STARTTLS).
+    ///
+    /// Swaps the standard default ports (`993` ↔ `143`) when the port still
+    /// holds the other mode's default, and leaves custom ports (e.g. `1143`,
+    /// `3143`) untouched.
+    pub fn set_add_imap_tls(&mut self, tls: crate::accounts::ImapTls) {
+        let Some(Modal::AddAccount(form)) = &mut self.modal else {
+            return;
+        };
+        if form.busy || form.imap_tls == tls {
+            return;
+        }
+        let prev_default = form.imap_tls.default_port().to_string();
+        form.imap_tls = tls;
+        if form.imap_port.text.trim() == prev_default {
+            form.imap_port.replace_text(tls.default_port().to_string());
+        }
+    }
+
+    /// Mirror well-known IMAP ports (`143` / `993`) into the security toggle
+    /// while leaving custom ports under manual control.
+    pub fn imap_port_edited(&mut self) {
+        let Some(Modal::AddAccount(form)) = &mut self.modal else {
+            return;
+        };
+        match form.imap_port.text.trim() {
+            "143" => form.imap_tls = crate::accounts::ImapTls::Starttls,
+            "993" => form.imap_tls = crate::accounts::ImapTls::Implicit,
+            _ => {}
         }
     }
 
@@ -1628,9 +1662,13 @@ mod tests {
         assert!(!form.host_fields_touched());
         form.imap_host.replace_text("imap.example.com");
         assert!(form.host_fields_touched());
-        form.autofilled = Some(form.host_fields());
+        form.autofilled = Some(form.host_snapshot());
         assert!(!form.host_fields_touched());
         form.smtp_port.replace_text("465");
+        assert!(form.host_fields_touched());
+        form.autofilled = Some(form.host_snapshot());
+        assert!(!form.host_fields_touched());
+        form.imap_tls = crate::accounts::ImapTls::Starttls;
         assert!(form.host_fields_touched());
     }
 

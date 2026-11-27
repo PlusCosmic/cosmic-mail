@@ -120,9 +120,12 @@ type SyncState = "idle" | "syncing" | "error";
 
 type DiscoverySource = "autoconfig" | "ispdb" | "mx" | "srv" | "guess";
 
+type ImapTls = "implicit" | "starttls";
+
 interface DiscoveredConfig {      // autoconfig.rs — settings discovery result
   kind: AccountKind;              // "gmail" ⇒ the UI steers the user to the Gmail OAuth tab
-  imapHost: string; imapPort: number;   // implicit-TLS entries only (we don't do IMAP STARTTLS yet)
+  imapHost: string; imapPort: number;
+  imapTls: ImapTls;               // prefers implicit TLS (SSL), falls back to required STARTTLS
   smtpHost: string; smtpPort: number;
   username: string;               // %EMAILADDRESS% / %EMAILLOCALPART% already resolved
   source: DiscoverySource;
@@ -132,7 +135,8 @@ interface DiscoveredConfig {      // autoconfig.rs — settings discovery result
 interface ImapAccountInput {
   email: string;
   displayName: string;
-  imapHost: string; imapPort: number;   // implicit TLS (993)
+  imapHost: string; imapPort: number;   // implicit TLS (993) or required STARTTLS (143)
+  imapTls?: ImapTls;                    // optional on the wire; defaults to "implicit"
   smtpHost: string; smtpPort: number;   // STARTTLS (587) or implicit (465)
   username: string;                     // often == email
   password: string;                     // goes straight to keyring, never to db/json
@@ -646,11 +650,13 @@ foreign-key cascade clean up derived rows) and decrements the source folder's `t
 4. MX lookup (hickory-resolver) → registrable domain of the MX host → that provider's own
    `autoconfig.{mxdomain}` endpoint (hosts configs for custom domains, e.g. Purelymail),
    then ISPDB again → source `mx`
-5. RFC 6186 SRV: `_imaps._tcp.{domain}` + `_submission._tcp.{domain}` → source `srv`
-6. Fallback `imap.{domain}:993` / `smtp.{domain}:587`, `confident: false` → source `guess`
+5. RFC 6186 SRV: `_imaps._tcp.{domain}` (falling back to `_imap._tcp.{domain}` with STARTTLS) + `_submission._tcp.{domain}` → source `srv`
+6. Fallback `imap.{domain}:993` (`implicit`) / `smtp.{domain}:587`, `confident: false` → source `guess`
 
-Rules: parse config-v1.1.xml with roxmltree; take the first `incomingServer type="imap"` with
-`socketType SSL` (skip STARTTLS — unsupported by our connector) and first `outgoingServer
+Rules: parse config-v1.1.xml with roxmltree; take the first `incomingServer type="imap"` preferring
+`socketType SSL` (`imapTls: "implicit"`) then falling back to `socketType STARTTLS`
+(`imapTls: "starttls"`; skip `plain`/unencrypted — IMAP is always encrypted with no plaintext
+fallback), and first `outgoingServer
 type="smtp"` preferring STARTTLS/587 then SSL/465; resolve `%EMAILADDRESS%`/`%EMAILLOCALPART%`
 placeholders in username. Gmail detection: domain is `gmail.com`/`googlemail.com`, discovered
 IMAP host is `imap.gmail.com`, or MX host ends in `.google.com`/`.googlemail.com` ⇒

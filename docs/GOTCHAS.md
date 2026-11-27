@@ -110,8 +110,11 @@ related area. When you learn a new one, add it.
 - **Custom domains often resolve only via the MX provider's own autoconfig endpoint**
   (`https://autoconfig.{mx-registrable-domain}/mail/config-v1.1.xml?emailaddress=…`) —
   e.g. Purelymail. That's chain step 4a, before the ISPDB retry; Thunderbird does the same.
-- Our IMAP connector is **implicit-TLS only** — discovery must skip STARTTLS-only IMAP
-  entries (returns None if no SSL entry) until STARTTLS support lands.
+- **IMAP is always encrypted (implicit TLS or required STARTTLS — never plaintext).**
+  Autoconfig discovery prefers `SSL` (`ImapTls::Implicit`) and falls back to `STARTTLS`
+  (`ImapTls::Starttls`), rejecting `plain` entries; `sync::imap::tls_client` aborts if
+  `STARTTLS` is rejected instead of falling back to unencrypted auth, and reads no second
+  greeting after the TLS upgrade (RFC 3501 §6.2.1).
 
 ## Windows
 

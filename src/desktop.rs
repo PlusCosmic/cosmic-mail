@@ -395,6 +395,7 @@ mod tests {
             display_name: "Lucy".into(),
             imap_host: "imap.purelymail.com".into(),
             imap_port: 993,
+            imap_tls: crate::accounts::ImapTls::Implicit,
             smtp_host: "smtp.purelymail.com".into(),
             smtp_port: 465,
             username: "lucy@leach.family".into(),

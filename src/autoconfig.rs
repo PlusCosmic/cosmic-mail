@@ -20,6 +20,8 @@ use hickory_resolver::proto::rr::RData;
 use hickory_resolver::TokioResolver;
 use serde::Serialize;
 
+use crate::accounts::ImapTls;
+
 /// Per-HTTP-request timeout.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Overall discovery time budget.
@@ -59,10 +61,12 @@ pub enum DiscoveredKind {
 pub struct DiscoveredConfig {
     /// `gmail` ⇒ frontend steers the user to the Gmail OAuth tab.
     pub kind: DiscoveredKind,
-    /// IMAP host (implicit-TLS only — we don't do IMAP STARTTLS yet).
+    /// IMAP host.
     pub imap_host: String,
     /// IMAP port.
     pub imap_port: u16,
+    /// IMAP transport security (`implicit` for SSL, `starttls` for STARTTLS).
+    pub imap_tls: ImapTls,
     /// SMTP host.
     pub smtp_host: String,
     /// SMTP port.
@@ -80,6 +84,7 @@ pub struct DiscoveredConfig {
 struct ParsedConfig {
     imap_host: String,
     imap_port: u16,
+    imap_tls: ImapTls,
     smtp_host: String,
     smtp_port: u16,
     username: String,
@@ -166,10 +171,11 @@ fn resolve_placeholders(value: &str, email: &str, local_part: &str) -> String {
 
 /// Parse a Thunderbird `config-v1.1.xml` document.
 ///
-/// Returns `None` unless there is at least one `incomingServer type="imap"`
-/// with `socketType SSL` (STARTTLS IMAP is unsupported by our connector). The
-/// outgoing SMTP server prefers a STARTTLS entry (typically :587) then falls
-/// back to an SSL entry (typically :465). Username placeholders are resolved.
+/// Prefers an `incomingServer type="imap"` with `socketType SSL` (implicit TLS,
+/// per RFC 8314), falling back to `socketType STARTTLS`; unencrypted (`plain`)
+/// entries are ignored. The outgoing SMTP server prefers a STARTTLS entry
+/// (typically :587) then falls back to an SSL entry (typically :465). Username
+/// placeholders are resolved.
 fn parse_autoconfig_xml(xml: &str, email: &str) -> Option<ParsedConfig> {
     let (local_part, _domain) = match email.rsplit_once('@') {
         Some((l, d)) if !l.is_empty() && !d.is_empty() => (l, d),
@@ -178,8 +184,9 @@ fn parse_autoconfig_xml(xml: &str, email: &str) -> Option<ParsedConfig> {
 
     let doc = roxmltree::Document::parse(xml).ok()?;
 
-    // First SSL IMAP incoming server.
-    let mut imap: Option<(String, u16, String)> = None;
+    // Incoming IMAP: prefer SSL (implicit TLS), fall back to STARTTLS.
+    let mut imap_ssl: Option<(String, u16, String)> = None;
+    let mut imap_starttls: Option<(String, u16, String)> = None;
     for node in doc
         .descendants()
         .filter(|n| n.has_tag_name("incomingServer"))
@@ -187,16 +194,25 @@ fn parse_autoconfig_xml(xml: &str, email: &str) -> Option<ParsedConfig> {
         if node.attribute("type") != Some("imap") {
             continue;
         }
-        if child_text(&node, "socketType").as_deref() != Some("SSL") {
+        let socket = child_text(&node, "socketType");
+        let Some(host) = child_text(&node, "hostname") else {
             continue;
-        }
-        let host = child_text(&node, "hostname")?;
-        let port = child_text(&node, "port").and_then(|p| p.parse::<u16>().ok())?;
+        };
+        let Some(port) = child_text(&node, "port").and_then(|p| p.parse::<u16>().ok()) else {
+            continue;
+        };
         let user = child_text(&node, "username").unwrap_or_else(|| "%EMAILADDRESS%".to_string());
-        imap = Some((host, port, user));
-        break;
+        match socket.as_deref() {
+            Some("SSL") if imap_ssl.is_none() => imap_ssl = Some((host, port, user)),
+            Some("STARTTLS") if imap_starttls.is_none() => imap_starttls = Some((host, port, user)),
+            _ => {}
+        }
     }
-    let (imap_host, imap_port, imap_user) = imap?;
+    let (imap_host, imap_port, imap_user, imap_tls) = match (imap_ssl, imap_starttls) {
+        (Some((h, p, u)), _) => (h, p, u, ImapTls::Implicit),
+        (None, Some((h, p, u))) => (h, p, u, ImapTls::Starttls),
+        (None, None) => return None,
+    };
 
     // Outgoing: prefer STARTTLS, then SSL.
     let mut smtp_starttls: Option<(String, u16)> = None;
@@ -228,6 +244,7 @@ fn parse_autoconfig_xml(xml: &str, email: &str) -> Option<ParsedConfig> {
     Some(ParsedConfig {
         imap_host,
         imap_port,
+        imap_tls,
         smtp_host,
         smtp_port,
         username: resolve_placeholders(&imap_user, email, local_part),
@@ -372,17 +389,24 @@ async fn mx_lookup(domain: &str) -> Option<String> {
     best.map(|(_, host)| host)
 }
 
-/// RFC 6186 SRV discovery for IMAPS + submission. Ignores targets of "."
-/// ("service not offered") and picks the lowest-priority record.
+/// RFC 6186 SRV discovery for IMAPS (falling back to IMAP+STARTTLS) + submission.
+/// Ignores targets of "." ("service not offered") and picks the lowest-priority record.
 async fn srv_lookup(domain: &str, email: &str) -> Option<ParsedConfig> {
     let resolver = resolver()?;
 
-    let imap = srv_pick(&resolver, &format!("_imaps._tcp.{}", domain)).await?;
+    let (imap_host, imap_port, imap_tls) =
+        if let Some((host, port)) = srv_pick(&resolver, &format!("_imaps._tcp.{}", domain)).await {
+            (host, port, ImapTls::Implicit)
+        } else {
+            let (host, port) = srv_pick(&resolver, &format!("_imap._tcp.{}", domain)).await?;
+            (host, port, ImapTls::Starttls)
+        };
     let smtp = srv_pick(&resolver, &format!("_submission._tcp.{}", domain)).await?;
 
     Some(ParsedConfig {
-        imap_host: imap.0,
-        imap_port: imap.1,
+        imap_host,
+        imap_port,
+        imap_tls,
         smtp_host: smtp.0,
         smtp_port: smtp.1,
         // SRV doesn't tell us the username; default to the full address.
@@ -430,6 +454,7 @@ fn finalize(
         kind: DiscoveredKind::Imap,
         imap_host: p.imap_host,
         imap_port: p.imap_port,
+        imap_tls: p.imap_tls,
         smtp_host: p.smtp_host,
         smtp_port: p.smtp_port,
         username: p.username,
@@ -444,6 +469,7 @@ fn gmail_fields(username: &str) -> DiscoveredConfig {
         kind: DiscoveredKind::Gmail,
         imap_host: "imap.gmail.com".to_string(),
         imap_port: 993,
+        imap_tls: ImapTls::Implicit,
         smtp_host: "smtp.gmail.com".to_string(),
         smtp_port: 587,
         username: username.to_string(),
@@ -470,6 +496,7 @@ fn guess(domain: &str, email: &str) -> DiscoveredConfig {
         kind: DiscoveredKind::Imap,
         imap_host: format!("imap.{}", domain),
         imap_port: 993,
+        imap_tls: ImapTls::Implicit,
         smtp_host: format!("smtp.{}", domain),
         smtp_port: 587,
         username: email.to_string(),
@@ -526,7 +553,7 @@ mod tests {
   </emailProvider>
 </clientConfig>"#;
 
-    // IMAP is STARTTLS-only here → must be rejected (parse yields None).
+    // IMAP is STARTTLS-only here → accepted with ImapTls::Starttls.
     const STARTTLS_ONLY_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <clientConfig version="1.1">
   <emailProvider id="example.com">
@@ -551,6 +578,7 @@ mod tests {
         let cfg = parse_autoconfig_xml(FASTMAIL_XML, "jane@fastmail.com").unwrap();
         assert_eq!(cfg.imap_host, "imap.fastmail.com");
         assert_eq!(cfg.imap_port, 993);
+        assert_eq!(cfg.imap_tls, ImapTls::Implicit);
         // STARTTLS/587 preferred over SSL/465.
         assert_eq!(cfg.smtp_host, "smtp.fastmail.com");
         assert_eq!(cfg.smtp_port, 587);
@@ -559,8 +587,40 @@ mod tests {
     }
 
     #[test]
-    fn rejects_starttls_only_imap() {
-        assert!(parse_autoconfig_xml(STARTTLS_ONLY_XML, "bob@example.com").is_none());
+    fn parses_starttls_only_imap() {
+        let cfg = parse_autoconfig_xml(STARTTLS_ONLY_XML, "bob@example.com").unwrap();
+        assert_eq!(cfg.imap_host, "imap.example.com");
+        assert_eq!(cfg.imap_port, 143);
+        assert_eq!(cfg.imap_tls, ImapTls::Starttls);
+        assert_eq!(cfg.smtp_host, "smtp.example.com");
+        assert_eq!(cfg.smtp_port, 587);
+        assert_eq!(cfg.username, "bob");
+    }
+
+    #[test]
+    fn prefers_ssl_imap_over_starttls_when_both_offered() {
+        let xml = r#"<clientConfig version="1.1"><emailProvider id="x">
+          <incomingServer type="imap"><hostname>imap.x.com</hostname><port>143</port>
+            <socketType>STARTTLS</socketType><username>%EMAILADDRESS%</username></incomingServer>
+          <incomingServer type="imap"><hostname>imap.x.com</hostname><port>993</port>
+            <socketType>SSL</socketType><username>%EMAILADDRESS%</username></incomingServer>
+          <outgoingServer type="smtp"><hostname>smtp.x.com</hostname><port>587</port>
+            <socketType>STARTTLS</socketType><username>%EMAILADDRESS%</username></outgoingServer>
+        </emailProvider></clientConfig>"#;
+        let cfg = parse_autoconfig_xml(xml, "sam@x.com").unwrap();
+        assert_eq!(cfg.imap_port, 993);
+        assert_eq!(cfg.imap_tls, ImapTls::Implicit);
+    }
+
+    #[test]
+    fn rejects_plaintext_only_imap() {
+        let xml = r#"<clientConfig version="1.1"><emailProvider id="x">
+          <incomingServer type="imap"><hostname>imap.x.com</hostname><port>143</port>
+            <socketType>plain</socketType><username>%EMAILADDRESS%</username></incomingServer>
+          <outgoingServer type="smtp"><hostname>smtp.x.com</hostname><port>587</port>
+            <socketType>STARTTLS</socketType><username>%EMAILADDRESS%</username></outgoingServer>
+        </emailProvider></clientConfig>"#;
+        assert!(parse_autoconfig_xml(xml, "sam@x.com").is_none());
     }
 
     #[test]

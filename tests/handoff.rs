@@ -16,6 +16,7 @@ fn input(email: &str) -> ImapAccountInput {
         display_name: "Lucy".into(),
         imap_host: "127.0.0.1".into(),
         imap_port: 9,
+        imap_tls: Default::default(),
         smtp_host: "127.0.0.1".into(),
         smtp_port: 9,
         username: email.into(),
