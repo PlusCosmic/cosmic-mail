@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::accounts::ImapTls;
 use crate::shipments::Carrier;
 use crate::store::{AttachmentRow, FolderRow, MessageRow, ShipmentRow};
 
@@ -152,6 +153,8 @@ pub struct ImapAccountInput {
     pub display_name: String,
     pub imap_host: String,
     pub imap_port: u16,
+    #[serde(default)]
+    pub imap_tls: ImapTls,
     pub smtp_host: String,
     pub smtp_port: u16,
     pub username: String,
@@ -166,6 +169,7 @@ impl std::fmt::Debug for ImapAccountInput {
             .field("display_name", &self.display_name)
             .field("imap_host", &self.imap_host)
             .field("imap_port", &self.imap_port)
+            .field("imap_tls", &self.imap_tls)
             .field("smtp_host", &self.smtp_host)
             .field("smtp_port", &self.smtp_port)
             .field("username", &self.username)

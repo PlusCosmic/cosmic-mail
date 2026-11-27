@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 
-use crate::accounts::{self, Account, AccountKind};
+use crate::accounts::{self, Account, AccountKind, ImapTls};
 use crate::error::{AppError, AppResult};
 use crate::events::{AppEvent, Events};
 use crate::settings::{self, Settings};
@@ -121,6 +121,7 @@ impl Backend {
             kind: AccountKind::Imap,
             imap_host: input.imap_host.clone(),
             imap_port: input.imap_port,
+            imap_tls: input.imap_tls,
             smtp_host: input.smtp_host.clone(),
             smtp_port: input.smtp_port,
             username: input.username.clone(),
@@ -200,6 +201,7 @@ impl Backend {
                 kind: AccountKind::Gmail,
                 imap_host: "imap.gmail.com".to_string(),
                 imap_port: 993,
+                imap_tls: ImapTls::Implicit,
                 smtp_host: "smtp.gmail.com".to_string(),
                 smtp_port: 587,
                 username: outcome.email.clone(),

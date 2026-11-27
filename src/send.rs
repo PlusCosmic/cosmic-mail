@@ -123,6 +123,7 @@ mod tests {
             kind: AccountKind::Imap,
             imap_host: "imap.example.com".into(),
             imap_port: 993,
+            imap_tls: crate::accounts::ImapTls::Implicit,
             smtp_host: "smtp.example.com".into(),
             smtp_port: 587,
             username: "me@example.com".into(),

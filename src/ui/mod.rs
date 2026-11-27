@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use rune::{AppHandle, TextEdit, Tx, Waker};
 
-use crate::accounts::AccountPublic;
+use crate::accounts::{AccountPublic, ImapTls};
 use crate::autoconfig::DiscoveredConfig;
 use crate::backend::Backend;
 use crate::events::AppEvent;
@@ -151,6 +151,7 @@ pub struct AddAccountForm {
     pub display_name: TextEdit,
     pub imap_host: TextEdit,
     pub imap_port: TextEdit,
+    pub imap_tls: ImapTls,
     pub smtp_host: TextEdit,
     pub smtp_port: TextEdit,
     pub username: TextEdit,
@@ -159,9 +160,9 @@ pub struct AddAccountForm {
     pub discovered: Option<DiscoveredConfig>,
     /// The address the last discovery ran for.
     pub discovered_for: Option<String>,
-    /// Host/port/username exactly as discovery last filled them; fields that
-    /// differ were typed by the user and are never overwritten.
-    pub autofilled: Option<[String; 5]>,
+    /// Host/port/TLS/username exactly as discovery last filled them; fields that
+    /// differ were edited by the user and are never overwritten.
+    pub autofilled: Option<([String; 5], ImapTls)>,
     /// Whether the email field had focus last frame (blur runs discovery).
     pub email_was_focused: bool,
 }
@@ -178,6 +179,7 @@ impl AddAccountForm {
             display_name: TextEdit::new(""),
             imap_host: TextEdit::new(""),
             imap_port: TextEdit::new("993"),
+            imap_tls: ImapTls::Implicit,
             smtp_host: TextEdit::new(""),
             smtp_port: TextEdit::new("587"),
             username: TextEdit::new(""),
@@ -201,14 +203,21 @@ impl AddAccountForm {
         ]
     }
 
-    /// Whether the user has typed into any host/port/username field.
+    /// Snapshot of host/port/username + IMAP TLS mode for tracking manual edits.
+    pub fn host_snapshot(&self) -> ([String; 5], ImapTls) {
+        (self.host_fields(), self.imap_tls)
+    }
+
+    /// Whether the user has edited any host/port/TLS/username field.
     pub fn host_fields_touched(&self) -> bool {
         match &self.autofilled {
-            Some(filled) => *filled != self.host_fields(),
+            Some(filled) => *filled != self.host_snapshot(),
             None => {
                 !self.imap_host.text.trim().is_empty()
                     || !self.smtp_host.text.trim().is_empty()
                     || !self.username.text.trim().is_empty()
+                    || self.imap_port.text.trim() != "993"
+                    || self.imap_tls != ImapTls::Implicit
             }
         }
     }

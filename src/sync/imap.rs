@@ -22,7 +22,7 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
-use crate::accounts::{Account, AccountKind};
+use crate::accounts::{Account, AccountKind, ImapTls};
 use crate::store::{AttachmentMeta, FolderRole};
 
 const BODY_FETCH_QUERY: &str = "(BODY.PEEK[])";
@@ -123,9 +123,25 @@ fn add_extra_ca(roots: &mut RootCertStore) {
     tracing::warn!(added, "trusting extra CA certificates (debug build)");
 }
 
-/// Open a TLS connection to `host:port` and return an unauthenticated client.
-async fn tls_client(host: &str, port: u16) -> Result<async_imap::Client<TlsStream<TcpStream>>> {
+/// Open an encrypted IMAP connection to `host:port` (implicit TLS or required
+/// STARTTLS) and return an unauthenticated client over `TlsStream`.
+async fn tls_client(
+    host: &str,
+    port: u16,
+    tls_mode: ImapTls,
+) -> Result<async_imap::Client<TlsStream<TcpStream>>> {
     let config = tls_config()?;
+    tls_client_with_config(host, port, tls_mode, config).await
+}
+
+/// Core connector parameterized by `ClientConfig` so unit tests can exercise
+/// both implicit TLS and required STARTTLS against a local TLS acceptor.
+async fn tls_client_with_config(
+    host: &str,
+    port: u16,
+    tls_mode: ImapTls,
+    config: Arc<ClientConfig>,
+) -> Result<async_imap::Client<TlsStream<TcpStream>>> {
     let connector = TlsConnector::from(config);
     let server_name = ServerName::try_from(host.to_string())
         .with_context(|| format!("invalid server name {host}"))?;
@@ -134,8 +150,8 @@ async fn tls_client(host: &str, port: u16) -> Result<async_imap::Client<TlsStrea
         .await
         .with_context(|| format!("connecting to {host}:{port}"))?;
 
-    // Set TCP keepalive before the TLS handshake so it covers the connection
-    // for its entire lifetime, including the handshake itself. `SockRef`
+    // Set TCP keepalive before any handshake so it covers the connection
+    // for its entire lifetime, including TLS / STARTTLS negotiation. `SockRef`
     // borrows the raw fd for the duration of this call only — it does not
     // take ownership of `tcp`, so the stream is unaffected afterwards (see
     // the vendored `socket2::SockRef` docs).
@@ -147,19 +163,45 @@ async fn tls_client(host: &str, port: u16) -> Result<async_imap::Client<TlsStrea
         .set_tcp_keepalive(&keepalive)
         .with_context(|| format!("setting TCP keepalive for {host}:{port}"))?;
 
-    let tls = connector
-        .connect(server_name, tcp)
-        .await
-        .with_context(|| format!("TLS handshake with {host}"))?;
+    match tls_mode {
+        ImapTls::Implicit => {
+            let tls = connector
+                .connect(server_name, tcp)
+                .await
+                .with_context(|| format!("TLS handshake with {host}"))?;
 
-    let mut client = async_imap::Client::new(tls);
-    // Read the server greeting.
-    let _greeting = client
-        .read_response()
-        .await
-        .context("reading IMAP greeting")?
-        .context("server closed before greeting")?;
-    Ok(client)
+            let mut client = async_imap::Client::new(tls);
+            // Read the server greeting.
+            let _greeting = client
+                .read_response()
+                .await
+                .context("reading IMAP greeting")?
+                .context("server closed before greeting")?;
+            Ok(client)
+        }
+        ImapTls::Starttls => {
+            let mut plain = async_imap::Client::new(tcp);
+            let _greeting = plain
+                .read_response()
+                .await
+                .context("reading IMAP greeting before STARTTLS")?
+                .context("server closed before greeting")?;
+            // Required STARTTLS: never fall back to plaintext authentication.
+            plain
+                .run_command_and_check_ok("STARTTLS", None)
+                .await
+                .with_context(|| format!("STARTTLS upgrade with {host}:{port}"))?;
+            // Unwrapping drops the plaintext ImapStream read buffer; the new
+            // Client over TlsStream starts with an empty buffer and expects no
+            // second greeting (RFC 3501 §6.2.1).
+            let tcp = plain.into_inner();
+            let tls = connector
+                .connect(server_name, tcp)
+                .await
+                .with_context(|| format!("TLS handshake after STARTTLS with {host}"))?;
+            Ok(async_imap::Client::new(tls))
+        }
+    }
 }
 
 /// Connect and authenticate an IMAP session for the given account.
@@ -168,7 +210,7 @@ async fn tls_client(host: &str, port: u16) -> Result<async_imap::Client<TlsStrea
 /// accounts an OAuth access token is obtained (and refreshed) via
 /// [`crate::auth::oauth`].
 pub async fn connect(account: &Account) -> Result<ImapSession> {
-    let client = tls_client(&account.imap_host, account.imap_port).await?;
+    let client = tls_client(&account.imap_host, account.imap_port, account.imap_tls).await?;
 
     match account.kind {
         AccountKind::Imap => {
@@ -1314,7 +1356,8 @@ mod tests {
     use super::{
         body_structure_has_real_attachment, decode_mime_words, deglue, parse_body,
         recent_sequence_set, replace_ascii_case_insensitive, snippet_for_body, snippet_from_text,
-        unquote_display_name, BODY_FETCH_QUERY, SNIPPET_MAX_CHARS,
+        tls_client_with_config, unquote_display_name, ClientConfig, ImapTls, RootCertStore,
+        BODY_FETCH_QUERY, SNIPPET_MAX_CHARS,
     };
     use async_imap::imap_proto::{
         BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentDisposition,
@@ -1323,6 +1366,7 @@ mod tests {
     use base64::Engine;
     use mail_parser::MessageParser;
     use std::borrow::Cow;
+    use std::sync::Arc;
 
     #[test]
     fn recent_sequence_range_is_bounded_to_existing_messages() {
@@ -2067,5 +2111,223 @@ mod tests {
     fn bodystructure_plain_text_and_html_body_alone_is_not_an_attachment() {
         let bs = multipart("alternative", vec![text_part("plain"), text_part("html")]);
         assert!(!body_structure_has_real_attachment(&bs));
+    }
+
+    // Throwaway test-only ECDSA P-256 CA -> localhost leaf cert chain + SEC1 key
+    // (100-year validity, SAN = DNS:localhost, IP:127.0.0.1). Stored as raw DER
+    // base64 so tests run hermetically on all platforms with zero extra deps.
+    const TEST_CA_DER_B64: &str = "\
+        MIIBjTCCATKgAwIBAgIUPULq9RJR9d9XO3ic8xGDLQ836vEwCgYIKoZIzj0EAwIw\
+        IzEhMB8GA1UEAwwYQ29zbWljIE1haWwgVW5pdCBUZXN0IENBMCAXDTI2MTEyNzIx\
+        MDUzNFoYDzIxMjYxMTAzMjEwNTM0WjAjMSEwHwYDVQQDDBhDb3NtaWMgTWFpbCBV\
+        bml0IFRlc3QgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQv9Fs2j0JwvaU2\
+        DYHtWau/KTQ8fts/ejfWz4Y3cjQ7lAetEC7XZw249RnbcX/75goQ410fxe5bnVUh\
+        kcVEK5k/o0IwQDAdBgNVHQ4EFgQUc3rg1LNx59SOa5VCtLuJ/bM3dgowDwYDVR0T\
+        AQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAgQwCgYIKoZIzj0EAwIDSQAwRgIhALQH\
+        Eu9ge5FOmbuzC6whWaiIujhi75ftPF9ikPufDZwPAiEAywtVnvX5mUrySFHQZG7E\
+        K+DwGf5DiyygktxwZESAOMU=";
+
+    const TEST_LEAF_DER_B64: &str = "\
+        MIIBeTCCAR+gAwIBAgIUOXJB6kR2T+mV7Hhcg4Fb5QRH+E8wCgYIKoZIzj0EAwIw\
+        IzEhMB8GA1UEAwwYQ29zbWljIE1haWwgVW5pdCBUZXN0IENBMCAXDTI2MTEyNzIx\
+        MDUzNFoYDzIxMjYxMTAzMjEwNTM0WjAUMRIwEAYDVQQDDAlsb2NhbGhvc3QwWTAT\
+        BgcqhkjOPQIBBggqhkjOPQMBBwNCAAQ6pDvNZkV7CHg5jOM1cEcUGOTzLpHTb+LY\
+        3U9wC9uvhpgcUDV/8Bk99Y/pul0R+/gPGetfhH+tECH+vrtQ8GAnoz4wPDAaBgNV\
+        HREEEzARgglsb2NhbGhvc3SHBH8AAAEwEwYDVR0lBAwwCgYIKwYBBQUHAwEwCQYD\
+        VR0TBAIwADAKBggqhkjOPQQDAgNIADBFAiEA0yhF8tuywloZnw8w5RaQ+Ur4uKAr\
+        uNQh5jWI3PZ9hbACIEoqzUifvZaCM5efR83IYpe+6ITBVGeGKpAVEC/ytBo1";
+
+    const TEST_KEY_DER_B64: &str = "\
+        MHcCAQEEIL0tEKlg1YBr+Wm7apM5PRP0N0cMa2Dhc9pJVPwPPHAxoAoGCCqGSM49\
+        AwEHoUQDQgAEOqQ7zWZFewh4OYzjNXBHFBjk8y6R02/i2N1PcAvbr4aYHFA1f/AZ\
+        PfWP6bpdEfv4DxnrX4R/rRAh/r67UPBgJw==";
+
+    fn test_tls_pair() -> (Arc<ClientConfig>, tokio_rustls::TlsAcceptor) {
+        use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivateSec1KeyDer};
+        use tokio_rustls::rustls::ServerConfig;
+
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let ca = CertificateDer::from(b64.decode(TEST_CA_DER_B64).expect("ca der"));
+        let leaf = CertificateDer::from(b64.decode(TEST_LEAF_DER_B64).expect("leaf der"));
+        let key = PrivateKeyDer::Sec1(PrivateSec1KeyDer::from(
+            b64.decode(TEST_KEY_DER_B64).expect("key der"),
+        ));
+
+        let mut roots = RootCertStore::empty();
+        roots.add(ca.clone()).expect("add test CA");
+        let client = Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let server = Arc::new(
+            ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![leaf, ca], key)
+                .expect("server config"),
+        );
+        (client, tokio_rustls::TlsAcceptor::from(server))
+    }
+
+    #[tokio::test]
+    async fn starttls_upgrades_to_tls_and_logs_in() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let (client_cfg, acceptor) = test_tls_pair();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut stream = BufReader::new(stream);
+            stream
+                .write_all(b"* OK [CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED] ready\r\n")
+                .await
+                .expect("greeting");
+            stream.flush().await.expect("flush");
+
+            let mut line = String::new();
+            stream.read_line(&mut line).await.expect("read starttls");
+            let mut parts = line.trim().splitn(2, ' ');
+            let tag = parts.next().expect("tag");
+            assert_eq!(parts.next(), Some("STARTTLS"));
+            stream
+                .write_all(format!("{tag} OK Begin TLS negotiation\r\n").as_bytes())
+                .await
+                .expect("ok starttls");
+            stream.flush().await.expect("flush");
+
+            // Upgrade to TLS; per RFC 3501 no second greeting is sent.
+            let tls = acceptor
+                .accept(stream.into_inner())
+                .await
+                .expect("tls accept");
+            let mut tls = BufReader::new(tls);
+
+            line.clear();
+            tls.read_line(&mut line).await.expect("read login");
+            let mut parts = line.trim().splitn(2, ' ');
+            let tag = parts.next().expect("login tag");
+            assert_eq!(parts.next(), Some(r#"LOGIN "alice" "secret""#));
+            tls.write_all(format!("{tag} OK logged in\r\n").as_bytes())
+                .await
+                .expect("ok login");
+            tls.flush().await.expect("flush");
+
+            line.clear();
+            tls.read_line(&mut line).await.expect("read logout");
+            let tag = line.trim().split(' ').next().expect("logout tag");
+            tls.write_all(format!("* BYE bye\r\n{tag} OK logout\r\n").as_bytes())
+                .await
+                .expect("ok logout");
+            tls.flush().await.expect("flush");
+        });
+
+        let client = tls_client_with_config("localhost", port, ImapTls::Starttls, client_cfg)
+            .await
+            .expect("STARTTLS client");
+        let mut session = client
+            .login("alice", "secret")
+            .await
+            .map_err(|(e, _)| e)
+            .expect("login over STARTTLS");
+        session.logout().await.expect("logout");
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn starttls_refusal_aborts_without_sending_credentials() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let (client_cfg, _acceptor) = test_tls_pair();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut stream = BufReader::new(stream);
+            stream
+                .write_all(b"* OK [CAPABILITY IMAP4rev1] ready\r\n")
+                .await
+                .expect("greeting");
+            stream.flush().await.expect("flush");
+
+            let mut line = String::new();
+            stream.read_line(&mut line).await.expect("read starttls");
+            let tag = line.trim().split(' ').next().expect("tag");
+            stream
+                .write_all(format!("{tag} NO STARTTLS unavailable\r\n").as_bytes())
+                .await
+                .expect("no starttls");
+            stream.flush().await.expect("flush");
+
+            // Client must close without sending any plaintext follow-up command.
+            line.clear();
+            let n = stream.read_line(&mut line).await.expect("read eof");
+            assert_eq!(
+                n, 0,
+                "unexpected plaintext data after STARTTLS refusal: {line:?}"
+            );
+        });
+
+        let err = tls_client_with_config("localhost", port, ImapTls::Starttls, client_cfg)
+            .await
+            .expect_err("STARTTLS refusal must error");
+        assert!(
+            err.to_string().contains("STARTTLS upgrade"),
+            "unexpected error: {err:#}"
+        );
+        server.await.expect("server task");
+    }
+
+    #[tokio::test]
+    async fn implicit_tls_reads_greeting_and_logs_in() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let (client_cfg, acceptor) = test_tls_pair();
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let tls = acceptor.accept(stream).await.expect("tls accept");
+            let mut tls = BufReader::new(tls);
+            tls.write_all(b"* OK ready\r\n").await.expect("greeting");
+            tls.flush().await.expect("flush");
+
+            let mut line = String::new();
+            tls.read_line(&mut line).await.expect("read login");
+            let mut parts = line.trim().splitn(2, ' ');
+            let tag = parts.next().expect("login tag");
+            assert_eq!(parts.next(), Some(r#"LOGIN "bob" "secret""#));
+            tls.write_all(format!("{tag} OK logged in\r\n").as_bytes())
+                .await
+                .expect("ok login");
+            tls.flush().await.expect("flush");
+
+            line.clear();
+            tls.read_line(&mut line).await.expect("read logout");
+            let tag = line.trim().split(' ').next().expect("logout tag");
+            tls.write_all(format!("* BYE bye\r\n{tag} OK logout\r\n").as_bytes())
+                .await
+                .expect("ok logout");
+            tls.flush().await.expect("flush");
+        });
+
+        let client = tls_client_with_config("localhost", port, ImapTls::Implicit, client_cfg)
+            .await
+            .expect("implicit TLS client");
+        let mut session = client
+            .login("bob", "secret")
+            .await
+            .map_err(|(e, _)| e)
+            .expect("login over implicit TLS");
+        session.logout().await.expect("logout");
+        server.await.expect("server task");
     }
 }

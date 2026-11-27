@@ -9,6 +9,7 @@ use super::{
     btn, button, display, eyebrow, field_box, font, glyph, icon_button, icons, kbd, label, Kind,
     BODY, RADIUS, RADIUS_LG, SMALL,
 };
+use crate::accounts::ImapTls;
 use crate::autoconfig::{DiscoveredKind, DiscoverySource};
 use crate::ui::theme::{mix, scheme_words, Appearance, Palette};
 use crate::ui::{
@@ -450,30 +451,97 @@ fn add_account(_s: &Ui, f: &AddAccountForm, p: &Palette) -> El {
             if let Some(status) = discovery_status(f, p) {
                 body = body.child(status);
             }
+            let imap_port_placeholder = if f.imap_tls == ImapTls::Starttls {
+                "143"
+            } else {
+                "993"
+            };
+            let mut tls_choices = row()
+                .key("add-imap-tls")
+                .role("radiogroup")
+                .label("IMAP security")
+                .h(34.0)
+                .gap(2.0)
+                .px(3.0)
+                .py(3.0)
+                .center_y()
+                .radius(RADIUS)
+                .fill(p.panel_2)
+                .border(1.0, p.border);
+            for mode in ImapTls::ALL {
+                let chosen = mode == f.imap_tls;
+                let key = match mode {
+                    ImapTls::Implicit => "add-imap-tls-implicit",
+                    ImapTls::Starttls => "add-imap-tls-starttls",
+                };
+                let mut item = row()
+                    .key(key)
+                    .role("radio")
+                    .label(mode.label())
+                    .checked(chosen)
+                    .h(26.0)
+                    .px(11.0)
+                    .center()
+                    .radius(RADIUS)
+                    .fill(if chosen { p.panel } else { p.panel_2 })
+                    .child(label(
+                        mode.label(),
+                        font(12.0, 600.0),
+                        if chosen { p.fg } else { p.muted },
+                    ));
+                if enabled {
+                    item = item
+                        .focusable(true)
+                        .cursor(Cursor::Pointer)
+                        .on_press(move |s: &mut Ui| s.set_add_imap_tls(mode));
+                } else {
+                    item = item.disabled(true).opacity(0.5);
+                }
+                tls_choices = tls_choices.child(item);
+            }
+            let imap_tls_field = col()
+                .gap(4.0)
+                .child(label("Security", font(12.0, 600.0), p.muted))
+                .child(tls_choices);
+
             body = body
-                .child(pair(
-                    field(
-                        "add-imap-host",
-                        "IMAP host",
-                        &f.imap_host,
-                        "imap.example.com",
-                        p,
-                        enabled,
-                        account_field!(imap_host),
-                        |e| e,
-                    ),
-                    field(
-                        "add-imap-port",
-                        "IMAP port",
-                        &f.imap_port,
-                        "993",
-                        p,
-                        enabled,
-                        account_field!(imap_port),
-                        |e| e,
-                    ),
-                    true,
-                ))
+                .child(
+                    row()
+                        .w_full()
+                        .gap(10.0)
+                        .child(
+                            field(
+                                "add-imap-host",
+                                "IMAP host",
+                                &f.imap_host,
+                                "imap.example.com",
+                                p,
+                                enabled,
+                                account_field!(imap_host),
+                                |e| e,
+                            )
+                            .grow(1.0)
+                            .min_w(0.0),
+                        )
+                        .child(
+                            field(
+                                "add-imap-port",
+                                "IMAP port",
+                                &f.imap_port,
+                                imap_port_placeholder,
+                                p,
+                                enabled,
+                                account_field!(imap_port),
+                                |e| {
+                                    e.on_input_change(|s: &mut Ui, _tx: &mut Tx| {
+                                        s.imap_port_edited()
+                                    })
+                                },
+                            )
+                            .w(82.0),
+                        )
+                        .child(imap_tls_field),
+                )
                 .child(pair(
                     field(
                         "add-smtp-host",
@@ -582,12 +650,7 @@ fn add_account(_s: &Ui, f: &AddAccountForm, p: &Palette) -> El {
         .role("dialog")
         .label("Add account")
         .w(560.0)
-        .child(dialog_head(
-            "Add an account",
-            Some("Gmail signs in with Google; anything else uses IMAP".into()),
-            p,
-            enabled,
-        ))
+        .child(dialog_head("Add an account", None, p, enabled))
         .child(tabs)
         .child(body)
 }

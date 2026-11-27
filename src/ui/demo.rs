@@ -3,7 +3,7 @@
 //! `--snap out.png [--scene NAME]` renders these states without a backend, a
 //! profile or the network. Nothing here is reachable from a normal launch.
 
-use crate::accounts::{AccountKind, AccountPublic};
+use crate::accounts::{AccountKind, AccountPublic, ImapTls};
 use crate::settings::AccountMarker;
 use crate::sync::SyncState;
 use crate::wire::{AttachmentInfo, Folder, MessageBody, MessageSummary, Shipment};
@@ -27,6 +27,7 @@ pub const SCENES: &[Scene] = &[
     ("palette", palette),
     ("move", move_picker),
     ("add-account", add_account),
+    ("add-account-starttls", add_account_starttls),
     ("settings", settings),
     ("settings-update", settings_update),
     ("settings-rename", settings_rename),
@@ -366,16 +367,43 @@ fn add_account(s: &mut Ui) {
     form.email_was_focused = false;
     form.imap_host.replace_text("imap.fastmail.example");
     form.smtp_host.replace_text("smtp.fastmail.example");
-    form.autofilled = Some(form.host_fields());
+    form.autofilled = Some(form.host_snapshot());
     form.discovered_for = Some("someone@fastmail.example".into());
     form.discovered = Some(crate::autoconfig::DiscoveredConfig {
         kind: crate::autoconfig::DiscoveredKind::Imap,
         imap_host: "imap.fastmail.example".into(),
         imap_port: 993,
+        imap_tls: ImapTls::Implicit,
         smtp_host: "smtp.fastmail.example".into(),
         smtp_port: 587,
         username: String::new(),
         source: crate::autoconfig::DiscoverySource::Ispdb,
+        confident: true,
+    });
+    s.modal = Some(Modal::AddAccount(Box::new(form)));
+}
+
+fn add_account_starttls(s: &mut Ui) {
+    let mut form = AddAccountForm::new();
+    form.email.replace_text("bob@example.org");
+    form.email.focused = false;
+    form.email_was_focused = false;
+    form.imap_host.replace_text("imap.example.org");
+    form.imap_port.replace_text("143");
+    form.imap_tls = ImapTls::Starttls;
+    form.smtp_host.replace_text("smtp.example.org");
+    form.username.replace_text("bob@example.org");
+    form.autofilled = Some(form.host_snapshot());
+    form.discovered_for = Some("bob@example.org".into());
+    form.discovered = Some(crate::autoconfig::DiscoveredConfig {
+        kind: crate::autoconfig::DiscoveredKind::Imap,
+        imap_host: "imap.example.org".into(),
+        imap_port: 143,
+        imap_tls: ImapTls::Starttls,
+        smtp_host: "smtp.example.org".into(),
+        smtp_port: 587,
+        username: "bob@example.org".into(),
+        source: crate::autoconfig::DiscoverySource::Autoconfig,
         confident: true,
     });
     s.modal = Some(Modal::AddAccount(Box::new(form)));
