@@ -865,3 +865,67 @@ fn add_account_tls_toggle_syncs_default_ports_and_preserves_custom_ports() {
         _ => panic!("expected add-account modal"),
     }
 }
+
+#[test]
+fn backfill_button_tracks_incomplete_folders_unified_inbox_and_jump_to_bottom() {
+    let mut s = demo::state();
+    (demo::SCENES
+        .iter()
+        .find(|(n, _)| *n == "backfill")
+        .unwrap()
+        .1)(&mut s);
+    let mut rt = runtime(s);
+
+    assert!(rt.state.has_server_history());
+    assert_eq!(rt.state.remaining_server_count(), 1_297);
+    assert!(rt.find("load-more").is_some());
+    assert!(rt.find("load-more-hint").is_some());
+    let has_text = |rt: &Runtime<Ui>, needle: &str| {
+        rt.elements()
+            .iter()
+            .filter_map(|e| e.text.as_deref())
+            .any(|t| t.contains(needle))
+    };
+    assert!(has_text(&rt, "Load older messages"));
+    assert!(has_text(&rt, "1,297 older on server"));
+    let expected_count = format!("{}+ shown", rt.state.visible_messages().len());
+    assert!(has_text(&rt, &expected_count));
+
+    // `G` only jumps to the bottom of already-cached mail; it never triggers
+    // an automatic server backfill.
+    typed(&mut rt, "G");
+    assert!(!rt.state.loading_older);
+
+    // Unified inbox aggregates incomplete inbox folders across accounts.
+    let mut u = demo::state();
+    u.has_more = false;
+    if let Some(f) = u
+        .folders
+        .get_mut("a1")
+        .and_then(|l| l.iter_mut().find(|f| f.role == "inbox"))
+    {
+        f.total_count = 600;
+        f.cached_count = 200;
+        f.history_complete = false;
+    }
+    if let Some(f) = u
+        .folders
+        .get_mut("a2")
+        .and_then(|l| l.iter_mut().find(|f| f.role == "inbox"))
+    {
+        f.total_count = 450;
+        f.cached_count = 200;
+        f.history_complete = false;
+    }
+    let mut rt_u = runtime(u);
+    assert!(rt_u.state.has_server_history());
+    assert_eq!(rt_u.state.remaining_server_count(), 650);
+    assert!(has_text(&rt_u, "650 older on server"));
+
+    // Local FTS search never offers server backfill.
+    typed(&mut rt_u, "/");
+    typed(&mut rt_u, "invoice");
+    key(&mut rt_u, Key::Enter);
+    assert!(!rt_u.state.has_server_history());
+    assert_eq!(rt_u.state.remaining_server_count(), 0);
+}

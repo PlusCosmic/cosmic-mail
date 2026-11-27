@@ -106,6 +106,19 @@ pub fn format_bytes(bytes: f64) -> String {
     format!("{text} {}", UNITS[exp])
 }
 
+/// Format a non-negative integer with thousands separators, e.g. `1297` → `"1,297"`.
+pub fn format_count(n: i64) -> String {
+    let digits = n.max(0).to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Gmail nests its system mailboxes under a literal `[Gmail]/` IMAP path.
 /// Strip that prefix for display only — every lookup keeps the real name.
 pub fn display_folder_name(name: &str) -> &str {
@@ -206,5 +219,16 @@ mod tests {
         assert_eq!(cap_badge(0), "");
         assert_eq!(cap_badge(7), "7");
         assert_eq!(cap_badge(100), "99+");
+    }
+
+    #[test]
+    fn counts_format_with_commas() {
+        assert_eq!(format_count(-5), "0");
+        assert_eq!(format_count(0), "0");
+        assert_eq!(format_count(42), "42");
+        assert_eq!(format_count(999), "999");
+        assert_eq!(format_count(1_000), "1,000");
+        assert_eq!(format_count(1_297), "1,297");
+        assert_eq!(format_count(1_234_567), "1,234,567");
     }
 }

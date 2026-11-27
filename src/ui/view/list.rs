@@ -6,7 +6,7 @@ use super::chrome::account_tag;
 use super::{btn, font, glyph, icons, label, Kind, RADIUS, SMALL};
 use crate::settings::AccountMarker;
 use crate::sync::SyncState;
-use crate::ui::format::relative_date;
+use crate::ui::format::{format_count, relative_date};
 use crate::ui::theme::Palette;
 use crate::ui::{Filter, Ui};
 use crate::wire::MessageSummary;
@@ -96,7 +96,7 @@ pub fn list_pane(s: &Ui, p: &Palette) -> El {
                 format!(
                     "{}{} shown",
                     visible.len(),
-                    if s.has_more { "+" } else { "" }
+                    if s.can_load_more() { "+" } else { "" }
                 ),
                 SMALL,
                 p.muted,
@@ -154,22 +154,39 @@ pub fn list_pane(s: &Ui, p: &Palette) -> El {
                 || message_row(&msg, selected, account.clone(), marker, &when, &palette),
             ));
         }
-        if s.has_more {
-            let caption = if s.loading_messages {
+        if s.can_load_more() || s.loading_older {
+            let busy = s.loading_messages || s.loading_older;
+            let caption = if s.loading_older {
+                "Loading older messages…"
+            } else if s.loading_messages {
                 "Loading…"
-            } else {
+            } else if s.has_more {
                 "Load more"
+            } else {
+                "Load older messages"
             };
-            rows = rows.child(row().w_full().py(14.0).center().child(btn(
+            let mut footer = col().w_full().py(14.0).gap(6.0).items_center().child(btn(
                 "load-more",
                 caption,
                 None,
                 None,
                 Kind::Secondary,
-                !s.loading_messages,
+                !busy,
                 p,
                 |s, _| s.load_more(),
-            )));
+            ));
+            let remaining = s.remaining_server_count();
+            if !s.has_more && remaining > 0 {
+                footer = footer.child(
+                    label(
+                        format!("{} older on server", format_count(remaining)),
+                        SMALL,
+                        p.muted,
+                    )
+                    .key("load-more-hint"),
+                );
+            }
+            rows = rows.child(footer);
         }
     }
 

@@ -657,6 +657,7 @@ impl Ui {
         self.offset = 0;
         self.messages.clear();
         self.has_more = false;
+        self.loading_older = false;
     }
 
     /// Show every account's inbox.
@@ -771,6 +772,7 @@ impl Ui {
                 ui.loading_messages = false;
                 match result {
                     Ok(page) => {
+                        let empty_append = append && page.is_empty();
                         ui.has_more = page.len() as i64 == PAGE_LIMIT;
                         let page = ui.apply_pending_to_page(page);
                         if append {
@@ -781,7 +783,15 @@ impl Ui {
                         } else {
                             ui.messages = page;
                         }
-                        ui.continue_jump(tx);
+                        if empty_append && ui.jump_pages_left == 0 && ui.has_server_history() {
+                            // Local cache ended cleanly on a PAGE_LIMIT boundary;
+                            // roll straight into a server backfill so one click
+                            // always loads older mail.
+                            ui.offset = ui.messages.len() as i64;
+                            ui.load_older_from_server();
+                        } else {
+                            ui.continue_jump(tx);
+                        }
                     }
                     Err(err) => {
                         ui.jump_pages_left = 0;
@@ -796,16 +806,135 @@ impl Ui {
         );
     }
 
-    pub fn load_more(&mut self) {
-        if !self.has_more || self.loading_messages {
-            return;
+    /// Whether the currently viewed folder (or any inbox in unified mode) still
+    /// has older uncached envelopes on the IMAP server.
+    pub fn has_server_history(&self) -> bool {
+        if self.search_active {
+            return false;
         }
-        self.offset += PAGE_LIMIT;
-        self.fetch_page(true);
+        if self.unified {
+            self.folders
+                .values()
+                .flatten()
+                .any(|f| f.role == "inbox" && !f.history_complete)
+        } else if let Some(fid) = self.selected_folder {
+            self.folder(fid).is_some_and(|f| !f.history_complete)
+        } else {
+            false
+        }
     }
 
-    /// `G`: select the last loaded message, then keep loading pages (capped)
-    /// until the true last message is reached.
+    /// Approximate count of older uncached envelopes still on the server for
+    /// the active view (0 when unknown or complete).
+    pub fn remaining_server_count(&self) -> i64 {
+        if self.search_active {
+            return 0;
+        }
+        let rem = |f: &Folder| {
+            if f.history_complete {
+                0
+            } else {
+                (f.total_count - f.cached_count).max(0)
+            }
+        };
+        if self.unified {
+            self.folders
+                .values()
+                .flatten()
+                .filter(|f| f.role == "inbox")
+                .map(rem)
+                .sum()
+        } else if let Some(fid) = self.selected_folder {
+            self.folder(fid).map(rem).unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    /// Whether either local SQLite pages or older server history remain.
+    pub fn can_load_more(&self) -> bool {
+        self.has_more || self.has_server_history()
+    }
+
+    pub fn load_more(&mut self) {
+        if self.loading_messages || self.loading_older {
+            return;
+        }
+        if self.has_more {
+            self.offset = self.messages.len() as i64;
+            self.fetch_page(true);
+        } else if self.has_server_history() {
+            self.load_older_from_server();
+        }
+    }
+
+    /// Fetch the next batch of older envelopes from the IMAP server for the
+    /// current folder (or all incomplete inboxes in unified mode).
+    pub fn load_older_from_server(&mut self) {
+        if self.loading_older || self.loading_messages || !self.has_server_history() {
+            return;
+        }
+        let Some(key) = self.list_key() else {
+            return;
+        };
+        if matches!(key, ListKey::Search { .. }) {
+            return;
+        }
+        let accounts_to_reload: Vec<String> = match &key {
+            ListKey::Unified => self
+                .folders
+                .values()
+                .flatten()
+                .filter(|f| f.role == "inbox" && !f.history_complete)
+                .map(|f| f.account_id.clone())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect(),
+            ListKey::Folder(id) => self.account_for_folder(*id).into_iter().collect(),
+            ListKey::Search { .. } => Vec::new(),
+        };
+        let target_limit = (self.messages.len() as i64).max(PAGE_LIMIT) + PAGE_LIMIT;
+        let view_gen = self.view_gen;
+        let asked = key.clone();
+        self.loading_older = true;
+        self.spawn(
+            move |b| async move {
+                let batch = crate::sync::BACKFILL_BATCH_LIMIT;
+                match asked {
+                    ListKey::Unified => b.load_older_unified_messages(batch).await,
+                    ListKey::Folder(id) => b.load_older_messages(id, batch).await,
+                    ListKey::Search { .. } => Ok(0),
+                }
+            },
+            move |ui, result, _| {
+                for acc in accounts_to_reload {
+                    ui.request_load_folders(acc);
+                }
+                let same_view = ui.view_gen == view_gen && ui.list_key().as_ref() == Some(&key);
+                if same_view {
+                    ui.loading_older = false;
+                }
+                match result {
+                    Ok(added) => {
+                        if same_view && added > 0 {
+                            // Refetch `[0..target_limit]` rather than appending at an
+                            // offset so Unified Inbox interleaves newly backfilled mail
+                            // in exact chronological order, and bumping `list_gen` drops
+                            // any competing `MessagesUpdated` refresh.
+                            ui.refetch_limit(target_limit);
+                        }
+                    }
+                    Err(err) => {
+                        ui.error("Failed to load older messages", err);
+                    }
+                }
+            },
+        );
+    }
+
+    /// `G`: select the last loaded message, then keep loading *cached* local
+    /// pages (capped) until the bottom of locally cached mail is reached. Never
+    /// triggers server backfill automatically.
     pub fn jump_to_bottom(&mut self, tx: &mut Tx) {
         const JUMP_TO_BOTTOM_LOAD_CAP: u32 = 20;
         self.select_last(tx);
@@ -837,11 +966,16 @@ impl Ui {
 
     /// Refetch the loaded range (after a flag/move/delete elsewhere).
     pub fn refresh_current_page(&mut self) {
+        let limit = PAGE_LIMIT.max(self.messages.len() as i64);
+        self.refetch_limit(limit);
+    }
+
+    fn refetch_limit(&mut self, limit: i64) {
         let Some(key) = self.list_key() else { return };
         if matches!(key, ListKey::Search { .. }) {
             return;
         }
-        let limit = PAGE_LIMIT.max(self.messages.len() as i64);
+        self.loading_messages = true;
         let list_gen = self.next_list_gen();
         let asked = key.clone();
         self.spawn(
@@ -860,6 +994,7 @@ impl Ui {
                 if let Ok(page) = result {
                     ui.has_more = page.len() as i64 == limit;
                     ui.messages = ui.apply_pending_to_page(page);
+                    ui.offset = ui.messages.len() as i64;
                     ui.continue_jump(tx);
                 }
             },
@@ -1555,7 +1690,7 @@ impl Ui {
     }
 
     fn on_messages_updated(&mut self, folder_id: i64) {
-        if !self.search_active {
+        if !self.search_active && !self.loading_older {
             let refresh = if self.unified {
                 self.folder(folder_id).is_some_and(|f| f.role == "inbox")
             } else {

@@ -411,6 +411,8 @@ pub struct Ui {
     pub offset: i64,
     pub has_more: bool,
     pub loading_messages: bool,
+    /// True while an on-demand IMAP history backfill is in flight for the current view.
+    pub loading_older: bool,
     /// Bumped on every view reset or full page replace so out-of-order DB reads are dropped.
     pub(crate) list_gen: u64,
     /// Bumped on every view reset so stale `load_more` appends are dropped.
@@ -505,6 +507,7 @@ impl Ui {
             offset: 0,
             has_more: false,
             loading_messages: false,
+            loading_older: false,
             list_gen: 0,
             view_gen: 0,
             folders_gen: HashMap::new(),
