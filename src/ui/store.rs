@@ -8,7 +8,10 @@
 use rune::{TextEdit, Tx};
 
 use super::compose::ComposeSeed;
-use super::{html, AddTab, Filter, Modal, SettingsState, Ui, UpdateBusy, PAGE_LIMIT};
+use super::{
+    html, AddTab, Filter, Modal, PendingFlagged, PendingSeen, SettingsState, Ui, UpdateBusy,
+    PAGE_LIMIT,
+};
 use crate::accounts::AccountKind;
 use crate::error::AppError;
 use crate::events::AppEvent;
@@ -146,6 +149,60 @@ impl Ui {
         }
     }
 
+    fn next_list_gen(&mut self) -> u64 {
+        self.list_gen = self.list_gen.wrapping_add(1);
+        self.list_gen
+    }
+
+    fn bump_folders_gen(&mut self, account_id: &str) -> u64 {
+        let entry = self.folders_gen.entry(account_id.to_string()).or_insert(0);
+        *entry = entry.wrapping_add(1);
+        *entry
+    }
+
+    /// True while any optimistic read-state or removal action is still in flight
+    /// for `account_id`, so authoritative folder-count reloads wait until they settle.
+    fn has_pending_folder_ops(&self, account_id: &str) -> bool {
+        self.pending_seen
+            .values()
+            .any(|p| p.account_id == account_id)
+            || self.pending_removals.values().any(|a| a == account_id)
+    }
+
+    /// Reload an account's folders now, or defer until its pending optimistic
+    /// unread/removal operations finish so badges never bounce back.
+    fn request_load_folders(&mut self, account_id: String) {
+        if self.has_pending_folder_ops(&account_id) {
+            self.pending_folder_reload.insert(account_id);
+        } else {
+            self.load_folders(account_id);
+        }
+    }
+
+    fn flush_pending_folder_reload(&mut self, account_id: &str) {
+        if !self.has_pending_folder_ops(account_id) && self.pending_folder_reload.remove(account_id)
+        {
+            self.load_folders(account_id.to_string());
+        }
+    }
+
+    /// Filter out pending removals and overlay in-flight `\Seen`/`\Flagged`
+    /// transitions onto rows loaded from the DB (or pushed live).
+    pub(crate) fn apply_pending_to_page(&self, page: Vec<MessageSummary>) -> Vec<MessageSummary> {
+        page.into_iter()
+            .filter(|m| !self.pending_removals.contains_key(&m.id))
+            .map(|mut m| {
+                if let Some(p) = self.pending_seen.get(&m.id) {
+                    m.seen = p.desired;
+                }
+                if let Some(p) = self.pending_flagged.get(&m.id) {
+                    m.flagged = p.desired;
+                }
+                m
+            })
+            .collect()
+    }
+
     // ---- Startup ----------------------------------------------------------
 
     /// Load settings and accounts (called once the window is up).
@@ -184,7 +241,11 @@ impl Ui {
                     return;
                 };
                 for (id, list) in folders {
-                    ui.folders.insert(id, list);
+                    if ui.has_pending_folder_ops(&id) && ui.folders.contains_key(&id) {
+                        ui.pending_folder_reload.insert(id);
+                    } else {
+                        ui.folders.insert(id, list);
+                    }
                 }
                 ui.folders
                     .retain(|id, _| accounts.iter().any(|a| &a.id == id));
@@ -194,6 +255,14 @@ impl Ui {
                     .retain(|id, _| accounts.iter().any(|a| &a.id == id));
                 ui.reauth_required
                     .retain(|id| accounts.iter().any(|a| &a.id == id));
+                ui.pending_seen
+                    .retain(|_, p| accounts.iter().any(|a| a.id == p.account_id));
+                ui.pending_removals
+                    .retain(|_, acc| accounts.iter().any(|a| &a.id == acc));
+                ui.pending_folder_reload
+                    .retain(|id| accounts.iter().any(|a| &a.id == id));
+                ui.folders_gen
+                    .retain(|id, _| accounts.iter().any(|a| &a.id == id));
                 let gone = |id: &str| !accounts.iter().any(|a| a.id == id);
                 let showing_gone = ui.selected_account.as_deref().is_some_and(gone)
                     || ui.messages.iter().any(|m| gone(&m.account_id));
@@ -218,15 +287,24 @@ impl Ui {
     }
 
     pub fn load_folders(&mut self, account_id: String) {
+        let gen = self.bump_folders_gen(&account_id);
         self.spawn(
             move |b| async move {
                 let folders = b.list_folders(account_id.clone()).unwrap_or_default();
                 (account_id, folders)
             },
-            |ui, (account_id, folders), _| {
-                if ui.accounts.iter().any(|a| a.id == account_id) {
-                    ui.folders.insert(account_id, folders);
+            move |ui, (account_id, folders), _| {
+                if ui.folders_gen.get(&account_id).copied() != Some(gen) {
+                    return;
                 }
+                if !ui.accounts.iter().any(|a| a.id == account_id) {
+                    return;
+                }
+                if ui.has_pending_folder_ops(&account_id) && ui.folders.contains_key(&account_id) {
+                    ui.pending_folder_reload.insert(account_id);
+                    return;
+                }
+                ui.folders.insert(account_id, folders);
             },
         );
     }
@@ -501,6 +579,10 @@ impl Ui {
                     ui.folders.remove(&account_id);
                     ui.sync_states.remove(&account_id);
                     ui.reauth_required.remove(&account_id);
+                    ui.pending_seen.retain(|_, p| p.account_id != account_id);
+                    ui.pending_removals.retain(|_, acc| acc != &account_id);
+                    ui.pending_folder_reload.remove(&account_id);
+                    ui.folders_gen.remove(&account_id);
                     let showing_it = ui.selected_account.as_deref() == Some(account_id.as_str())
                         || ui.messages.iter().any(|m| m.account_id == account_id);
                     ui.accounts.retain(|a| a.id != account_id);
@@ -536,6 +618,8 @@ impl Ui {
 
     fn reset_list(&mut self) {
         self.clear_reader();
+        self.next_list_gen();
+        self.view_gen = self.view_gen.wrapping_add(1);
         self.offset = 0;
         self.messages.clear();
         self.has_more = false;
@@ -624,6 +708,12 @@ impl Ui {
         };
         self.loading_messages = true;
         let offset = self.offset;
+        let list_gen = if append {
+            self.list_gen
+        } else {
+            self.next_list_gen()
+        };
+        let view_gen = self.view_gen;
         let asked = key.clone();
         self.spawn(
             move |b| async move {
@@ -636,17 +726,19 @@ impl Ui {
                 }
             },
             move |ui, result, tx| {
-                if ui.list_key().as_ref() != Some(&key) {
-                    return; // the view changed while this page loaded
+                let stale = if append {
+                    ui.view_gen != view_gen
+                } else {
+                    ui.list_gen != list_gen
+                };
+                if ui.list_key().as_ref() != Some(&key) || stale {
+                    return; // the view changed or a newer load superseded this one
                 }
                 ui.loading_messages = false;
                 match result {
                     Ok(page) => {
                         ui.has_more = page.len() as i64 == PAGE_LIMIT;
-                        let page: Vec<MessageSummary> = page
-                            .into_iter()
-                            .filter(|m| !ui.pending_removals.contains(&m.id))
-                            .collect();
+                        let page = ui.apply_pending_to_page(page);
                         if append {
                             let known: std::collections::HashSet<i64> =
                                 ui.messages.iter().map(|m| m.id).collect();
@@ -716,6 +808,7 @@ impl Ui {
             return;
         }
         let limit = PAGE_LIMIT.max(self.messages.len() as i64);
+        let list_gen = self.next_list_gen();
         let asked = key.clone();
         self.spawn(
             move |b| async move {
@@ -725,16 +818,15 @@ impl Ui {
                     ListKey::Search { .. } => Ok(Vec::new()),
                 }
             },
-            move |ui, result, _| {
-                if ui.list_key().as_ref() != Some(&key) {
+            move |ui, result, tx| {
+                if ui.list_key().as_ref() != Some(&key) || ui.list_gen != list_gen {
                     return;
                 }
+                ui.loading_messages = false;
                 if let Ok(page) = result {
                     ui.has_more = page.len() as i64 == limit;
-                    ui.messages = page
-                        .into_iter()
-                        .filter(|m| !ui.pending_removals.contains(&m.id))
-                        .collect();
+                    ui.messages = ui.apply_pending_to_page(page);
+                    ui.continue_jump(tx);
                 }
             },
         );
@@ -819,7 +911,8 @@ impl Ui {
         }
     }
 
-    /// Set the read state optimistically, rolling back on failure.
+    /// Set the read state optimistically, coalescing rapid toggles per message
+    /// and rolling back on failure.
     pub fn set_seen(&mut self, id: i64, seen: bool) {
         let Some(msg) = self.messages.iter().find(|m| m.id == id).cloned() else {
             return;
@@ -830,38 +923,141 @@ impl Ui {
         let delta = if seen { -1 } else { 1 };
         self.patch_message(id, |m| m.seen = seen);
         self.bump_folder(msg.folder_id, 0, delta);
+
+        if self.backend.is_none() {
+            return;
+        }
+        // Drop any folder reload already in flight for this account so it
+        // cannot land with the pre-click unread count; re-sync once settled.
+        self.bump_folders_gen(&msg.account_id);
+        self.pending_folder_reload.insert(msg.account_id.clone());
+
+        if let Some(entry) = self.pending_seen.get_mut(&id) {
+            entry.desired = seen;
+            return;
+        }
+        self.pending_seen.insert(
+            id,
+            PendingSeen {
+                account_id: msg.account_id,
+                folder_id: msg.folder_id,
+                confirmed: msg.seen,
+                in_flight: seen,
+                desired: seen,
+            },
+        );
+        self.dispatch_mark_read(id, seen);
+    }
+
+    fn dispatch_mark_read(&mut self, id: i64, seen: bool) {
         self.spawn(
             move |b| async move { b.mark_read(id, seen).await },
-            move |ui, result, _| {
-                if let Err(err) = result {
-                    ui.patch_message(id, |m| m.seen = !seen);
-                    ui.bump_folder(msg.folder_id, 0, -delta);
-                    ui.error("Failed to update flag", err);
-                }
-            },
+            move |ui, result, _| ui.finish_mark_read(id, seen, result),
         );
     }
 
-    /// Toggle the flag optimistically.
-    pub fn toggle_flagged(&mut self, id: i64) {
-        let Some(flagged) = self
-            .messages
-            .iter()
-            .find(|m| m.id == id)
-            .map(|m| !m.flagged)
-        else {
+    pub(crate) fn finish_mark_read(
+        &mut self,
+        id: i64,
+        sent: bool,
+        result: crate::error::AppResult<()>,
+    ) {
+        let Some(entry) = self.pending_seen.get_mut(&id) else {
             return;
         };
-        self.patch_message(id, |m| m.flagged = flagged);
-        self.spawn(
-            move |b| async move { b.mark_flagged(id, flagged).await },
-            move |ui, result, _| {
-                if let Err(err) = result {
-                    ui.patch_message(id, |m| m.flagged = !flagged);
-                    ui.error("Failed to update flag", err);
+        match result {
+            Ok(()) => {
+                entry.confirmed = sent;
+                if entry.desired != sent {
+                    let next = entry.desired;
+                    entry.in_flight = next;
+                    self.dispatch_mark_read(id, next);
+                } else {
+                    let account_id = entry.account_id.clone();
+                    self.pending_seen.remove(&id);
+                    self.flush_pending_folder_reload(&account_id);
                 }
+            }
+            Err(err) => {
+                let Some(entry) = self.pending_seen.remove(&id) else {
+                    return;
+                };
+                // Skip rolling back a message the user already archived/deleted;
+                // the removal path reconciles folder counts when it settles.
+                if !self.pending_removals.contains_key(&id) && entry.desired != entry.confirmed {
+                    self.patch_message(id, |m| m.seen = entry.confirmed);
+                    let rollback_delta = if entry.confirmed { -1 } else { 1 };
+                    self.bump_folder(entry.folder_id, 0, rollback_delta);
+                    self.error("Failed to update flag", err);
+                }
+                self.flush_pending_folder_reload(&entry.account_id);
+            }
+        }
+    }
+
+    /// Toggle the flag optimistically, coalescing rapid toggles per message.
+    pub fn toggle_flagged(&mut self, id: i64) {
+        let Some(was_flagged) = self.messages.iter().find(|m| m.id == id).map(|m| m.flagged) else {
+            return;
+        };
+        let flagged = !was_flagged;
+        self.patch_message(id, |m| m.flagged = flagged);
+
+        if self.backend.is_none() {
+            return;
+        }
+        if let Some(entry) = self.pending_flagged.get_mut(&id) {
+            entry.desired = flagged;
+            return;
+        }
+        self.pending_flagged.insert(
+            id,
+            PendingFlagged {
+                confirmed: was_flagged,
+                in_flight: flagged,
+                desired: flagged,
             },
         );
+        self.dispatch_mark_flagged(id, flagged);
+    }
+
+    fn dispatch_mark_flagged(&mut self, id: i64, flagged: bool) {
+        self.spawn(
+            move |b| async move { b.mark_flagged(id, flagged).await },
+            move |ui, result, _| ui.finish_mark_flagged(id, flagged, result),
+        );
+    }
+
+    pub(crate) fn finish_mark_flagged(
+        &mut self,
+        id: i64,
+        sent: bool,
+        result: crate::error::AppResult<()>,
+    ) {
+        let Some(entry) = self.pending_flagged.get_mut(&id) else {
+            return;
+        };
+        match result {
+            Ok(()) => {
+                entry.confirmed = sent;
+                if entry.desired != sent {
+                    let next = entry.desired;
+                    entry.in_flight = next;
+                    self.dispatch_mark_flagged(id, next);
+                } else {
+                    self.pending_flagged.remove(&id);
+                }
+            }
+            Err(err) => {
+                let Some(entry) = self.pending_flagged.remove(&id) else {
+                    return;
+                };
+                if !self.pending_removals.contains_key(&id) && entry.desired != entry.confirmed {
+                    self.patch_message(id, |m| m.flagged = entry.confirmed);
+                    self.error("Failed to update flag", err);
+                }
+            }
+        }
     }
 
     pub fn archive_message(&mut self, id: i64) {
@@ -917,11 +1113,16 @@ impl Ui {
         let was_selected = self.selected_message == Some(id);
 
         self.messages.retain(|m| m.id != id);
-        self.pending_removals.insert(id);
+        let account_id = msg.account_id.clone();
+        self.pending_removals.insert(id, account_id.clone());
         let unread = if msg.seen { 0 } else { 1 };
         self.bump_folder(msg.folder_id, -1, -unread);
         if let Some(target) = target_folder_id {
             self.bump_folder(target, 1, unread);
+        }
+        if self.backend.is_some() {
+            self.bump_folders_gen(&account_id);
+            self.pending_folder_reload.insert(account_id.clone());
         }
         if was_selected {
             self.clear_reader();
@@ -931,16 +1132,22 @@ impl Ui {
             }
         }
 
-        let account_id = msg.account_id.clone();
         self.spawn(
             move |b| action(b, id),
             move |ui, result, _| {
                 ui.pending_removals.remove(&id);
-                if let Err(err) = result {
-                    ui.error(error_prefix, err);
-                    ui.refresh_current_page();
-                    ui.load_folders(account_id);
+                match result {
+                    Ok(()) => {
+                        ui.pending_seen.remove(&id);
+                        ui.pending_flagged.remove(&id);
+                    }
+                    Err(err) => {
+                        ui.error(error_prefix, err);
+                        ui.refresh_current_page();
+                        ui.pending_folder_reload.insert(account_id.clone());
+                    }
                 }
+                ui.flush_pending_folder_reload(&account_id);
             },
         );
     }
@@ -1250,7 +1457,8 @@ impl Ui {
 
     fn prepend_fresh(&mut self, messages: Vec<MessageSummary>) {
         let known: std::collections::HashSet<i64> = self.messages.iter().map(|m| m.id).collect();
-        let mut fresh: Vec<MessageSummary> = messages
+        let mut fresh: Vec<MessageSummary> = self
+            .apply_pending_to_page(messages)
             .into_iter()
             .filter(|m| !known.contains(&m.id))
             .collect();
@@ -1287,14 +1495,23 @@ impl Ui {
     }
 
     fn load_folders_then_refresh(&mut self, account_id: String) {
+        let gen = self.bump_folders_gen(&account_id);
         self.spawn(
             move |b| async move {
                 let folders = b.list_folders(account_id.clone()).unwrap_or_default();
                 (account_id, folders)
             },
-            |ui, (account_id, folders), _| {
-                if ui.accounts.iter().any(|a| a.id == account_id) {
-                    ui.folders.insert(account_id, folders);
+            move |ui, (account_id, folders), _| {
+                if ui.folders_gen.get(&account_id).copied() == Some(gen)
+                    && ui.accounts.iter().any(|a| a.id == account_id)
+                {
+                    if ui.has_pending_folder_ops(&account_id)
+                        && ui.folders.contains_key(&account_id)
+                    {
+                        ui.pending_folder_reload.insert(account_id);
+                    } else {
+                        ui.folders.insert(account_id, folders);
+                    }
                 }
                 if ui.unified && !ui.search_active {
                     ui.refresh_current_page();
@@ -1315,7 +1532,7 @@ impl Ui {
             }
         }
         if let Some(account_id) = self.account_for_folder(folder_id) {
-            self.load_folders(account_id);
+            self.request_load_folders(account_id);
         }
     }
 
@@ -1351,7 +1568,7 @@ impl Ui {
             self.reauth_required.remove(&account_id);
         }
         if state == SyncState::Idle {
-            self.load_folders(account_id);
+            self.request_load_folders(account_id);
         }
     }
 
@@ -1415,5 +1632,397 @@ mod tests {
         assert!(!form.host_fields_touched());
         form.smtp_port.replace_text("465");
         assert!(form.host_fields_touched());
+    }
+
+    struct DbFixture {
+        ui: Ui,
+        db_path: std::path::PathBuf,
+        _dir: tempfile::TempDir,
+        _rt: tokio::runtime::Runtime,
+        folder_id: i64,
+        msg_ids: Vec<i64>,
+    }
+
+    impl DbFixture {
+        fn new(unread_count: usize) -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let db_path = dir.path().join("mail.db");
+            let conn = rusqlite::Connection::open(&db_path).expect("open db");
+            crate::store::init_schema(&conn).expect("init schema");
+            let (folder_id, _) = crate::store::upsert_folder(
+                &conn,
+                "a1",
+                "INBOX",
+                crate::store::FolderRole::Inbox,
+                1,
+            )
+            .expect("folder");
+            crate::store::set_folder_counts(
+                &conn,
+                folder_id,
+                unread_count as u32,
+                unread_count as u32,
+            )
+            .expect("counts");
+            let mut msg_ids = Vec::new();
+            for i in 0..unread_count {
+                let uid = (i + 1) as u32;
+                let id = crate::store::upsert_message(
+                    &conn,
+                    &crate::store::MessageUpsert {
+                        folder_id,
+                        uid,
+                        message_id: Some(format!("<m{uid}@example.com>")),
+                        subject: format!("Message {uid}"),
+                        from_name: "Sender".into(),
+                        from_addr: "sender@example.com".into(),
+                        to_addrs: vec!["me@example.com".into()],
+                        cc_addrs: Vec::new(),
+                        date: format!("2026-11-27T10:0{i}:00Z"),
+                        snippet: "Hello".into(),
+                        seen: false,
+                        flagged: false,
+                        has_attachments: false,
+                        rfc822_size: 128,
+                    },
+                )
+                .expect("upsert msg");
+                msg_ids.push(id);
+            }
+
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio");
+            let inbox = crate::ui::Inbox::default();
+            let events = {
+                let inbox = inbox.clone();
+                crate::events::Events::new(move |ev| inbox.event(ev))
+            };
+            let backend = crate::backend::Backend::new(conn, events, rt.handle().clone());
+            let mut ui = Ui::new(Some(backend.clone()), inbox);
+            ui.accounts = vec![crate::accounts::AccountPublic {
+                id: "a1".into(),
+                email: "me@example.com".into(),
+                display_name: "Me".into(),
+                kind: AccountKind::Imap,
+            }];
+            ui.folders.insert(
+                "a1".into(),
+                backend.list_folders("a1".into()).expect("folders"),
+            );
+            ui.messages = backend
+                .list_unified_messages(0, PAGE_LIMIT)
+                .expect("messages");
+            ui.loading_accounts = false;
+            Self {
+                ui,
+                db_path,
+                _dir: dir,
+                _rt: rt,
+                folder_id,
+                msg_ids,
+            }
+        }
+
+        fn conn(&self) -> rusqlite::Connection {
+            rusqlite::Connection::open(&self.db_path).expect("reopen db")
+        }
+
+        fn drain(&mut self) {
+            let mut tx = rune::Tx::default();
+            for _ in 0..8 {
+                self._rt.block_on(async {
+                    tokio::task::yield_now().await;
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                });
+                let jobs = self.ui.inbox.take();
+                if jobs.is_empty() {
+                    continue;
+                }
+                for job in jobs {
+                    job(&mut self.ui, &mut tx);
+                }
+            }
+        }
+
+        fn seen(&self, id: i64) -> bool {
+            self.ui
+                .messages
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| m.seen)
+                .expect("message present")
+        }
+
+        fn flagged(&self, id: i64) -> bool {
+            self.ui
+                .messages
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| m.flagged)
+                .expect("message present")
+        }
+
+        /// Simulate an optimistic `set_seen` without touching IMAP over the network.
+        fn begin_seen(&mut self, id: i64, seen: bool) {
+            let msg = self
+                .ui
+                .messages
+                .iter()
+                .find(|m| m.id == id)
+                .cloned()
+                .expect("message");
+            assert_ne!(msg.seen, seen);
+            let delta = if seen { -1 } else { 1 };
+            self.ui.patch_message(id, |m| m.seen = seen);
+            self.ui.bump_folder(msg.folder_id, 0, delta);
+            self.ui.bump_folders_gen(&msg.account_id);
+            self.ui.pending_folder_reload.insert(msg.account_id.clone());
+            if let Some(entry) = self.ui.pending_seen.get_mut(&id) {
+                entry.desired = seen;
+            } else {
+                self.ui.pending_seen.insert(
+                    id,
+                    PendingSeen {
+                        account_id: msg.account_id,
+                        folder_id: msg.folder_id,
+                        confirmed: msg.seen,
+                        in_flight: seen,
+                        desired: seen,
+                    },
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rapid_click_through_keeps_unread_indicators_and_badges_steady() {
+        let mut fx = DbFixture::new(3);
+        let [a, b, c] = [fx.msg_ids[0], fx.msg_ids[1], fx.msg_ids[2]];
+
+        // User rapidly clicks through all three unread messages.
+        fx.begin_seen(a, true);
+        fx.begin_seen(b, true);
+        fx.begin_seen(c, true);
+        assert!(fx.seen(a) && fx.seen(b) && fx.seen(c));
+        assert_eq!(fx.ui.unified_unread(), 0);
+
+        // Backend commits only A and emits MessagesUpdated while B and C are still unread in DB.
+        {
+            let conn = fx.conn();
+            crate::store::mark_seen(&conn, a, true).unwrap();
+            crate::store::adjust_folder_unread_count(&conn, fx.folder_id, -1).unwrap();
+        }
+        let mut tx = rune::Tx::default();
+        fx.ui.on_event(
+            AppEvent::MessagesUpdated {
+                folder_id: fx.folder_id,
+            },
+            &mut tx,
+        );
+        fx.drain();
+        // B and C must not flash back to unread, and the unread badge must stay at 0.
+        assert!(fx.seen(a) && fx.seen(b) && fx.seen(c));
+        assert_eq!(fx.ui.unified_unread(), 0);
+
+        // A's mark_read finishes; B and C are still pending.
+        fx.ui.finish_mark_read(a, true, Ok(()));
+        fx.drain();
+        assert!(fx.seen(a) && fx.seen(b) && fx.seen(c));
+        assert_eq!(fx.ui.unified_unread(), 0);
+
+        // B commits and an IDLE SyncState::Idle arrives while C is still pending.
+        {
+            let conn = fx.conn();
+            crate::store::mark_seen(&conn, b, true).unwrap();
+            crate::store::adjust_folder_unread_count(&conn, fx.folder_id, -1).unwrap();
+        }
+        fx.ui.on_event(
+            AppEvent::MessagesUpdated {
+                folder_id: fx.folder_id,
+            },
+            &mut tx,
+        );
+        fx.ui.on_event(
+            AppEvent::SyncState {
+                account_id: "a1".into(),
+                state: SyncState::Idle,
+                error: None,
+                needs_reauth: false,
+            },
+            &mut tx,
+        );
+        fx.ui.finish_mark_read(b, true, Ok(()));
+        fx.drain();
+        assert!(fx.seen(a) && fx.seen(b) && fx.seen(c));
+        assert_eq!(fx.ui.unified_unread(), 0);
+
+        // C commits and finishes: pending_seen clears and the deferred folder reload reconciles.
+        {
+            let conn = fx.conn();
+            crate::store::mark_seen(&conn, c, true).unwrap();
+            crate::store::adjust_folder_unread_count(&conn, fx.folder_id, -1).unwrap();
+        }
+        fx.ui.on_event(
+            AppEvent::MessagesUpdated {
+                folder_id: fx.folder_id,
+            },
+            &mut tx,
+        );
+        fx.ui.finish_mark_read(c, true, Ok(()));
+        fx.drain();
+        assert!(fx.ui.pending_seen.is_empty());
+        assert!(fx.ui.pending_folder_reload.is_empty());
+        assert!(fx.seen(a) && fx.seen(b) && fx.seen(c));
+        assert_eq!(fx.ui.unified_unread(), 0);
+    }
+
+    #[test]
+    fn rapid_toggle_on_same_message_coalesces_and_survives_refetch() {
+        let mut fx = DbFixture::new(1);
+        let a = fx.msg_ids[0];
+
+        // Click to read, then immediately press `u` to mark unread while the first RPC is in flight.
+        fx.begin_seen(a, true);
+        assert!(fx.seen(a));
+        assert_eq!(fx.ui.unified_unread(), 0);
+
+        fx.begin_seen(a, false);
+        assert!(!fx.seen(a));
+        assert_eq!(fx.ui.unified_unread(), 1);
+        assert_eq!(
+            fx.ui.pending_seen.get(&a).map(|p| (p.in_flight, p.desired)),
+            Some((true, false))
+        );
+
+        // First RPC (`seen = true`) commits to DB and emits MessagesUpdated.
+        {
+            let conn = fx.conn();
+            crate::store::mark_seen(&conn, a, true).unwrap();
+            crate::store::adjust_folder_unread_count(&conn, fx.folder_id, -1).unwrap();
+        }
+        let mut tx = rune::Tx::default();
+        fx.ui.on_event(
+            AppEvent::MessagesUpdated {
+                folder_id: fx.folder_id,
+            },
+            &mut tx,
+        );
+        fx.drain();
+        // UI must stay unread despite DB momentarily having seen = true.
+        assert!(!fx.seen(a));
+        assert_eq!(fx.ui.unified_unread(), 1);
+
+        // When the first RPC finishes, pending_seen advances confirmed=true and
+        // queues the follow-up (`in_flight = false`), keeping the entry active.
+        // Disable backend before calling finish_mark_read so the follow-up doesn't dial IMAP.
+        fx.ui.backend = None;
+        fx.ui.finish_mark_read(a, true, Ok(()));
+        assert_eq!(
+            fx.ui
+                .pending_seen
+                .get(&a)
+                .map(|p| (p.confirmed, p.in_flight, p.desired)),
+            Some((true, false, false))
+        );
+
+        // Follow-up finishes cleanly.
+        fx.ui.finish_mark_read(a, false, Ok(()));
+        assert!(fx.ui.pending_seen.is_empty());
+        assert!(!fx.seen(a));
+        assert_eq!(fx.ui.unified_unread(), 1);
+    }
+
+    #[test]
+    fn failed_mark_read_rolls_back_only_when_still_diverged_and_not_removed() {
+        let mut fx = DbFixture::new(3);
+        let [a, b, c] = [fx.msg_ids[0], fx.msg_ids[1], fx.msg_ids[2]];
+        fx.ui.backend = None;
+
+        // Case 1: straight failure rolls back seen + unread count and toasts.
+        fx.begin_seen(a, true);
+        assert_eq!(fx.ui.unified_unread(), 2);
+        fx.ui
+            .finish_mark_read(a, true, Err(AppError::msg("offline")));
+        assert!(!fx.seen(a));
+        assert_eq!(fx.ui.unified_unread(), 3);
+        assert_eq!(fx.ui.toasts.len(), 1);
+
+        // Case 2: user toggled back to unread before the first RPC failed — no rollback/toast.
+        fx.begin_seen(b, true);
+        fx.begin_seen(b, false);
+        assert_eq!(fx.ui.unified_unread(), 3);
+        fx.ui
+            .finish_mark_read(b, true, Err(AppError::msg("offline")));
+        assert!(!fx.seen(b));
+        assert_eq!(fx.ui.unified_unread(), 3);
+        assert_eq!(fx.ui.toasts.len(), 1);
+
+        // Case 3: message is already being removed — skip unread bump and error toast.
+        fx.begin_seen(c, true);
+        fx.ui.messages.retain(|m| m.id != c);
+        fx.ui.pending_removals.insert(c, "a1".into());
+        assert_eq!(fx.ui.unified_unread(), 2);
+        fx.ui
+            .finish_mark_read(c, true, Err(AppError::msg("message not found")));
+        assert_eq!(fx.ui.unified_unread(), 2);
+        assert_eq!(fx.ui.toasts.len(), 1);
+    }
+
+    #[test]
+    fn stale_refetch_and_folder_reload_generations_are_discarded() {
+        let mut fx = DbFixture::new(1);
+        let a = fx.msg_ids[0];
+
+        // Spawn an old refresh + folder reload while A is still unread in DB.
+        fx.ui.refresh_current_page();
+        fx.ui.load_folders("a1".into());
+
+        // Before those jobs run, commit A to DB and bump generations via a newer refresh.
+        {
+            let conn = fx.conn();
+            crate::store::mark_seen(&conn, a, true).unwrap();
+            crate::store::adjust_folder_unread_count(&conn, fx.folder_id, -1).unwrap();
+        }
+        fx.ui.patch_message(a, |m| m.seen = true);
+        fx.ui.bump_folder(fx.folder_id, 0, -1);
+        fx.ui.refresh_current_page();
+        fx.ui.load_folders("a1".into());
+
+        // Draining runs the stale jobs too; they must be ignored.
+        fx.drain();
+        assert!(fx.seen(a));
+        assert_eq!(fx.ui.unified_unread(), 0);
+    }
+
+    #[test]
+    fn pending_flagged_survives_refetch_and_rolls_back_on_error() {
+        let mut fx = DbFixture::new(1);
+        let a = fx.msg_ids[0];
+        fx.ui.patch_message(a, |m| m.flagged = true);
+        fx.ui.pending_flagged.insert(
+            a,
+            PendingFlagged {
+                confirmed: false,
+                in_flight: true,
+                desired: true,
+            },
+        );
+
+        let mut tx = rune::Tx::default();
+        fx.ui.on_event(
+            AppEvent::MessagesUpdated {
+                folder_id: fx.folder_id,
+            },
+            &mut tx,
+        );
+        fx.drain();
+        assert!(fx.flagged(a), "refetch must not clear in-flight flag");
+
+        fx.ui
+            .finish_mark_flagged(a, true, Err(AppError::msg("offline")));
+        assert!(!fx.flagged(a), "failure rolls back flag");
+        assert_eq!(fx.ui.toasts.len(), 1);
     }
 }
