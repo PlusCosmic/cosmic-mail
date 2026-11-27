@@ -34,6 +34,19 @@ impl FolderRole {
             FolderRole::Normal => "normal",
         }
     }
+
+    /// Parse a stored DB role string back into a [`FolderRole`].
+    pub fn from_db_str(s: &str) -> Self {
+        match s {
+            "inbox" => FolderRole::Inbox,
+            "sent" => FolderRole::Sent,
+            "drafts" => FolderRole::Drafts,
+            "trash" => FolderRole::Trash,
+            "archive" => FolderRole::Archive,
+            "spam" => FolderRole::Spam,
+            _ => FolderRole::Normal,
+        }
+    }
 }
 
 /// Path to the SQLite database file.
@@ -74,6 +87,7 @@ CREATE TABLE IF NOT EXISTS folders (
   last_seen_uid INTEGER NOT NULL DEFAULT 0,
   unread_count INTEGER NOT NULL DEFAULT 0,
   total_count INTEGER NOT NULL DEFAULT 0,
+  history_complete INTEGER NOT NULL DEFAULT 0,
   UNIQUE(account_id, name)
 );
 CREATE TABLE IF NOT EXISTS messages (
@@ -154,6 +168,20 @@ CREATE INDEX IF NOT EXISTS idx_shipments_message ON shipments(message_id);
         .context("marking existing cached bodies")?;
     }
 
+    if !folder_column_exists(conn, "history_complete")? {
+        conn.execute(
+            "ALTER TABLE folders ADD COLUMN history_complete INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .context("adding folder history_complete column")?;
+        conn.execute(
+            "UPDATE folders SET history_complete = 1 \
+             WHERE total_count <= (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id)",
+            [],
+        )
+        .context("initializing folder history_complete for existing rows")?;
+    }
+
     init_fts_schema(conn)?;
     Ok(())
 }
@@ -208,6 +236,17 @@ fn table_exists(conn: &Connection, name: &str) -> Result<bool> {
     Ok(count > 0)
 }
 
+fn folder_column_exists(conn: &Connection, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA table_info(folders)")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        if row.get::<_, String>(1)? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn message_column_exists(conn: &Connection, column: &str) -> Result<bool> {
     let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
     let mut rows = stmt.query([])?;
@@ -230,6 +269,8 @@ pub struct FolderRow {
     pub role: String,
     pub unread_count: i64,
     pub total_count: i64,
+    pub cached_count: i64,
+    pub history_complete: bool,
     /// Kept for completeness; reconciliation reads it directly in `upsert_folder`.
     #[allow(dead_code)]
     pub uidvalidity: i64,
@@ -377,7 +418,7 @@ pub fn upsert_folder(
                     .context("wiping messages on uidvalidity change")?;
                 conn.execute(
                     "UPDATE folders SET uidvalidity = ?1, last_seen_uid = 0, \
-                     unread_count = 0, total_count = 0, role = ?2 WHERE id = ?3",
+                     unread_count = 0, total_count = 0, history_complete = 0, role = ?2 WHERE id = ?3",
                     params![uidvalidity, role.as_str(), id],
                 )
                 .context("resetting folder on uidvalidity change")?;
@@ -407,7 +448,9 @@ pub fn upsert_folder(
 /// List all folders for an account.
 pub fn list_folders(conn: &Connection, account_id: &str) -> Result<Vec<FolderRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, account_id, name, role, unread_count, total_count, uidvalidity, last_seen_uid \
+        "SELECT id, account_id, name, role, unread_count, total_count, \
+                (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id), \
+                history_complete, uidvalidity, last_seen_uid \
          FROM folders WHERE account_id = ?1 ORDER BY \
          CASE role WHEN 'inbox' THEN 0 WHEN 'sent' THEN 1 WHEN 'drafts' THEN 2 \
          WHEN 'archive' THEN 3 WHEN 'spam' THEN 4 WHEN 'trash' THEN 5 ELSE 6 END, name",
@@ -422,13 +465,31 @@ pub fn list_folders(conn: &Connection, account_id: &str) -> Result<Vec<FolderRow
 /// Fetch a single folder by rowid.
 pub fn get_folder(conn: &Connection, folder_id: i64) -> Result<Option<FolderRow>> {
     conn.query_row(
-        "SELECT id, account_id, name, role, unread_count, total_count, uidvalidity, last_seen_uid \
+        "SELECT id, account_id, name, role, unread_count, total_count, \
+                (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id), \
+                history_complete, uidvalidity, last_seen_uid \
          FROM folders WHERE id = ?1",
         params![folder_id],
         row_to_folder,
     )
     .optional()
     .context("fetching folder")
+}
+
+/// List every `inbox`-role folder across all accounts whose older history has
+/// not yet been completely cached.
+pub fn list_incomplete_inbox_folders(conn: &Connection) -> Result<Vec<FolderRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, account_id, name, role, unread_count, total_count, \
+                (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id), \
+                history_complete, uidvalidity, last_seen_uid \
+         FROM folders WHERE role = 'inbox' AND history_complete = 0 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([], row_to_folder)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("collecting incomplete inbox folders")?;
+    Ok(rows)
 }
 
 fn row_to_folder(r: &rusqlite::Row<'_>) -> rusqlite::Result<FolderRow> {
@@ -439,9 +500,25 @@ fn row_to_folder(r: &rusqlite::Row<'_>) -> rusqlite::Result<FolderRow> {
         role: r.get(3)?,
         unread_count: r.get(4)?,
         total_count: r.get(5)?,
-        uidvalidity: r.get(6)?,
-        last_seen_uid: r.get(7)?,
+        cached_count: r.get(6)?,
+        history_complete: r.get::<_, i64>(7)? != 0,
+        uidvalidity: r.get(8)?,
+        last_seen_uid: r.get(9)?,
     })
+}
+
+/// Record whether all older envelopes in a folder have been cached locally.
+pub fn set_folder_history_complete(
+    conn: &Connection,
+    folder_id: i64,
+    complete: bool,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE folders SET history_complete = ?1 WHERE id = ?2",
+        params![complete as i64, folder_id],
+    )
+    .context("updating folder history_complete")?;
+    Ok(())
 }
 
 /// Update the notification high-water mark for a folder.
@@ -506,7 +583,9 @@ pub fn find_folder_by_role(
     role: FolderRole,
 ) -> Result<Option<FolderRow>> {
     conn.query_row(
-        "SELECT id, account_id, name, role, unread_count, total_count, uidvalidity, last_seen_uid \
+        "SELECT id, account_id, name, role, unread_count, total_count, \
+                (SELECT COUNT(*) FROM messages m WHERE m.folder_id = folders.id), \
+                history_complete, uidvalidity, last_seen_uid \
          FROM folders WHERE account_id = ?1 AND role = ?2 ORDER BY id LIMIT 1",
         params![account_id, role.as_str()],
         row_to_folder,
@@ -1254,6 +1333,18 @@ pub fn max_uid(conn: &Connection, folder_id: i64) -> Result<u32> {
             |r| r.get(0),
         )
         .context("computing max uid")?;
+    Ok(v as u32)
+}
+
+/// Lowest UID currently cached for a folder (0 if empty).
+pub fn min_uid(conn: &Connection, folder_id: i64) -> Result<u32> {
+    let v: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MIN(uid), 0) FROM messages WHERE folder_id = ?1",
+            params![folder_id],
+            |r| r.get(0),
+        )
+        .context("computing min uid")?;
     Ok(v as u32)
 }
 
@@ -2262,5 +2353,86 @@ mod tests {
         let after = search_messages(&conn, "shared", None, 0, 50).expect("search");
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].account_id, "acct-b");
+    }
+
+    #[test]
+    fn history_complete_migrates_existing_folders_and_resets_on_uidvalidity_change() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        // Pre-migration schema without `history_complete`.
+        conn.execute_batch(
+            r#"
+CREATE TABLE folders (
+  id INTEGER PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'normal',
+  uidvalidity INTEGER NOT NULL DEFAULT 0,
+  last_seen_uid INTEGER NOT NULL DEFAULT 0,
+  unread_count INTEGER NOT NULL DEFAULT 0,
+  total_count INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(account_id, name)
+);
+CREATE TABLE messages (
+  id INTEGER PRIMARY KEY,
+  folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+  uid INTEGER NOT NULL,
+  message_id TEXT,
+  subject TEXT NOT NULL DEFAULT '',
+  from_name TEXT NOT NULL DEFAULT '',
+  from_addr TEXT NOT NULL DEFAULT '',
+  to_addrs TEXT NOT NULL DEFAULT '[]',
+  cc_addrs TEXT NOT NULL DEFAULT '[]',
+  date TEXT NOT NULL,
+  snippet TEXT NOT NULL DEFAULT '',
+  seen INTEGER NOT NULL DEFAULT 0,
+  flagged INTEGER NOT NULL DEFAULT 0,
+  has_attachments INTEGER NOT NULL DEFAULT 0,
+  rfc822_size INTEGER NOT NULL DEFAULT 0,
+  body_text TEXT, body_html TEXT,
+  body_cached INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(folder_id, uid)
+);
+INSERT INTO folders (id, account_id, name, role, uidvalidity, total_count)
+  VALUES (1, 'a1', 'INBOX', 'inbox', 10, 500);
+INSERT INTO folders (id, account_id, name, role, uidvalidity, total_count)
+  VALUES (2, 'a2', 'INBOX', 'inbox', 20, 2);
+INSERT INTO messages (folder_id, uid, date) VALUES (1, 300, '2026-07-10T00:00:00Z');
+INSERT INTO messages (folder_id, uid, date) VALUES (1, 305, '2026-07-11T00:00:00Z');
+INSERT INTO messages (folder_id, uid, date) VALUES (2, 1, '2026-07-10T00:00:00Z');
+INSERT INTO messages (folder_id, uid, date) VALUES (2, 2, '2026-07-11T00:00:00Z');
+"#,
+        )
+        .expect("seed pre-migration schema");
+
+        init_schema(&conn).expect("migrate schema");
+
+        let f1 = get_folder(&conn, 1).expect("f1").expect("exists");
+        assert_eq!(f1.cached_count, 2);
+        assert!(!f1.history_complete);
+        assert_eq!(min_uid(&conn, 1).expect("min_uid f1"), 300);
+
+        let f2 = get_folder(&conn, 2).expect("f2").expect("exists");
+        assert_eq!(f2.cached_count, 2);
+        assert!(f2.history_complete);
+
+        let incomplete = list_incomplete_inbox_folders(&conn).expect("incomplete inboxes");
+        assert_eq!(incomplete.len(), 1);
+        assert_eq!(incomplete[0].id, 1);
+
+        // Marking complete removes it from incomplete inboxes, and a UIDVALIDITY
+        // change resets history_complete back to false alongside wiping messages.
+        set_folder_history_complete(&conn, 1, true).expect("mark complete");
+        assert!(list_incomplete_inbox_folders(&conn)
+            .expect("incomplete after mark")
+            .is_empty());
+
+        let (id, wiped) =
+            upsert_folder(&conn, "a1", "INBOX", FolderRole::Inbox, 11).expect("bump uidvalidity");
+        assert_eq!(id, 1);
+        assert!(wiped);
+        let f1_after = get_folder(&conn, 1).expect("f1 after").expect("exists");
+        assert!(!f1_after.history_complete);
+        assert_eq!(f1_after.cached_count, 0);
+        assert_eq!(min_uid(&conn, 1).expect("min_uid empty"), 0);
     }
 }

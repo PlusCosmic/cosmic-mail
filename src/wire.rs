@@ -19,6 +19,8 @@ pub struct Folder {
     pub role: String,
     pub unread_count: i64,
     pub total_count: i64,
+    pub cached_count: i64,
+    pub history_complete: bool,
 }
 
 impl From<FolderRow> for Folder {
@@ -30,6 +32,8 @@ impl From<FolderRow> for Folder {
             role: r.role,
             unread_count: r.unread_count,
             total_count: r.total_count,
+            cached_count: r.cached_count,
+            history_complete: r.history_complete,
         }
     }
 }
