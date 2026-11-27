@@ -102,6 +102,8 @@ blitz-traits = "=0.3.0-beta.4"
 parley = { version = "0.12", default-features = false }
 taffy = { version = "0.15", default-features = false }
 stylo = { version = "=0.22.0", default-features = false }
+# Mozilla Public Suffix List for eTLD+1 registrable-domain resolution in MX autoconfig (issue #19).
+psl = "2.1.265"
 
 [profile.dev.package."*"]
 # Dependencies (wgpu, parley, ...) build without debug info: much faster links.

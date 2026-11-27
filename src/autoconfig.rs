@@ -138,28 +138,15 @@ fn is_gmail(domain: &str, imap_host: Option<&str>, mx_host: Option<&str>) -> boo
     false
 }
 
-/// Two-part public suffixes we recognise for the registrable-domain heuristic.
-/// This is intentionally tiny and best-effort (no PSL crate).
-const TWO_PART_SUFFIXES: &[&str] = &[
-    "co.uk", "org.uk", "me.uk", "gov.uk", "ac.uk", "co.nz", "com.au", "net.au", "org.au", "co.za",
-    "com.br", "co.jp", "co.in", "co.kr",
-];
-
-/// Return the registrable domain (eTLD+1) of a host using a last-two-labels
-/// heuristic with a small hardcoded list of two-part public suffixes.
-fn registrable_domain(host: &str) -> String {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
-    if labels.len() <= 2 {
-        return labels.join(".");
+/// Return the registrable domain (eTLD+1) of a host using Mozilla's Public
+/// Suffix List (`psl`), or `None` if the host has no registrable domain (e.g.
+/// empty, single-label, malformed, or a bare public suffix like `co.uk`).
+fn registrable_domain(host: &str) -> Option<String> {
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() || host.split('.').any(|l| l.is_empty()) {
+        return None;
     }
-    let last_two = format!("{}.{}", labels[labels.len() - 2], labels[labels.len() - 1]);
-    if TWO_PART_SUFFIXES.contains(&last_two.as_str()) && labels.len() >= 3 {
-        // eTLD is two labels, so registrable domain is the last three.
-        labels[labels.len() - 3..].join(".")
-    } else {
-        last_two
-    }
+    psl::domain_str(&host).map(str::to_string)
 }
 
 /// Resolve `%EMAILADDRESS%` / `%EMAILLOCALPART%` placeholders.
@@ -320,21 +307,22 @@ async fn run_chain(email: String, _local_part: String, domain: String) -> Option
         if is_gmail(&domain, None, Some(&mx_host)) {
             return Some(gmail_config(&email));
         }
-        let reg = registrable_domain(&mx_host);
-        if !reg.is_empty() && reg != domain {
-            // The mail provider's own autoconfig server frequently serves
-            // configs for hosted custom domains (e.g. Purelymail), like
-            // Thunderbird's MX step does.
-            let url = format!(
-                "https://autoconfig.{}/mail/config-v1.1.xml?emailaddress={}",
-                reg,
-                urlencode(&email)
-            );
-            if let Some(p) = fetch_and_parse(&client, &url, &email).await {
-                return Some(finalize(p, &domain, DiscoverySource::Mx, Some(&mx_host)));
-            }
-            if let Some(p) = fetch_ispdb(&client, &reg, &email).await {
-                return Some(finalize(p, &domain, DiscoverySource::Mx, Some(&mx_host)));
+        if let Some(reg) = registrable_domain(&mx_host) {
+            if reg != domain {
+                // The mail provider's own autoconfig server frequently serves
+                // configs for hosted custom domains (e.g. Purelymail), like
+                // Thunderbird's MX step does.
+                let url = format!(
+                    "https://autoconfig.{}/mail/config-v1.1.xml?emailaddress={}",
+                    reg,
+                    urlencode(&email)
+                );
+                if let Some(p) = fetch_and_parse(&client, &url, &email).await {
+                    return Some(finalize(p, &domain, DiscoverySource::Mx, Some(&mx_host)));
+                }
+                if let Some(p) = fetch_ispdb(&client, &reg, &email).await {
+                    return Some(finalize(p, &domain, DiscoverySource::Mx, Some(&mx_host)));
+                }
             }
         }
     }
@@ -651,17 +639,63 @@ mod tests {
     }
 
     #[test]
-    fn registrable_domain_heuristic() {
-        assert_eq!(registrable_domain("mx.example.com"), "example.com");
-        assert_eq!(registrable_domain("example.com"), "example.com");
-        assert_eq!(registrable_domain("aspmx.l.google.com"), "google.com");
-        // Two-part suffix.
+    fn registrable_domain_uses_public_suffix_list() {
+        // Common single-label TLDs, uppercase, and trailing FQDN dot.
         assert_eq!(
-            registrable_domain("mx1.mail.example.co.uk"),
-            "example.co.uk"
+            registrable_domain("mx.example.com").as_deref(),
+            Some("example.com")
         );
-        assert_eq!(registrable_domain("example.co.uk"), "example.co.uk");
-        assert_eq!(registrable_domain("mail.example.com.au"), "example.com.au");
+        assert_eq!(
+            registrable_domain("example.com").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(
+            registrable_domain("ASPMX.L.GOOGLE.COM.").as_deref(),
+            Some("google.com")
+        );
+        // Classic two-part ICANN public suffixes.
+        assert_eq!(
+            registrable_domain("mx1.mail.example.co.uk").as_deref(),
+            Some("example.co.uk")
+        );
+        assert_eq!(
+            registrable_domain("example.co.uk").as_deref(),
+            Some("example.co.uk")
+        );
+        assert_eq!(
+            registrable_domain("mail.example.com.au").as_deref(),
+            Some("example.com.au")
+        );
+        // Uncommon multi-part ICANN suffixes that the old hard-coded list missed.
+        assert_eq!(
+            registrable_domain("mx.provider.or.jp").as_deref(),
+            Some("provider.or.jp")
+        );
+        assert_eq!(
+            registrable_domain("mx.mail.example.com.tw").as_deref(),
+            Some("example.com.tw")
+        );
+        assert_eq!(
+            registrable_domain("mx.host.priv.at").as_deref(),
+            Some("host.priv.at")
+        );
+        // Wildcard (`*.ck`) and exception (`!www.ck`) rules.
+        assert_eq!(
+            registrable_domain("mx.sub.example.foo.ck").as_deref(),
+            Some("example.foo.ck")
+        );
+        assert_eq!(registrable_domain("mx.www.ck").as_deref(), Some("www.ck"));
+        // Private PSL suffix (`eu.org`).
+        assert_eq!(
+            registrable_domain("mx.mail.example.eu.org").as_deref(),
+            Some("example.eu.org")
+        );
+        // Bare public suffixes, single labels, and malformed hosts yield None.
+        assert_eq!(registrable_domain("co.uk"), None);
+        assert_eq!(registrable_domain("com"), None);
+        assert_eq!(registrable_domain("localhost"), None);
+        assert_eq!(registrable_domain(""), None);
+        assert_eq!(registrable_domain("a..example.com"), None);
     }
 
     #[test]
